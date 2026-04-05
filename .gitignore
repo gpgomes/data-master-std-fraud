@@ -205,3 +205,44 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# ── Projeto: Data Master ──────────────────────────────────────────────────────
+
+# Data gerados
+data/
+*.parquet
+*.avro
+*.orc
+
+# Spark
+derby.log
+metastore_db/
+spark-warehouse/
+
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/*.tfstate.backup
+terraform/.terraform.lock.hcl
+terraform/terraform.tfvars
+*.tfplan
+
+# Airflow
+logs/
+airflow.db
+
+# Great Expectations (dados não versionados)
+src/governance/great_expectations/uncommitted/
+src/governance/great_expectations/data_docs/
+
+# IDEs
+.idea/
+.vscode/
+
+# Secrets
+*.pem
+*.key
+*.crt
+secrets/
+credentials/
