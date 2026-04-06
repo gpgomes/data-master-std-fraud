@@ -1,4 +1,4 @@
-# Catálogo de Prompts — Data Master: Financial Fraud Detection Platform
+q# Catálogo de Prompts — Data Master: Financial Fraud Detection Platform
 
 **Repositório:** `https://github.com/gpgomes/data-master-std-fraud`
 **Objetivo:** Executar cada passo do case de engenharia de dados via prompts para o Claude.
