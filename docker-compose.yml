@@ -441,3 +441,52 @@ services:
       timeout: 10s
       retries: 5
       start_period: 60s
+
+  # ── Producer — Transações ─────────────────────────────────────────────────────
+  producer-transactions:
+    build:
+      context: ./docker/producer
+    image: data-master-producer:latest
+    container_name: producer-transactions
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      PRODUCER_TYPE: transactions
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      PRODUCER_RATE_TPS: "10"
+      GENERATOR_SEED: "0"
+      SOURCE_SYSTEM: transaction-simulator
+      LOG_LEVEL: INFO
+      TZ: America/Sao_Paulo
+    volumes:
+      - ./src:/app/src
+    networks:
+      - data-master-network
+    profiles:
+      - producers
+
+  # ── Producer — Dados de Mercado ───────────────────────────────────────────────
+  producer-market:
+    image: data-master-producer:latest
+    container_name: producer-market
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      producer-transactions:
+        condition: service_started
+    environment:
+      PRODUCER_TYPE: market
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      MARKET_PRODUCER_RATE_TPS: "50"
+      SOURCE_SYSTEM: market-simulator
+      LOG_LEVEL: INFO
+      TZ: America/Sao_Paulo
+    volumes:
+      - ./src:/app/src
+    networks:
+      - data-master-network
+    profiles:
+      - producers

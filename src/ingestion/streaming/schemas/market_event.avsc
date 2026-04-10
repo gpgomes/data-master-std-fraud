@@ -1,0 +1,18 @@
+{
+  "type": "record",
+  "name": "MarketEvent",
+  "namespace": "br.com.datamaster.market",
+  "doc": "Evento tick-by-tick de cotação publicado no tópico raw-market-data",
+  "fields": [
+    {"name": "event_id",   "type": "string", "doc": "UUID do evento"},
+    {"name": "symbol",     "type": "string", "doc": "Ticker do ativo (ex: PETR4.SA)"},
+    {"name": "timestamp",  "type": "string", "doc": "ISO-8601 com timezone"},
+    {"name": "price",      "type": "double", "doc": "Último preço negociado"},
+    {"name": "volume",     "type": "long",   "doc": "Volume negociado no tick"},
+    {"name": "bid",        "type": "double", "doc": "Melhor oferta de compra"},
+    {"name": "ask",        "type": "double", "doc": "Melhor oferta de venda"},
+    {"name": "spread",     "type": "double", "doc": "ask - bid"},
+    {"name": "produced_at",  "type": "string", "doc": "Timestamp de produção (ISO-8601)"},
+    {"name": "source_system","type": "string", "default": "market-simulator"}
+  ]
+}

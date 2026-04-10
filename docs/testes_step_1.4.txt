@@ -1,0 +1,100 @@
+TESTES — STEP 1.4 (Kafka Producers)
+=====================================
+
+Implementações avaliadas:
+  - src/ingestion/streaming/producer_config.py
+  - src/ingestion/streaming/kafka_producer_transactions.py
+  - src/ingestion/streaming/kafka_producer_market.py
+  - src/ingestion/streaming/schemas/transaction_event.avsc
+  - src/ingestion/streaming/schemas/market_event.avsc
+
+
+1. TESTES UNITÁRIOS
+-------------------
+Arquivo: tests/unit/test_producers.py
+
+Executar:
+  pytest tests/unit/test_producers.py -v
+  # ou
+  make test-unit
+
+Suítes cobertas:
+
+  TestProducerConfig
+    - test_default_values                  → acks="1", retries=3, batch_size=16384, linger_ms=10, compression="lz4"
+    - test_to_kafka_python_dict_keys       → dict contém todas as chaves esperadas pelo kafka-python
+    - test_value_serializer_encodes_utf8   → serializer de valor codifica string para bytes UTF-8
+    - test_key_serializer_encodes_utf8     → serializer de chave retorna None para None
+    - test_low_latency_profile             → LOW_LATENCY_CONFIG: linger_ms=0, batch_size=1
+    - test_high_throughput_profile         → HIGH_THROUGHPUT_CONFIG: linger_ms=50, batch_size=65536
+
+  TestMessageSerialization
+    - test_transaction_message_is_valid_json       → mensagem serializada é JSON válido e parseável
+    - test_transaction_required_fields             → todos os campos obrigatórios presentes no evento
+    - test_transaction_type_valid                  → transaction_type é um valor válido do enum TransactionType
+    - test_amount_within_range                     → amount sempre entre R$1,00 e R$500.000,00
+    - test_currency_distribution_brl_dominant      → BRL representa >= 70% das transações geradas
+    - test_market_tick_serialize                   → tick de mercado serializa para JSON com symbol e price > 0
+
+  TestTickSimulator
+    - test_tick_required_fields            → tick contém: event_id, symbol, timestamp, price, volume, bid, ask, spread
+    - test_tick_spread_is_ask_minus_bid    → ask >= bid e spread >= 0 para todos os símbolos
+    - test_tick_price_positive             → preço sempre > 0 ao longo de 20 ticks
+    - test_tick_volume_positive            → volume sempre >= 1
+    - test_tick_price_evolves              → preço varia (random walk) ao longo de 50 ticks
+    - test_all_symbols_generate_ticks      → todos os símbolos de MARKET_SYMBOLS geram ticks válidos
+
+  TestProducerRun
+    - test_transactions_producer_sends_and_stops   → producer envia ao menos 1 mensagem e chama flush() ao parar
+    - test_market_producer_sends_and_stops         → market producer envia ao menos 1 tick e chama flush() ao parar
+
+
+2. TESTES DE INTEGRAÇÃO (infra real)
+-------------------------------------
+Pré-requisito:
+  make up && make setup
+
+2a. Producer de transações:
+  make producer-transactions
+
+  Verificar no Kafka UI (http://localhost:8080):
+    - Tópico raw-transactions recebendo mensagens
+    - Taxa aproximada de 10 TPS
+    - Mensagens com campos: transaction_id, customer_id, amount, is_fraud, produced_at, source_system
+    - Headers: produced_at, source_system
+
+2b. Producer de mercado:
+  make producer-market
+
+  Verificar no Kafka UI:
+    - Tópico raw-market-data recebendo ticks
+    - Taxa aproximada de 50 TPS
+    - Campos: symbol, price, bid, ask, spread, volume, event_id, produced_at
+    - Headers: produced_at, source_system
+
+
+3. VALIDAÇÕES MANUAIS
+----------------------
+  Graceful shutdown (Ctrl+C)
+    → Confirmar log "Producer encerrado" com totais de mensagens enviadas e erros
+
+  Headers Kafka
+    → Kafka UI > selecionar mensagem > aba Headers: produced_at e source_system presentes
+
+  Fora do horário de pregão (market producer)
+    → Se hora UTC não estiver entre 13h-20h, producer loga "Fora do horário de pregão"
+      e aguarda 60s antes de verificar novamente (sem enviar mensagens)
+
+  Particionamento por chave
+    → Transações: particionadas por customer_id
+    → Market data: particionadas por symbol (mesmo símbolo vai para mesma partição)
+
+  Perfis de configuração
+    → LOW_LATENCY_CONFIG:   linger_ms=0,  batch_size=1
+    → HIGH_THROUGHPUT_CONFIG: linger_ms=50, batch_size=65536
+
+
+4. COBERTURA
+-------------
+  make test-cov
+  # Abrir htmlcov/index.html e verificar src/ingestion/streaming/ com >= 70%

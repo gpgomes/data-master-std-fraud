@@ -1,0 +1,20 @@
+# Dependências mínimas para rodar os testes unitários localmente.
+# Evita dependências pesadas (PySpark, Great Expectations) e que exigem
+# binários do sistema (psycopg2-binary requer pg_config / libpq).
+#
+# Uso: pip install -r requirements-test.txt
+
+# --- Runtime necessário para os testes atuais ---
+faker==24.0.0
+numpy==1.26.4
+pydantic>=2.10.0
+pydantic-settings>=2.5.0
+kafka-python-ng>=2.2.2
+loguru==0.7.2
+python-dotenv==1.0.1
+
+# --- Ferramentas de teste e qualidade ---
+pytest==8.1.1
+pytest-cov==5.0.0
+pytest-asyncio==0.23.6
+pytest-mock==3.14.0
