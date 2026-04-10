@@ -59,7 +59,7 @@ test-cov: ## Executar testes com relatório de cobertura HTML
 
 # ── Pipeline ───────────────────────────────────────────────────────────────────
 seed-data: ## Gerar dados sintéticos de transações e mercado
-	$(PYTHON) scripts/generate_sample_data.py --transactions 500000 --customers 10000 --days 180
+	$(PYTHON) scripts/generate_sample_data.py --transactions 500000 --customers 10000 --months 6
 
 spark-submit-batch: ## Submeter job PySpark batch (Bronze → Silver → Gold)
 	$(COMPOSE) exec spark-master spark-submit \
