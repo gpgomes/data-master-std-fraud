@@ -1,0 +1,184 @@
+================================================================================
+  CHECKLIST DE TESTES — STEP 1.3 (Data Generator)
+================================================================================
+
+PRÉ-REQUISITO
+-------------
+  pip install -r requirements.txt
+  (ou: pip install -e ".[dev]")
+
+
+--------------------------------------------------------------------------------
+1. TESTES UNITÁRIOS AUTOMATIZADOS
+--------------------------------------------------------------------------------
+
+1.1 Rodar suite completa do step 1.3
+    Comando:
+      pytest tests/unit/test_data_generator.py tests/unit/test_schemas.py -v
+
+    Resultado esperado:
+      - Todos os testes passam (PASSED)
+      - Nenhum erro ou warning crítico
+
+1.2 Verificar cobertura de código
+    Comando:
+      pytest tests/unit/ --cov=src/common --cov-report=term-missing
+
+    Resultado esperado:
+      - Cobertura >= 70% em src/common/data_generator.py e src/common/schemas.py
+
+
+--------------------------------------------------------------------------------
+2. GERAÇÃO DE DADOS — SMOKE TEST (volume pequeno)
+--------------------------------------------------------------------------------
+
+2.1 Executar o script com volume reduzido
+    Comando:
+      python -m scripts.generate_sample_data \
+        --transactions 1000 \
+        --customers 100 \
+        --market-days 10 \
+        --seed 42 \
+        --output-dir data/test_smoke
+
+    Resultado esperado no terminal:
+      - [1/3] clientes gerados sem erro
+      - [2/3] transações geradas sem erro
+      - [3/3] cotações geradas sem erro
+      - Taxa de fraude entre 1% e 5% no bloco de estatísticas
+      - Distribuição de transaction_type com PIX como dominante (~45%)
+      - 4 tipos de fraude listados na distribuição
+
+2.2 Verificar arquivos gerados
+    Comando (Linux/Mac):
+      find data/test_smoke -name "*.csv" | sort | head -20
+
+    Comando (Windows PowerShell):
+      Get-ChildItem -Recurse data\test_smoke -Filter "*.csv" | Select-Object FullName
+
+    Resultado esperado:
+      - data/test_smoke/customers/customers.csv          (1 arquivo)
+      - data/test_smoke/transactions/YYYY/MM/DD/transactions.csv  (N partições por dia)
+      - data/test_smoke/market_data/YYYY/MM/DD/market.csv         (N partições por dia)
+
+2.3 Verificar conteúdo do CSV de clientes
+    Abrir data/test_smoke/customers/customers.csv e confirmar:
+      - 100 linhas de dados (+ 1 linha de cabeçalho)
+      - Colunas presentes: customer_id, name, cpf_masked, birth_date, gender,
+        account_opening_date, risk_score, segment, city, state, country
+      - Coluna country = "BR" em todos os registros
+      - Coluna segment com valores: VAREJO, PREMIUM ou PRIVATE
+      - risk_score entre 0.0 e 100.0
+
+2.4 Verificar conteúdo do CSV de transações
+    Abrir qualquer transactions.csv e confirmar:
+      - Colunas presentes: transaction_id, customer_id, timestamp, amount,
+        currency, transaction_type, merchant_category, origin_account,
+        destination_account, origin_bank, destination_bank, channel,
+        device_id, ip_address, latitude, longitude, is_fraud, fraud_type
+      - amount > 0 em todos os registros
+      - fraud_type preenchido somente quando is_fraud = True
+
+2.5 Verificar conteúdo do CSV de cotações
+    Abrir qualquer market.csv e confirmar:
+      - Colunas: symbol, date, open, high, low, close, volume, adjusted_close
+      - high >= low em todos os registros
+      - open, close, high, low > 0
+      - Símbolos presentes: PETR4.SA, VALE3.SA, ITUB4.SA, BBDC4.SA, ABEV3.SA,
+        WEGE3.SA, RENT3.SA, BBAS3.SA, MGLU3.SA, LREN3.SA
+
+
+--------------------------------------------------------------------------------
+3. REPRODUTIBILIDADE
+--------------------------------------------------------------------------------
+
+3.1 Gerar dois datasets com a mesma seed e comparar
+    Comandos:
+      python -m scripts.generate_sample_data \
+        --transactions 500 --customers 50 --seed 99 --output-dir data/repro_a
+
+      python -m scripts.generate_sample_data \
+        --transactions 500 --customers 50 --seed 99 --output-dir data/repro_b
+
+    Verificação (Linux/Mac):
+      diff data/repro_a/customers/customers.csv data/repro_b/customers/customers.csv
+
+    Verificação (Windows PowerShell):
+      Compare-Object (Get-Content data\repro_a\customers\customers.csv) `
+                     (Get-Content data\repro_b\customers\customers.csv)
+
+    Resultado esperado:
+      - Nenhuma diferença entre os arquivos (saída vazia do diff)
+
+3.2 Confirmar que seeds diferentes geram dados diferentes
+    Gerar com --seed 1 e --seed 2 e verificar que os customer_id diferem.
+
+
+--------------------------------------------------------------------------------
+4. COMPATIBILIDADE COM SCHEMAS PYDANTIC
+--------------------------------------------------------------------------------
+
+4.1 Validar transações geradas contra TransactionEvent
+    Criar e rodar o seguinte script Python:
+
+      from src.common.data_generator import DataGenerator
+      from src.common.schemas import TransactionEvent
+      from datetime import datetime
+
+      gen = DataGenerator(seed=42)
+      customers = gen.generate_customers(n=10)
+      txs = gen.generate_transactions(customers, n=100)
+
+      erros = 0
+      for tx in txs:
+          tx["timestamp"] = datetime.fromisoformat(tx["timestamp"])
+          try:
+              TransactionEvent(**tx)
+          except Exception as e:
+              print(f"ERRO: {e}")
+              erros += 1
+
+      print(f"Validados: {100 - erros}/100 — Erros: {erros}")
+
+    Resultado esperado:
+      - Validados: 100/100 — Erros: 0
+
+
+--------------------------------------------------------------------------------
+5. GERAÇÃO EM VOLUME COMPLETO (teste final)
+--------------------------------------------------------------------------------
+
+5.1 Rodar make seed-data (500k transações)
+    Comando:
+      make seed-data
+
+    Resultado esperado:
+      - Execução sem erros
+      - ~12.500 transações com is_fraud = True (2.5% de 500.000)
+      - ~1.000 registros de cotações (10 símbolos x 100 dias)
+      - Tempo de execução: entre 30s e 120s dependendo da máquina
+
+    Verificação rápida do volume:
+      python -c "
+      import csv, glob
+      files = glob.glob('data/sample/transactions/**/*.csv', recursive=True)
+      total = sum(sum(1 for _ in open(f)) - 1 for f in files)
+      print(f'Total de transações: {total:,}')
+      "
+
+    Resultado esperado:
+      - Total de transações: 500,000
+
+
+--------------------------------------------------------------------------------
+LIMPEZA APÓS OS TESTES
+--------------------------------------------------------------------------------
+
+  Remover dados gerados nos testes:
+    Linux/Mac:  rm -rf data/test_smoke data/repro_a data/repro_b
+    Windows:    Remove-Item -Recurse -Force data\test_smoke, data\repro_a, data\repro_b
+
+  Os dados em data/sample/ (gerados pelo make seed-data) devem ser mantidos,
+  pois serão usados nas fases seguintes do projeto.
+
+================================================================================
