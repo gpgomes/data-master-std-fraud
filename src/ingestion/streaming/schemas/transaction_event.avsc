@@ -1,0 +1,28 @@
+{
+  "type": "record",
+  "name": "TransactionEvent",
+  "namespace": "br.com.datamaster.fraud",
+  "doc": "Evento de transação financeira publicado no tópico raw-transactions",
+  "fields": [
+    {"name": "transaction_id", "type": "string", "doc": "UUID da transação"},
+    {"name": "customer_id",    "type": "string", "doc": "UUID do cliente"},
+    {"name": "timestamp",      "type": "string", "doc": "ISO-8601 com timezone"},
+    {"name": "amount",         "type": "double", "doc": "Valor da transação"},
+    {"name": "currency",       "type": {"type": "enum", "name": "Currency", "symbols": ["BRL", "USD", "EUR"]}, "default": "BRL"},
+    {"name": "transaction_type", "type": {"type": "enum", "name": "TransactionType", "symbols": ["PIX", "TED", "DOC", "CARTAO_CREDITO", "CARTAO_DEBITO", "BOLETO"]}},
+    {"name": "merchant_category", "type": {"type": "enum", "name": "MerchantCategory", "symbols": ["ALIMENTACAO", "TRANSPORTE", "SAUDE", "EDUCACAO", "LAZER", "TRANSFERENCIA", "SAQUE", "SERVICOS"]}},
+    {"name": "origin_account",      "type": "string"},
+    {"name": "destination_account", "type": "string"},
+    {"name": "origin_bank",         "type": "string"},
+    {"name": "destination_bank",    "type": "string"},
+    {"name": "channel", "type": {"type": "enum", "name": "Channel", "symbols": ["APP_MOBILE", "INTERNET_BANKING", "AGENCIA", "ATM", "API"]}},
+    {"name": "device_id",   "type": ["null", "string"], "default": null},
+    {"name": "ip_address",  "type": ["null", "string"], "default": null},
+    {"name": "latitude",    "type": ["null", "double"], "default": null},
+    {"name": "longitude",   "type": ["null", "double"], "default": null},
+    {"name": "is_fraud",    "type": "boolean", "default": false},
+    {"name": "fraud_type",  "type": ["null", "string"], "default": null},
+    {"name": "produced_at", "type": "string", "doc": "Timestamp de produção (ISO-8601)"},
+    {"name": "source_system", "type": "string", "default": "transaction-simulator"}
+  ]
+}
