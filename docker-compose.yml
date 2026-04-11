@@ -170,15 +170,12 @@ services:
       context: ./docker/spark
       dockerfile: Dockerfile
     image: data-master-spark:latest
+    pull_policy: build
     container_name: spark-master
     restart: unless-stopped
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master"]
     environment:
-      SPARK_MODE: master
-      SPARK_MASTER_HOST: spark-master
-      SPARK_RPC_AUTHENTICATION_ENABLED: "no"
-      SPARK_RPC_ENCRYPTION_ENABLED: "no"
-      SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED: "no"
-      SPARK_SSL_ENABLED: "no"
+      SPARK_NO_DAEMONIZE: "true"
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
@@ -187,8 +184,8 @@ services:
       - "7077:7077"
       - "8081:8080"
     volumes:
-      - ./src:/opt/bitnami/spark/work-dir/src
-      - ./data:/opt/bitnami/spark/work-dir/data
+      - ./src:/opt/spark/work-dir/src
+      - ./data:/opt/spark/work-dir/data
     networks:
       - data-master-network
     healthcheck:
@@ -201,54 +198,46 @@ services:
   # ── Spark Worker 1 ────────────────────────────────────────────────────────────
   spark-worker-1:
     image: data-master-spark:latest
+    pull_policy: never
     container_name: spark-worker-1
     restart: unless-stopped
     depends_on:
       spark-master:
         condition: service_healthy
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker",
+              "--cores", "2", "--memory", "2G", "spark://spark-master:7077"]
     environment:
-      SPARK_MODE: worker
-      SPARK_MASTER_URL: spark://spark-master:7077
-      SPARK_WORKER_CORES: 2
-      SPARK_WORKER_MEMORY: 2G
-      SPARK_RPC_AUTHENTICATION_ENABLED: "no"
-      SPARK_RPC_ENCRYPTION_ENABLED: "no"
-      SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED: "no"
-      SPARK_SSL_ENABLED: "no"
+      SPARK_NO_DAEMONIZE: "true"
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
       TZ: America/Sao_Paulo
     volumes:
-      - ./src:/opt/bitnami/spark/work-dir/src
-      - ./data:/opt/bitnami/spark/work-dir/data
+      - ./src:/opt/spark/work-dir/src
+      - ./data:/opt/spark/work-dir/data
     networks:
       - data-master-network
 
   # ── Spark Worker 2 ────────────────────────────────────────────────────────────
   spark-worker-2:
     image: data-master-spark:latest
+    pull_policy: never
     container_name: spark-worker-2
     restart: unless-stopped
     depends_on:
       spark-master:
         condition: service_healthy
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker",
+              "--cores", "2", "--memory", "2G", "spark://spark-master:7077"]
     environment:
-      SPARK_MODE: worker
-      SPARK_MASTER_URL: spark://spark-master:7077
-      SPARK_WORKER_CORES: 2
-      SPARK_WORKER_MEMORY: 2G
-      SPARK_RPC_AUTHENTICATION_ENABLED: "no"
-      SPARK_RPC_ENCRYPTION_ENABLED: "no"
-      SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED: "no"
-      SPARK_SSL_ENABLED: "no"
+      SPARK_NO_DAEMONIZE: "true"
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
       TZ: America/Sao_Paulo
     volumes:
-      - ./src:/opt/bitnami/spark/work-dir/src
-      - ./data:/opt/bitnami/spark/work-dir/data
+      - ./src:/opt/spark/work-dir/src
+      - ./data:/opt/spark/work-dir/data
     networks:
       - data-master-network
 
@@ -300,6 +289,7 @@ services:
       context: ./docker/airflow
       dockerfile: Dockerfile
     image: data-master-airflow:latest
+    pull_policy: build
     container_name: airflow-init
     depends_on:
       postgres-airflow:
@@ -329,6 +319,7 @@ services:
   # ── Airflow Webserver ─────────────────────────────────────────────────────────
   airflow-webserver:
     image: data-master-airflow:latest
+    pull_policy: never
     container_name: airflow-webserver
     restart: unless-stopped
     depends_on:
@@ -366,6 +357,7 @@ services:
   # ── Airflow Scheduler ─────────────────────────────────────────────────────────
   airflow-scheduler:
     image: data-master-airflow:latest
+    pull_policy: never
     container_name: airflow-scheduler
     restart: unless-stopped
     depends_on:
@@ -447,6 +439,7 @@ services:
     build:
       context: ./docker/producer
     image: data-master-producer:latest
+    pull_policy: build
     container_name: producer-transactions
     restart: unless-stopped
     depends_on:
@@ -469,7 +462,10 @@ services:
 
   # ── Producer — Dados de Mercado ───────────────────────────────────────────────
   producer-market:
+    build:
+      context: ./docker/producer
     image: data-master-producer:latest
+    pull_policy: build
     container_name: producer-market
     restart: unless-stopped
     depends_on:
