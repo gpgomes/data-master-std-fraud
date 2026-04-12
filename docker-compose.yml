@@ -298,6 +298,7 @@ services:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-airflow:5432/airflow
       AIRFLOW__CORE__FERNET_KEY: "46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLt0nfd4e0="
+      AIRFLOW__WEBSERVER__SECRET_KEY: "data-master-local-secret-key-2024"
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       TZ: America/Sao_Paulo
     entrypoint: ["/bin/bash", "-c"]
@@ -330,6 +331,7 @@ services:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-airflow:5432/airflow
       AIRFLOW__CORE__FERNET_KEY: "46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLt0nfd4e0="
+      AIRFLOW__WEBSERVER__SECRET_KEY: "data-master-local-secret-key-2024"
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
       MINIO_ENDPOINT: http://minio:9000
@@ -345,6 +347,8 @@ services:
     volumes:
       - ./dags:/opt/airflow/dags
       - ./src:/opt/airflow/src
+      - ./scripts:/opt/airflow/scripts
+      - ./data:/opt/airflow/data
     networks:
       - data-master-network
     healthcheck:
@@ -368,6 +372,7 @@ services:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-airflow:5432/airflow
       AIRFLOW__CORE__FERNET_KEY: "46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLt0nfd4e0="
+      AIRFLOW__WEBSERVER__SECRET_KEY: "data-master-local-secret-key-2024"
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: minioadmin
@@ -380,6 +385,8 @@ services:
     volumes:
       - ./dags:/opt/airflow/dags
       - ./src:/opt/airflow/src
+      - ./scripts:/opt/airflow/scripts
+      - ./data:/opt/airflow/data
     networks:
       - data-master-network
     healthcheck:

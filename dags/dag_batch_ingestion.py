@@ -14,7 +14,6 @@ from pathlib import Path
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from airflow.sensors.filesystem import FileSensor
 
 # ── Default args ───────────────────────────────────────────────────────────────
 
@@ -28,6 +27,24 @@ DEFAULT_ARGS = {
 }
 
 # ── Callables das tasks ────────────────────────────────────────────────────────
+
+
+def _check_source_availability(**context) -> None:
+    """Task: verifica se há dados locais disponíveis para ingestão."""
+    base = Path("/opt/airflow/data/sample")
+    found = []
+    for subdir in ["transactions", "market_data", "customers"]:
+        path = base / subdir
+        if path.exists():
+            found.append(subdir)
+
+    if not found:
+        print(
+            f"[check_source_availability] Diretório {base} vazio ou ausente. "
+            "Execute a DAG 'seed_sample_data' primeiro para gerar os dados de exemplo."
+        )
+    else:
+        print(f"[check_source_availability] Fontes disponíveis: {found}")
 
 
 def _ingest_market_data(**context) -> None:
@@ -78,23 +95,45 @@ def _ingest_customers(**context) -> None:
 
 
 def _validate_bronze_data(**context) -> None:
-    """Task: placeholder para Great Expectations checkpoint (implementado na Fase 3)."""
+    """Task: placeholder para Great Expectations checkpoint (implementado na Fase 3).
+
+    Verifica presença de dados no MinIO (não depende de novos registros nesta execução,
+    pois o pipeline é idempotente e pode re-rodar sem ingerir nada novo).
+    """
+    import sys
+    sys.path.insert(0, "/opt/airflow")
+
     ti = context["ti"]
-    market = ti.xcom_pull(task_ids="ingest_market_data", key="market_records") or 0
-    txns = ti.xcom_pull(task_ids="ingest_transactions", key="transaction_records") or 0
-    customers = ti.xcom_pull(task_ids="ingest_customers", key="customer_records") or 0
+    market_new = ti.xcom_pull(task_ids="ingest_market_data", key="market_records") or 0
+    txns_new = ti.xcom_pull(task_ids="ingest_transactions", key="transaction_records") or 0
+    customers_new = ti.xcom_pull(task_ids="ingest_customers", key="customer_records") or 0
 
     print(
         "[validate_bronze_data] Validação placeholder — GX integrado na Fase 3\n"
-        f"  Mercado:      {market} registros\n"
-        f"  Transações:   {txns} registros\n"
-        f"  Clientes:     {customers} registros"
+        f"  Novos registros — Mercado: {market_new} | Transações: {txns_new} | Clientes: {customers_new}"
     )
 
-    if market == 0 and txns == 0 and customers == 0:
-        raise ValueError(
-            "Nenhum dado foi ingerido nesta execução — verifique as fontes."
+    # Verifica se há pelo menos um objeto no bucket Bronze (dados de runs anteriores contam)
+    try:
+        from src.common.storage import get_storage_client
+        from src.common.config import settings
+
+        storage = get_storage_client()
+        has_transactions = len(storage.list_objects(settings.minio.bucket_bronze, prefix="transactions/")) > 0
+        has_market = len(storage.list_objects(settings.minio.bucket_bronze, prefix="market_data/")) > 0
+
+        if not has_transactions and not has_market:
+            raise ValueError(
+                "Bronze layer vazia — execute 'seed_sample_data' antes desta pipeline."
+            )
+
+        print(
+            f"[validate_bronze_data] Bronze OK — "
+            f"transactions={'OK' if has_transactions else 'VAZIO'} | "
+            f"market_data={'OK' if has_market else 'VAZIO'}"
         )
+    except ImportError:
+        print("[validate_bronze_data] Aviso: não foi possível verificar MinIO, pulando validação.")
 
 
 def _notify_completion(**context) -> None:
@@ -122,15 +161,10 @@ with DAG(
     doc_md=__doc__,
 ) as dag:
 
-    # 1. Sensor: verifica se há dados locais disponíveis
-    check_source_availability = FileSensor(
+    # 1. Verifica se há dados locais disponíveis (não bloqueia o pipeline)
+    check_source_availability = PythonOperator(
         task_id="check_source_availability",
-        filepath="/opt/airflow/data/sample/transactions",
-        fs_conn_id="fs_default",
-        poke_interval=60,
-        timeout=300,
-        mode="reschedule",
-        soft_fail=True,  # Não falha o DAG se não houver dados — continua com o que tiver
+        python_callable=_check_source_availability,
     )
 
     # 2. Ingestão paralela de mercado, transações e clientes

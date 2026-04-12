@@ -2,7 +2,7 @@
 
 import random
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import numpy as np
@@ -10,8 +10,8 @@ from faker import Faker
 
 from src.common.schemas import (
     Channel,
-    CustomerSegment,
     Currency,
+    CustomerSegment,
     FraudType,
     MerchantCategory,
     TransactionType,
@@ -137,10 +137,10 @@ class DataGenerator:
     ) -> list[dict[str, Any]]:
         """Gera n transações financeiras realistas com ~2-3% de fraude."""
         if start_date is None:
-            end_date = datetime.now(tz=timezone.utc)
+            end_date = datetime.now(tz=UTC)
             start_date = end_date - timedelta(days=180)
         elif end_date is None:
-            end_date = datetime.now(tz=timezone.utc)
+            end_date = datetime.now(tz=UTC)
 
         total_seconds = int((end_date - start_date).total_seconds())
         transactions = []
@@ -279,7 +279,7 @@ class DataGenerator:
         if symbols is None:
             symbols = MARKET_SYMBOLS
         if end_date is None:
-            end_date = datetime.now(tz=timezone.utc)
+            end_date = datetime.now(tz=UTC)
 
         records = []
 
@@ -348,7 +348,7 @@ class DataGenerator:
     @staticmethod
     def _get_trading_days(end_date: datetime, n_days: int) -> list[datetime]:
         """Retorna lista de dias úteis (seg–sex) terminando em end_date."""
-        days = []
+        days: list[datetime] = []
         current = end_date
         while len(days) < n_days:
             if current.weekday() < 5:  # 0=seg … 4=sex

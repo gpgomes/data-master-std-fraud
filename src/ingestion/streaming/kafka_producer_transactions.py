@@ -5,8 +5,7 @@ import os
 import signal
 import threading
 import time
-import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from threading import Event
 from typing import Any
 
@@ -35,7 +34,7 @@ _metrics: dict[str, Any] = {
 def _avg_latency() -> float:
     if _metrics["sent"] == 0:
         return 0.0
-    return _metrics["latency_sum_ms"] / _metrics["sent"]
+    return float(_metrics["latency_sum_ms"]) / float(_metrics["sent"])
 
 
 # ── Serialização ───────────────────────────────────────────────────────────────
@@ -44,7 +43,7 @@ def _build_message(tx: dict[str, Any]) -> dict[str, Any]:
     """Adiciona campos de metadados ao evento de transação."""
     return {
         **tx,
-        "produced_at": datetime.now(tz=timezone.utc).isoformat(),
+        "produced_at": datetime.now(tz=UTC).isoformat(),
         "source_system": SOURCE_SYSTEM,
     }
 

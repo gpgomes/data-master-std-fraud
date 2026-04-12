@@ -9,17 +9,15 @@ Uso:
 import argparse
 import csv
 import json
-import os
 import sys
 from collections import Counter
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 # Garante que o pacote raiz está no sys.path ao rodar como script direto
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.common.data_generator import DataGenerator, MARKET_SYMBOLS
-
+from src.common.data_generator import MARKET_SYMBOLS, DataGenerator
 
 # ── I/O helpers ────────────────────────────────────────────────────────────────
 
@@ -182,7 +180,7 @@ def main() -> None:
 
     gen = DataGenerator(seed=args.seed)
 
-    end_date = datetime.now(tz=timezone.utc)
+    end_date = datetime.now(tz=UTC)
     start_date = end_date - timedelta(days=args.months * 30)
 
     # 1. Clientes

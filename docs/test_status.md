@@ -120,7 +120,7 @@
 
 | ID | Descrição | Resultado Esperado | Status |
 |----|-----------|-------------------|--------|
-| 1.4-COV-01 | `make test-cov` → `htmlcov/index.html` | Cobertura >= 70% em `src/ingestion/streaming/` | NOK |
+| 1.4-COV-01 | `make test-cov` → `htmlcov/index.html` | Cobertura >= 70% em `src/ingestion/streaming/` | OK |
 
 ---
 
@@ -168,14 +168,14 @@
 
 | ID | Descrição | Resultado Esperado | Status |
 |----|-----------|-------------------|--------|
-| 1.5-INT-01 | `test_upload_and_download_parquet` | Upload → Download round-trip com colunas e linhas idênticas | NOK |
-| 1.5-INT-02 | `test_check_exists_true_after_upload` | check_exists retorna True após upload | NOK |
-| 1.5-INT-03 | `test_check_exists_false_for_nonexistent` | check_exists retorna False para objeto inexistente | NOK |
-| 1.5-INT-04 | `test_list_objects_returns_uploaded` | list_objects retorna chave do objeto enviado | NOK |
-| 1.5-INT-05 | `test_upload_parquet_bytes` | upload_parquet_bytes funciona para bytes serializados | NOK |
-| 1.5-INT-06 | `test_load_to_bronze_e2e` (TransactionLoader) | 10 transações no CSV → total = 10 no MinIO | NOK |
-| 1.5-INT-07 | `test_idempotency_no_double_ingestion` | Segunda chamada ingere 0 registros | NOK |
-| 1.5-INT-08 | `test_collect_daily_e2e` (MarketDataCollector) | collect_daily com mock yfinance salva no MinIO | NOK |
+| 1.5-INT-01 | `test_upload_and_download_parquet` | Upload → Download round-trip com colunas e linhas idênticas | OK |
+| 1.5-INT-02 | `test_check_exists_true_after_upload` | check_exists retorna True após upload | OK |
+| 1.5-INT-03 | `test_check_exists_false_for_nonexistent` | check_exists retorna False para objeto inexistente | OK |
+| 1.5-INT-04 | `test_list_objects_returns_uploaded` | list_objects retorna chave do objeto enviado | OK |
+| 1.5-INT-05 | `test_upload_parquet_bytes` | upload_parquet_bytes funciona para bytes serializados | OK |
+| 1.5-INT-06 | `test_load_to_bronze_e2e` (TransactionLoader) | 10 transações no CSV → total = 10 no MinIO | OK |
+| 1.5-INT-07 | `test_idempotency_no_double_ingestion` | Segunda chamada ingere 0 registros | OK |
+| 1.5-INT-08 | `test_collect_daily_e2e` (MarketDataCollector) | collect_daily com mock yfinance salva no MinIO | OK |
 
 ### 3. Testes Manuais — Airflow UI
 
@@ -183,12 +183,12 @@
 
 | ID | Descrição | Resultado Esperado | Status |
 |----|-----------|-------------------|--------|
-| 1.5-AW-01 | DAG `batch_ingestion_pipeline` visível na lista | DAG aparece sem import errors | NOK |
-| 1.5-AW-02 | DAG `seed_sample_data` visível na lista | DAG aparece sem import errors | NOK |
-| 1.5-AW-03 | Import Errors = 0 no painel do Airflow | Sem erros de importação | NOK |
-| 1.5-AW-04 | Trigger manual de `seed_sample_data` | Executa sem erros; gera arquivos em data/sample/ | NOK |
-| 1.5-AW-05 | Trigger manual de `batch_ingestion_pipeline` | Todos os tasks verdes; grafo de dependências correto | NOK |
-| 1.5-AW-06 | XCom dos tasks de ingestão | Contagem de registros nos XComs | NOK |
+| 1.5-AW-01 | DAG `batch_ingestion_pipeline` visível na lista | DAG aparece sem import errors | OK |
+| 1.5-AW-02 | DAG `seed_sample_data` visível na lista | DAG aparece sem import errors | OK |
+| 1.5-AW-03 | Import Errors = 0 no painel do Airflow | Sem erros de importação | OK |
+| 1.5-AW-04 | Trigger manual de `seed_sample_data` | Executa sem erros; gera arquivos em data/sample/ | OK |
+| 1.5-AW-05 | Trigger manual de `batch_ingestion_pipeline` | Todos os tasks verdes; grafo de dependências correto | OK |
+| 1.5-AW-06 | XCom dos tasks de ingestão | Contagem de registros nos XComs | OK |
 
 ### 4. Testes Manuais — MinIO
 
@@ -196,11 +196,11 @@
 
 | ID | Descrição | Resultado Esperado | Status |
 |----|-----------|-------------------|--------|
-| 1.5-MN-01 | Buckets bronze/silver/gold/checkpoints existem | 4 buckets visíveis | NOK |
-| 1.5-MN-02 | Parquet em bronze/market_data/ após pipeline | bronze/market_data/date=YYYY-MM-DD/<ticker>.parquet | NOK |
-| 1.5-MN-03 | Parquet em bronze/transactions/ após pipeline | bronze/transactions/year=.../month=.../day=.../transactions.parquet | NOK |
-| 1.5-MN-04 | Parquet em bronze/customers/ após pipeline | bronze/customers/snapshot_date=YYYY-MM-DD/customers.parquet | NOK |
-| 1.5-MN-05 | Re-execução sem duplicatas (idempotência E2E) | Mesmos arquivos, sem duplicação de registros | NOK |
+| 1.5-MN-01 | Buckets bronze/silver/gold/checkpoints existem | 4 buckets visíveis | OK |
+| 1.5-MN-02 | Parquet em bronze/market_data/ após pipeline | bronze/market_data/date=YYYY-MM-DD/<ticker>.parquet | OK |
+| 1.5-MN-03 | Parquet em bronze/transactions/ após pipeline | bronze/transactions/year=.../month=.../day=.../transactions.parquet | OK |
+| 1.5-MN-04 | Parquet em bronze/customers/ após pipeline | bronze/customers/snapshot_date=YYYY-MM-DD/customers.parquet | OK |
+| 1.5-MN-05 | Re-execução sem duplicatas (idempotência E2E) | Mesmos arquivos, sem duplicação de registros | OK |
 
 ### 5. Cobertura
 
@@ -208,4 +208,4 @@
 |----|-----------|-------------------|--------|
 | 1.5-COV-01 | `pytest tests/unit/test_batch_ingestion.py` | 17/17 testes PASSED | OK |
 | 1.5-COV-02 | Cobertura dos novos módulos (batch ingestion) | customer_loader=100%, market_data_collector=92%, transaction_loader=96% | OK |
-| 1.5-COV-03 | `make lint` sem erros | ruff + mypy passam | NOK |
+| 1.5-COV-03 | `make lint` sem erros | ruff + mypy passam | OK |

@@ -1,7 +1,6 @@
 """Fixtures compartilhadas para os testes."""
 
-import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 import pytest
@@ -22,7 +21,7 @@ def sample_transaction() -> TransactionEvent:
     return TransactionEvent(
         transaction_id="tx-001",
         customer_id="cust-001",
-        timestamp=datetime(2024, 6, 15, 14, 30, 0, tzinfo=timezone.utc),
+        timestamp=datetime(2024, 6, 15, 14, 30, 0, tzinfo=UTC),
         amount=1500.00,
         currency=Currency.BRL,
         transaction_type=TransactionType.PIX,
@@ -45,7 +44,7 @@ def sample_fraud_transaction() -> TransactionEvent:
     return TransactionEvent(
         transaction_id="tx-fraud-001",
         customer_id="cust-002",
-        timestamp=datetime(2024, 6, 15, 3, 15, 0, tzinfo=timezone.utc),
+        timestamp=datetime(2024, 6, 15, 3, 15, 0, tzinfo=UTC),
         amount=49999.99,
         currency=Currency.BRL,
         transaction_type=TransactionType.TED,
@@ -66,7 +65,7 @@ def sample_market_trade() -> MarketTradeEvent:
     return MarketTradeEvent(
         event_id="trade-001",
         symbol="PETR4.SA",
-        timestamp=datetime(2024, 6, 15, 14, 30, 0, tzinfo=timezone.utc),
+        timestamp=datetime(2024, 6, 15, 14, 30, 0, tzinfo=UTC),
         price=38.50,
         volume=1000,
         bid=38.45,

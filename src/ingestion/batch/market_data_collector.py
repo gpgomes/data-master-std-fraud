@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import io
 import uuid
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 import yfinance as yf
@@ -34,9 +33,9 @@ class MarketDataCollector:
 
     def __init__(
         self,
-        storage: Optional[MinIOClient] = None,
-        tickers: Optional[list[str]] = None,
-        bucket: Optional[str] = None,
+        storage: MinIOClient | None = None,
+        tickers: list[str] | None = None,
+        bucket: str | None = None,
     ) -> None:
         self._storage = storage or get_storage_client()
         self._tickers = tickers or settings.market.ticker_list
@@ -54,7 +53,7 @@ class MarketDataCollector:
         Returns:
             Dicionário {ticker: registros_salvos} para rastreabilidade.
         """
-        end_date = datetime.now(tz=timezone.utc).date()
+        end_date = datetime.now(tz=UTC).date()
         start_date = end_date - timedelta(days=n_days)
 
         logger.info(
@@ -149,7 +148,7 @@ class MarketDataCollector:
         df = df.reset_index(drop=True)
 
         # Metadados de ingestão
-        now = datetime.now(tz=timezone.utc).isoformat()
+        now = datetime.now(tz=UTC).isoformat()
         df["ingestion_timestamp"] = now
         df["source_system"] = "yfinance"
 

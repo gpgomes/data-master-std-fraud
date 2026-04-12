@@ -1,22 +1,19 @@
 """Schemas Pydantic e PySpark para toda a plataforma."""
 
 from datetime import datetime
-from decimal import Decimal
-from enum import Enum
-from typing import Optional
+from enum import StrEnum
 
 from pydantic import BaseModel, Field, field_validator
 
-
 # ── Enums ──────────────────────────────────────────────────────────────────────
 
-class Currency(str, Enum):
+class Currency(StrEnum):
     BRL = "BRL"
     USD = "USD"
     EUR = "EUR"
 
 
-class TransactionType(str, Enum):
+class TransactionType(StrEnum):
     PIX = "PIX"
     TED = "TED"
     DOC = "DOC"
@@ -25,7 +22,7 @@ class TransactionType(str, Enum):
     BOLETO = "BOLETO"
 
 
-class MerchantCategory(str, Enum):
+class MerchantCategory(StrEnum):
     ALIMENTACAO = "ALIMENTACAO"
     TRANSPORTE = "TRANSPORTE"
     SAUDE = "SAUDE"
@@ -36,7 +33,7 @@ class MerchantCategory(str, Enum):
     SERVICOS = "SERVICOS"
 
 
-class Channel(str, Enum):
+class Channel(StrEnum):
     APP_MOBILE = "APP_MOBILE"
     INTERNET_BANKING = "INTERNET_BANKING"
     AGENCIA = "AGENCIA"
@@ -44,7 +41,7 @@ class Channel(str, Enum):
     API = "API"
 
 
-class FraudType(str, Enum):
+class FraudType(StrEnum):
     ACCOUNT_TAKEOVER = "ACCOUNT_TAKEOVER"
     CARD_CLONING = "CARD_CLONING"
     IDENTITY_THEFT = "IDENTITY_THEFT"
@@ -52,7 +49,7 @@ class FraudType(str, Enum):
     SOCIAL_ENGINEERING = "SOCIAL_ENGINEERING"
 
 
-class CustomerSegment(str, Enum):
+class CustomerSegment(StrEnum):
     VAREJO = "VAREJO"
     ALTA_RENDA = "ALTA_RENDA"
     PRIVATE = "PRIVATE"
@@ -75,17 +72,17 @@ class TransactionEvent(BaseModel):
     origin_bank: str
     destination_bank: str
     channel: Channel
-    device_id: Optional[str] = None
-    ip_address: Optional[str] = None
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
+    device_id: str | None = None
+    ip_address: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
     is_fraud: bool = Field(default=False)
-    fraud_type: Optional[FraudType] = None
-    fraud_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    fraud_type: FraudType | None = None
+    fraud_score: float | None = Field(default=None, ge=0.0, le=1.0)
 
     @field_validator("fraud_type")
     @classmethod
-    def validate_fraud_type(cls, v: Optional[FraudType], info) -> Optional[FraudType]:
+    def validate_fraud_type(cls, v: FraudType | None, info) -> FraudType | None:
         if info.data.get("is_fraud") and v is None:
             raise ValueError("fraud_type deve ser informado quando is_fraud=True")
         return v
@@ -150,7 +147,7 @@ class FraudAlert(BaseModel):
     amount: float
     fraud_type: FraudType
     fraud_score: float = Field(ge=0.0, le=1.0)
-    z_score: Optional[float] = None
+    z_score: float | None = None
     alert_reason: str
     processed_at: datetime = Field(default_factory=datetime.utcnow)
 

@@ -1,10 +1,10 @@
 """Testes unitários para o módulo de geração de dados sintéticos."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
-from src.common.data_generator import DataGenerator, MARKET_SYMBOLS
+from src.common.data_generator import MARKET_SYMBOLS, DataGenerator
 from src.common.schemas import (
     Channel,
     Currency,
@@ -161,8 +161,8 @@ class TestGenerateTransactions:
     def test_timestamp_within_range(
         self, gen: DataGenerator, small_customers: list[dict]
     ) -> None:
-        start = datetime(2024, 1, 1, tzinfo=timezone.utc)
-        end = datetime(2024, 6, 30, tzinfo=timezone.utc)
+        start = datetime(2024, 1, 1, tzinfo=UTC)
+        end = datetime(2024, 6, 30, tzinfo=UTC)
         txs = gen.generate_transactions(small_customers, n=100, start_date=start, end_date=end)
         for tx in txs:
             ts = datetime.fromisoformat(tx["timestamp"])
