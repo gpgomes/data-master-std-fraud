@@ -1,0 +1,160 @@
+================================================================================
+  CHECKLIST DE TESTES — STEP 1.5: INGESTÃO BATCH + AIRFLOW
+  Data: 2026-04-11
+================================================================================
+
+OBJETIVO DO STEP
+  Implementar módulo de ingestão batch (mercado, transações, clientes) e
+  as DAGs do Airflow. Airflow UI deve estar acessível em http://localhost:8082.
+
+--------------------------------------------------------------------------------
+1. TESTES UNITÁRIOS (sem infraestrutura)
+   Execute: pytest tests/unit/test_batch_ingestion.py -v
+--------------------------------------------------------------------------------
+
+[ ] 1.1  MarketDataCollector — normalize adiciona colunas obrigatórias
+         (symbol, date, open/high/low/close, volume, ingestion_timestamp, source_system)
+
+[ ] 1.2  MarketDataCollector — formato de data normalizado para YYYY-MM-DD
+
+[ ] 1.3  MarketDataCollector — partições existentes são ignoradas (idempotência)
+         (check_exists=True → upload_parquet_bytes NÃO chamado)
+
+[ ] 1.4  MarketDataCollector — novas partições são enviadas ao MinIO
+         (2 datas × 1 ticker → 2 calls de upload)
+
+[ ] 1.5  MarketDataCollector — resposta vazia do yfinance retorna 0 registros
+
+[ ] 1.6  MarketDataCollector — exceção na API não propaga (retorna 0 para o ticker)
+
+[ ] 1.7  TransactionLoader — ingere CSV e faz upload como Parquet
+         (2 linhas no CSV → 1 upload, resultado = 2)
+
+[ ] 1.8  TransactionLoader — arquivo já existente no MinIO é ignorado
+         (check_exists=True → upload NÃO chamado, resultado = 0)
+
+[ ] 1.9  TransactionLoader — diretório vazio retorna dicionário vazio
+
+[ ] 1.10 TransactionLoader — _add_metadata adiciona colunas de auditoria
+         (ingestion_timestamp, source_file, batch_id)
+
+[ ] 1.11 TransactionLoader — _build_key gera chave particionada correta
+         (year=YYYY/month=MM/day=DD/)
+
+[ ] 1.12 TransactionLoader — _build_key tem fallback quando path não segue padrão
+
+[ ] 1.13 CustomerLoader — ingere CSV de clientes e faz upload
+         (2 clientes → count = 2, 1 upload)
+
+[ ] 1.14 CustomerLoader — snapshot existente é ignorado (idempotência)
+
+[ ] 1.15 CustomerLoader — arquivo CSV ausente retorna 0 sem erro
+
+[ ] 1.16 CustomerLoader — _apply_scd2 adiciona colunas SCD Type 2
+         (valid_from, valid_to="9999-12-31", is_current=True, ingestion_timestamp, batch_id)
+
+[ ] 1.17 CustomerLoader — _build_key contém data de hoje
+
+--------------------------------------------------------------------------------
+2. TESTES DE INTEGRAÇÃO (requer MinIO rodando — make up)
+   Execute: pytest tests/integration/test_minio_upload.py -v
+--------------------------------------------------------------------------------
+
+[ ] 2.1  MinIOClient — upload e download de Parquet round-trip
+         (upload → download → colunas e linhas idênticas)
+
+[ ] 2.2  MinIOClient — check_exists retorna True após upload
+
+[ ] 2.3  MinIOClient — check_exists retorna False para objeto inexistente
+
+[ ] 2.4  MinIOClient — list_objects retorna chave do objeto enviado
+
+[ ] 2.5  MinIOClient — upload_parquet_bytes funciona para bytes serializados
+
+[ ] 2.6  TransactionLoader E2E — carrega CSV real e persiste no MinIO
+         (10 transações no CSV → total = 10)
+
+[ ] 2.7  TransactionLoader E2E — idempotência: segunda chamada ingere 0 registros
+
+[ ] 2.8  MarketDataCollector E2E — collect_daily com mock yfinance salva no MinIO
+
+--------------------------------------------------------------------------------
+3. TESTES MANUAIS — AIRFLOW UI (requer make up)
+   Acesse: http://localhost:8082 (admin / admin)
+--------------------------------------------------------------------------------
+
+[ ] 3.1  DAG "batch_ingestion_pipeline" aparece na lista de DAGs
+
+[ ] 3.2  DAG "seed_sample_data" aparece na lista de DAGs
+
+[ ] 3.3  Airflow não reporta erros de importação (Import Errors = 0) no painel
+
+[ ] 3.4  Trigger manual de "seed_sample_data" executa sem erros
+         (gera arquivos em data/sample/)
+
+[ ] 3.5  Trigger manual de "batch_ingestion_pipeline" executa sem erros
+         (todas as tasks ficam verdes: check → [market, transactions, customers] → validate → notify)
+
+[ ] 3.6  Grafo de dependências do DAG está correto no Airflow Graph View:
+         check_source_availability
+              ↓
+         ┌──────────────────────────────────────┐
+         │  ingest_market_data                  │
+         │  ingest_transactions                 │
+         │  ingest_customers                    │
+         └──────────────────────────────────────┘
+              ↓
+         validate_bronze_data
+              ↓
+         notify_completion
+
+[ ] 3.7  XCom dos tasks de ingestão contém contagem de registros processados
+
+--------------------------------------------------------------------------------
+4. TESTES MANUAIS — MINIO (requer make up)
+   Acesse: http://localhost:9001 (minioadmin / minioadmin)
+--------------------------------------------------------------------------------
+
+[ ] 4.1  Buckets bronze, silver, gold, checkpoints existem
+
+[ ] 4.2  Após executar "batch_ingestion_pipeline":
+         bronze/market_data/date=YYYY-MM-DD/<ticker>.parquet existe
+
+[ ] 4.3  Após executar "batch_ingestion_pipeline":
+         bronze/transactions/year=YYYY/month=MM/day=DD/transactions.parquet existe
+
+[ ] 4.4  Após executar "batch_ingestion_pipeline":
+         bronze/customers/snapshot_date=YYYY-MM-DD/customers.parquet existe
+
+[ ] 4.5  Re-execução do pipeline NÃO cria duplicatas (idempotência end-to-end)
+
+--------------------------------------------------------------------------------
+5. VALIDAÇÃO DE QUALIDADE — CÓDIGO
+--------------------------------------------------------------------------------
+
+[ ] 5.1  make lint passa sem erros (ruff + mypy)
+
+[ ] 5.2  make format não altera nenhum arquivo (código já formatado)
+
+[ ] 5.3  pytest tests/unit/ — cobertura ≥ 70% (com dependências instaladas)
+
+================================================================================
+COMANDOS RÁPIDOS
+================================================================================
+
+  # Subir infraestrutura
+  make up
+
+  # Gerar dados de exemplo
+  make seed-data
+
+  # Rodar testes unitários
+  pytest tests/unit/test_batch_ingestion.py -v
+
+  # Rodar testes de integração (MinIO UP)
+  pytest tests/integration/test_minio_upload.py -v
+
+  # Lint
+  make lint
+
+================================================================================

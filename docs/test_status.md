@@ -102,15 +102,15 @@
 
 | ID | Descrição | Resultado Esperado | Status |
 |----|-----------|-------------------|--------|
-| 1.4-INT-01 | `make producer-transactions` — verificar no Kafka UI | Tópico `raw-transactions` recebendo mensagens; ~10 TPS; campos e headers (`produced_at`, `source_system`) presentes | NOK |
-| 1.4-INT-02 | `make producer-market` — verificar no Kafka UI | Tópico `raw-market-data` recebendo ticks; ~50 TPS; campos e headers presentes | NOK |
+| 1.4-INT-01 | `make producer-transactions` — verificar no Kafka UI | Tópico `raw-transactions` recebendo mensagens; ~10 TPS; campos e headers (`produced_at`, `source_system`) presentes | OK |
+| 1.4-INT-02 | `make producer-market` — verificar no Kafka UI | Tópico `raw-market-data` recebendo ticks; ~50 TPS; campos e headers presentes | OK |
 
 ### 3. Validações Manuais
 
 | ID | Descrição | Resultado Esperado | Status |
 |----|-----------|-------------------|--------|
-| 1.4-MAN-01 | Graceful shutdown (Ctrl+C) | Log "Producer encerrado" com totais de mensagens enviadas e erros | NOK |
-| 1.4-MAN-02 | Headers Kafka via Kafka UI | Headers `produced_at` e `source_system` presentes em cada mensagem | NOK |
+| 1.4-MAN-01 | Graceful shutdown (Ctrl+C) | Log "Producer encerrado" com totais de mensagens enviadas e erros | OK |
+| 1.4-MAN-02 | Headers Kafka via Kafka UI | Headers `produced_at` e `source_system` presentes em cada mensagem | OK |
 | 1.4-MAN-03 | Market producer fora do horário de pregão | Loga "Fora do horário de pregão" e aguarda 60s sem enviar mensagens | NOK |
 | 1.4-MAN-04 | Particionamento por chave — transações | Transações do mesmo `customer_id` vão para a mesma partição | NOK |
 | 1.4-MAN-05 | Particionamento por chave — market data | Ticks do mesmo `symbol` vão para a mesma partição | NOK |
@@ -121,3 +121,91 @@
 | ID | Descrição | Resultado Esperado | Status |
 |----|-----------|-------------------|--------|
 | 1.4-COV-01 | `make test-cov` → `htmlcov/index.html` | Cobertura >= 70% em `src/ingestion/streaming/` | NOK |
+
+---
+
+## Step 1.5 — Ingestão Batch + Airflow DAGs
+
+> Checklist completo: `docs/step_1.5_test_checklist.txt`
+
+### 1. Testes Unitários — `tests/unit/test_batch_ingestion.py`
+
+#### TestMarketDataCollector
+
+| ID | Teste | Resultado Esperado | Status |
+|----|-------|--------------------|--------|
+| 1.5-MC-01 | `test_normalize_adds_required_columns` | Colunas symbol, date, open/high/low/close, volume, ingestion_timestamp, source_system presentes | OK |
+| 1.5-MC-02 | `test_normalize_date_format` | Data no formato YYYY-MM-DD | OK |
+| 1.5-MC-03 | `test_collect_daily_skips_existing_partitions` | Partições já existentes são ignoradas (idempotência) | OK |
+| 1.5-MC-04 | `test_collect_daily_uploads_new_partitions` | 2 datas × 1 ticker → 2 uploads | OK |
+| 1.5-MC-05 | `test_collect_daily_handles_empty_response` | Resposta vazia do yfinance → 0 registros, sem upload | OK |
+| 1.5-MC-06 | `test_collect_daily_handles_exception` | Exceção na API → 0 para o ticker, sem propagação | OK |
+
+#### TestTransactionLoader
+
+| ID | Teste | Resultado Esperado | Status |
+|----|-------|--------------------|--------|
+| 1.5-TL-01 | `test_load_to_bronze_ingests_csv` | CSV com 2 linhas → 1 upload, total = 2 | OK |
+| 1.5-TL-02 | `test_load_to_bronze_skips_existing` | Arquivo já no MinIO → upload não chamado, resultado = 0 | OK |
+| 1.5-TL-03 | `test_load_to_bronze_empty_dir` | Diretório vazio → dicionário vazio, sem upload | OK |
+| 1.5-TL-04 | `test_add_metadata_adds_columns` | Colunas ingestion_timestamp, source_file, batch_id adicionadas | OK |
+| 1.5-TL-05 | `test_build_key_partitioned` | Chave contém year=YYYY/month=MM/day=DD/ | OK |
+| 1.5-TL-06 | `test_build_key_fallback` | Caminho sem padrão → chave com fallback por timestamp | OK |
+
+#### TestCustomerLoader
+
+| ID | Teste | Resultado Esperado | Status |
+|----|-------|--------------------|--------|
+| 1.5-CL-01 | `test_load_to_bronze_ingests_customers` | 2 clientes ingeridos, 1 upload | OK |
+| 1.5-CL-02 | `test_load_to_bronze_skips_existing` | Snapshot já existente → sem upload | OK |
+| 1.5-CL-03 | `test_load_to_bronze_missing_file` | Arquivo ausente → 0 sem erro | OK |
+| 1.5-CL-04 | `test_apply_scd2_adds_columns` | valid_from, valid_to=9999-12-31, is_current=True, ingestion_timestamp, batch_id | OK |
+| 1.5-CL-05 | `test_build_key_contains_today` | Chave contém data de hoje (YYYY-MM-DD) | OK |
+
+### 2. Testes de Integração — `tests/integration/test_minio_upload.py`
+
+> Pré-requisito: `make up && make setup`
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|-------------------|--------|
+| 1.5-INT-01 | `test_upload_and_download_parquet` | Upload → Download round-trip com colunas e linhas idênticas | NOK |
+| 1.5-INT-02 | `test_check_exists_true_after_upload` | check_exists retorna True após upload | NOK |
+| 1.5-INT-03 | `test_check_exists_false_for_nonexistent` | check_exists retorna False para objeto inexistente | NOK |
+| 1.5-INT-04 | `test_list_objects_returns_uploaded` | list_objects retorna chave do objeto enviado | NOK |
+| 1.5-INT-05 | `test_upload_parquet_bytes` | upload_parquet_bytes funciona para bytes serializados | NOK |
+| 1.5-INT-06 | `test_load_to_bronze_e2e` (TransactionLoader) | 10 transações no CSV → total = 10 no MinIO | NOK |
+| 1.5-INT-07 | `test_idempotency_no_double_ingestion` | Segunda chamada ingere 0 registros | NOK |
+| 1.5-INT-08 | `test_collect_daily_e2e` (MarketDataCollector) | collect_daily com mock yfinance salva no MinIO | NOK |
+
+### 3. Testes Manuais — Airflow UI
+
+> Acesse: http://localhost:8082 (admin / admin)
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|-------------------|--------|
+| 1.5-AW-01 | DAG `batch_ingestion_pipeline` visível na lista | DAG aparece sem import errors | NOK |
+| 1.5-AW-02 | DAG `seed_sample_data` visível na lista | DAG aparece sem import errors | NOK |
+| 1.5-AW-03 | Import Errors = 0 no painel do Airflow | Sem erros de importação | NOK |
+| 1.5-AW-04 | Trigger manual de `seed_sample_data` | Executa sem erros; gera arquivos em data/sample/ | NOK |
+| 1.5-AW-05 | Trigger manual de `batch_ingestion_pipeline` | Todos os tasks verdes; grafo de dependências correto | NOK |
+| 1.5-AW-06 | XCom dos tasks de ingestão | Contagem de registros nos XComs | NOK |
+
+### 4. Testes Manuais — MinIO
+
+> Acesse: http://localhost:9001 (minioadmin / minioadmin)
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|-------------------|--------|
+| 1.5-MN-01 | Buckets bronze/silver/gold/checkpoints existem | 4 buckets visíveis | NOK |
+| 1.5-MN-02 | Parquet em bronze/market_data/ após pipeline | bronze/market_data/date=YYYY-MM-DD/<ticker>.parquet | NOK |
+| 1.5-MN-03 | Parquet em bronze/transactions/ após pipeline | bronze/transactions/year=.../month=.../day=.../transactions.parquet | NOK |
+| 1.5-MN-04 | Parquet em bronze/customers/ após pipeline | bronze/customers/snapshot_date=YYYY-MM-DD/customers.parquet | NOK |
+| 1.5-MN-05 | Re-execução sem duplicatas (idempotência E2E) | Mesmos arquivos, sem duplicação de registros | NOK |
+
+### 5. Cobertura
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|-------------------|--------|
+| 1.5-COV-01 | `pytest tests/unit/test_batch_ingestion.py` | 17/17 testes PASSED | OK |
+| 1.5-COV-02 | Cobertura dos novos módulos (batch ingestion) | customer_loader=100%, market_data_collector=92%, transaction_loader=96% | OK |
+| 1.5-COV-03 | `make lint` sem erros | ruff + mypy passam | NOK |

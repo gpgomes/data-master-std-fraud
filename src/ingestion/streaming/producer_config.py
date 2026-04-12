@@ -12,7 +12,7 @@ class ProducerConfig:
     bootstrap_servers: str = field(default_factory=lambda: settings.kafka.bootstrap_servers)
 
     # Confiabilidade
-    acks: str = "1"            # líder confirma (throughput > durabilidade máxima)
+    acks: int = 1              # líder confirma (throughput > durabilidade máxima)
     retries: int = 3
     retry_backoff_ms: int = 300
 
@@ -51,7 +51,7 @@ class ProducerConfig:
 
 
 # Perfil de baixa latência (streaming crítico)
-LOW_LATENCY_CONFIG = ProducerConfig(linger_ms=0, batch_size=1, acks="1")
+LOW_LATENCY_CONFIG = ProducerConfig(linger_ms=0, batch_size=1, acks=1)
 
 # Perfil de alto throughput (ingestão em lote)
-HIGH_THROUGHPUT_CONFIG = ProducerConfig(linger_ms=50, batch_size=65_536, acks="1")
+HIGH_THROUGHPUT_CONFIG = ProducerConfig(linger_ms=50, batch_size=65_536, acks=1)

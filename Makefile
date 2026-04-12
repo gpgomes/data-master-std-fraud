@@ -5,22 +5,29 @@ COMPOSE          := docker compose
 SPARK_MASTER     := spark://localhost:7077
 BATCH_JOB        := src/transformation/batch/bronze_to_silver.py
 STREAM_JOB       := src/transformation/streaming/stream_processor.py
-PYTHON           := python
+PYTHON           := .venv/Scripts/python
 PYTEST_ARGS      ?= -v
 
 # ── Infra ──────────────────────────────────────────────────────────────────────
 up: ## Subir toda a infraestrutura local
 	$(COMPOSE) up -d
-	@echo "Aguardando serviços ficarem prontos..."
-	@sleep 10
 	@echo "Infraestrutura online. Execute 'make setup' para inicializar."
 
 down: ## Derrubar todos os containers
 	$(COMPOSE) down
 
 setup: ## Inicializar buckets MinIO e tópicos Kafka
-	@echo "Inicializando infraestrutura..."
-	bash scripts/setup_local.sh
+	@echo "=== Verificando MinIO ==="
+	$(COMPOSE) exec -T minio mc alias set local http://localhost:9000 minioadmin minioadmin --quiet 2>nul || true
+	$(COMPOSE) exec -T minio mc mb --ignore-existing local/bronze local/silver local/gold local/checkpoints
+	$(COMPOSE) exec -T minio mc anonymous set download local/bronze >nul 2>&1 || true
+	@echo "=== Verificando Kafka ==="
+	$(COMPOSE) exec -T kafka kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic raw-transactions --partitions 3 --replication-factor 1
+	$(COMPOSE) exec -T kafka kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic raw-market-data --partitions 3 --replication-factor 1
+	$(COMPOSE) exec -T kafka kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic enriched-transactions --partitions 3 --replication-factor 1
+	$(COMPOSE) exec -T kafka kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic fraud-alerts --partitions 1 --replication-factor 1
+	$(COMPOSE) exec -T kafka kafka-topics --bootstrap-server kafka:9092 --list
+	@echo "=== Setup concluido! ==="
 
 ps: ## Listar containers em execução
 	$(COMPOSE) ps
@@ -36,30 +43,30 @@ install: ## Instalar dependências de desenvolvimento
 	pip install -e ".[dev]"
 
 lint: ## Verificar código com ruff e mypy
-	ruff check src/ tests/ scripts/
-	mypy src/ --ignore-missing-imports
+	$(PYTHON) -m ruff check src/ tests/ scripts/
+	$(PYTHON) -m mypy src/ --ignore-missing-imports
 
 format: ## Formatar código com black e ruff
-	black src/ tests/ scripts/
-	ruff check --fix src/ tests/ scripts/
+	$(PYTHON) -m black src/ tests/ scripts/
+	$(PYTHON) -m ruff check --fix src/ tests/ scripts/
 
 # ── Testes ─────────────────────────────────────────────────────────────────────
 test: ## Executar todos os testes
-	pytest $(PYTEST_ARGS)
+	$(PYTHON) -m pytest $(PYTEST_ARGS)
 
 test-unit: ## Executar somente testes unitários
-	pytest tests/unit/ $(PYTEST_ARGS)
+	$(PYTHON) -m pytest tests/unit/ $(PYTEST_ARGS)
 
 test-integration: ## Executar somente testes de integração
-	pytest tests/integration/ $(PYTEST_ARGS)
+	$(PYTHON) -m pytest tests/integration/ $(PYTEST_ARGS)
 
 test-cov: ## Executar testes com relatório de cobertura HTML
-	pytest --cov=src --cov-report=html:htmlcov --cov-report=term-missing
-	@echo "Relatório de cobertura gerado em htmlcov/index.html"
+	$(PYTHON) -m pytest --cov=src --cov-report=html:htmlcov --cov-report=term-missing
+	@echo "Relatorio de cobertura gerado em htmlcov/index.html"
 
 # ── Pipeline ───────────────────────────────────────────────────────────────────
 seed-data: ## Gerar dados sintéticos de transações e mercado
-	$(PYTHON) scripts/generate_sample_data.py --transactions 500000 --customers 10000 --months 6
+	$(PYTHON) -m scripts.generate_sample_data --transactions 500000 --customers 10000 --months 6
 
 spark-submit-batch: ## Submeter job PySpark batch (Bronze → Silver → Gold)
 	$(COMPOSE) exec spark-master spark-submit \
@@ -87,29 +94,27 @@ spark-submit-silver-gold: ## Submeter job Silver → Gold
 
 # ── Producers ──────────────────────────────────────────────────────────────────
 producer-transactions: ## Iniciar producer de transações financeiras
-	$(PYTHON) src/ingestion/streaming/kafka_producer_transactions.py
+	$(PYTHON) -m src.ingestion.streaming.kafka_producer_transactions
 
 producer-market: ## Iniciar producer de dados de mercado
-	$(PYTHON) src/ingestion/streaming/kafka_producer_market.py
+	$(PYTHON) -m src.ingestion.streaming.kafka_producer_market
 
 # ── API ────────────────────────────────────────────────────────────────────────
 api: ## Iniciar API FastAPI em modo desenvolvimento
-	uvicorn src.serving.api.main:app --reload --host 0.0.0.0 --port 8000
+	$(PYTHON) -m uvicorn src.serving.api.main:app --reload --host 0.0.0.0 --port 8000
 
 # ── OpenMetadata ───────────────────────────────────────────────────────────────
 seed-openmetadata: ## Popular catálogo OpenMetadata com metadados dos datasets
-	$(PYTHON) scripts/seed_openmetadata.py
+	$(PYTHON) -m scripts.seed_openmetadata
 
 # ── Limpeza ────────────────────────────────────────────────────────────────────
 clean: ## Limpar volumes Docker, dados temporários e artefatos de build
 	$(COMPOSE) down -v --remove-orphans
-	rm -rf data/sample/ htmlcov/ .coverage .pytest_cache __pycache__
-	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-	find . -type f -name "*.pyc" -delete
+	$(PYTHON) -c "import shutil, pathlib; [shutil.rmtree(p, ignore_errors=True) for p in ['data/sample','htmlcov','.pytest_cache']]; [p.unlink() for p in pathlib.Path('.').rglob('*.pyc')]"
 	@echo "Ambiente limpo."
 
 clean-data: ## Limpar apenas dados gerados (mantém containers)
-	rm -rf data/sample/
+	$(PYTHON) -c "import shutil; shutil.rmtree('data/sample', ignore_errors=True)"
 	@echo "Dados de exemplo removidos."
 
 # ── Help ───────────────────────────────────────────────────────────────────────
