@@ -126,7 +126,7 @@
 
 ## Step 1.5 — Ingestão Batch + Airflow DAGs
 
-> Checklist completo: `docs/step_1.5_test_checklist.txt`
+> Checklist completo: `docs/testes_step_1.5.txt`
 
 ### 1. Testes Unitários — `tests/unit/test_batch_ingestion.py`
 
