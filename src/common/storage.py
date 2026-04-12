@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import io
-from typing import Optional
 
 import boto3
 import pandas as pd
@@ -40,7 +39,7 @@ class MinIOClient:
         df: pd.DataFrame,
         bucket: str,
         key: str,
-        partition_cols: Optional[list[str]] = None,
+        partition_cols: list[str] | None = None,
     ) -> None:
         """Serializa DataFrame como Parquet e faz upload para o bucket.
 

@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import io
 import uuid
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Optional
 
 import pandas as pd
 
@@ -32,9 +31,9 @@ class CustomerLoader:
 
     def __init__(
         self,
-        storage: Optional[MinIOClient] = None,
-        source_file: Optional[Path] = None,
-        bucket: Optional[str] = None,
+        storage: MinIOClient | None = None,
+        source_file: Path | None = None,
+        bucket: str | None = None,
     ) -> None:
         self._storage = storage or get_storage_client()
         self._source_file = source_file or _DEFAULT_CUSTOMERS_FILE
@@ -79,7 +78,7 @@ class CustomerLoader:
     def _apply_scd2(self, df: pd.DataFrame) -> pd.DataFrame:
         """Adiciona colunas de controle SCD Type 2 e metadados de ingestão."""
         today = date.today().isoformat()
-        now = datetime.now(tz=timezone.utc).isoformat()
+        now = datetime.now(tz=UTC).isoformat()
 
         df = df.copy()
         df["valid_from"] = today

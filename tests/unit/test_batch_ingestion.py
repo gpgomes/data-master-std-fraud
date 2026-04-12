@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import io
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -13,7 +12,6 @@ import pytest
 from src.ingestion.batch.customer_loader import CustomerLoader
 from src.ingestion.batch.market_data_collector import MarketDataCollector
 from src.ingestion.batch.transaction_loader import TransactionLoader
-
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
 

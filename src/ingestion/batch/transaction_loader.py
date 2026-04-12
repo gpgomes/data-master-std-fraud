@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import io
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 
 import pandas as pd
 
@@ -29,9 +28,9 @@ class TransactionLoader:
 
     def __init__(
         self,
-        storage: Optional[MinIOClient] = None,
-        source_dir: Optional[Path] = None,
-        bucket: Optional[str] = None,
+        storage: MinIOClient | None = None,
+        source_dir: Path | None = None,
+        bucket: str | None = None,
     ) -> None:
         self._storage = storage or get_storage_client()
         self._source_dir = source_dir or _DEFAULT_SAMPLE_DIR
@@ -96,7 +95,7 @@ class TransactionLoader:
 
     def _add_metadata(self, df: pd.DataFrame, source_file: str) -> pd.DataFrame:
         """Adiciona colunas de auditoria ao DataFrame."""
-        now = datetime.now(tz=timezone.utc).isoformat()
+        now = datetime.now(tz=UTC).isoformat()
         df = df.copy()
         df["ingestion_timestamp"] = now
         df["source_file"] = source_file
@@ -120,7 +119,7 @@ class TransactionLoader:
             pass
 
         # Fallback: usa timestamp de ingestão
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
         return (
             f"{_BRONZE_PREFIX}/year={now.year}/month={now.month:02d}"
             f"/day={now.day:02d}/{csv_path.stem}.parquet"

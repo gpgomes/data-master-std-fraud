@@ -1,20 +1,17 @@
 """Testes unitários para os Kafka producers."""
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from threading import Event
 from unittest.mock import MagicMock, patch
 
-import pytest
-
+from src.common.schemas import TransactionType
+from src.ingestion.streaming.kafka_producer_market import TickSimulator, _serialize
 from src.ingestion.streaming.producer_config import (
     HIGH_THROUGHPUT_CONFIG,
     LOW_LATENCY_CONFIG,
     ProducerConfig,
 )
-from src.ingestion.streaming.kafka_producer_market import TickSimulator, _serialize
-from src.common.schemas import Channel, Currency, FraudType, MerchantCategory, TransactionType
-
 
 # ── ProducerConfig ─────────────────────────────────────────────────────────────
 
@@ -73,7 +70,7 @@ class TestMessageSerialization:
 
         msg = {
             **tx,
-            "produced_at": datetime.now(tz=timezone.utc).isoformat(),
+            "produced_at": datetime.now(tz=UTC).isoformat(),
             "source_system": "test",
         }
         serialized = json.dumps(msg, default=str)

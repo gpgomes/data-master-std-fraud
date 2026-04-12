@@ -7,7 +7,7 @@ import signal
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from threading import Event
 from typing import Any
 
@@ -15,7 +15,6 @@ import numpy as np
 from loguru import logger
 
 from src.common.config import settings
-from src.common.data_generator import MARKET_SYMBOLS
 from src.ingestion.streaming.producer_config import ProducerConfig
 
 # ── Configuração ───────────────────────────────────────────────────────────────
@@ -53,7 +52,7 @@ _metrics: dict[str, Any] = {
 def _avg_latency() -> float:
     if _metrics["sent"] == 0:
         return 0.0
-    return _metrics["latency_sum_ms"] / _metrics["sent"]
+    return float(_metrics["latency_sum_ms"]) / float(_metrics["sent"])
 
 
 # ── Simulação de preços ────────────────────────────────────────────────────────
@@ -62,7 +61,7 @@ class TickSimulator:
     """Mantém estado de preço por símbolo e gera ticks tick-by-tick."""
 
     def __init__(self) -> None:
-        self.prices = {sym: price for sym, price in _BASE_PRICES.items()}
+        self.prices = dict(_BASE_PRICES)
         self._rng = random.Random()
         self._np_rng = np.random.RandomState()
 
@@ -89,7 +88,7 @@ class TickSimulator:
         ask = round(price + half_spread, 2)
         spread = round(ask - bid, 4)
 
-        now_utc = datetime.now(tz=timezone.utc)
+        now_utc = datetime.now(tz=UTC)
         vol_mult = self._volume_multiplier(now_utc.hour)
         volume = max(1, int(self._np_rng.lognormal(7, 1) * vol_mult))
 
@@ -109,7 +108,7 @@ class TickSimulator:
 
 def _is_pregao() -> bool:
     """Retorna True se estiver dentro do horário de pregão B3."""
-    hour = datetime.now(tz=timezone.utc).hour
+    hour = datetime.now(tz=UTC).hour
     return PREGAO_START_HOUR_UTC <= hour < PREGAO_END_HOUR_UTC
 
 

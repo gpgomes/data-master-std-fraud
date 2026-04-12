@@ -22,7 +22,6 @@ def _minio_available() -> bool:
     """Retorna True se o MinIO estiver acessível."""
     try:
         import boto3
-        from botocore.exceptions import EndpointResolutionError, NoCredentialsError
 
         client = boto3.client(
             "s3",

@@ -5,7 +5,7 @@ COMPOSE          := docker compose
 SPARK_MASTER     := spark://localhost:7077
 BATCH_JOB        := src/transformation/batch/bronze_to_silver.py
 STREAM_JOB       := src/transformation/streaming/stream_processor.py
-PYTHON           := .venv/Scripts/python
+PYTHON           := .venv\Scripts\python
 PYTEST_ARGS      ?= -v
 
 # ── Infra ──────────────────────────────────────────────────────────────────────

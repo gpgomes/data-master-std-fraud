@@ -16,4 +16,10 @@ RUN pip install --no-cache-dir \
     pydantic==2.7.1 \
     pydantic-settings==2.2.1 \
     python-dotenv==1.0.1 \
-    loguru==0.7.2
+    loguru==0.7.2 \
+    faker==24.0.0 \
+    pandas==2.2.1 \
+    pyarrow==15.0.0 \
+    numpy==1.26.4 \
+    yfinance==0.2.36 \
+    tenacity==8.2.3

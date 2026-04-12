@@ -1,18 +1,18 @@
 """Testes unitários para os schemas Pydantic."""
 
+from datetime import UTC, datetime
+
 import pytest
 from pydantic import ValidationError
 
 from src.common.schemas import (
-    FraudType,
-    TransactionEvent,
-    TransactionType,
-    MerchantCategory,
     Channel,
     Currency,
     MarketTradeEvent,
+    MerchantCategory,
+    TransactionEvent,
+    TransactionType,
 )
-from datetime import datetime, timezone
 
 
 class TestTransactionEvent:
@@ -26,7 +26,7 @@ class TestTransactionEvent:
             TransactionEvent(
                 transaction_id="tx-bad",
                 customer_id="cust-bad",
-                timestamp=datetime.now(tz=timezone.utc),
+                timestamp=datetime.now(tz=UTC),
                 amount=100.0,
                 currency=Currency.BRL,
                 transaction_type=TransactionType.PIX,
@@ -45,7 +45,7 @@ class TestTransactionEvent:
             TransactionEvent(
                 transaction_id="tx-neg",
                 customer_id="cust-neg",
-                timestamp=datetime.now(tz=timezone.utc),
+                timestamp=datetime.now(tz=UTC),
                 amount=-50.0,
                 currency=Currency.BRL,
                 transaction_type=TransactionType.PIX,
@@ -76,7 +76,7 @@ class TestMarketTradeEvent:
             MarketTradeEvent(
                 event_id="e-001",
                 symbol="VALE3.SA",
-                timestamp=datetime.now(tz=timezone.utc),
+                timestamp=datetime.now(tz=UTC),
                 price=-10.0,
                 volume=100,
                 bid=10.0,
