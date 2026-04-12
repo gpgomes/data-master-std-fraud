@@ -7,7 +7,12 @@
       "Bash(pip show:*)",
       "Bash(pip install:*)",
       "Bash(python -m pytest tests/unit/test_data_generator.py -v --override-ini=\"addopts=\")",
-      "Bash(python -m pytest tests/unit/test_producers.py -v --override-ini=\"addopts=\")"
+      "Bash(python -m pytest tests/unit/test_producers.py -v --override-ini=\"addopts=\")",
+      "Bash(dir \"C:\\\\Users\\\\Pichau\\\\Projetos\\\\data-master-std-fraud\\\\docker\\\\spark\")",
+      "Bash(cmd /c dir \"C:\\\\Users\\\\Pichau\\\\Projetos\\\\data-master-std-fraud\\\\docker\\\\spark\")",
+      "Bash(cmd /c \"dir C:\\\\Users\\\\Pichau\\\\Projetos\\\\data-master-std-fraud\\\\docker\\\\spark\")",
+      "Bash(python3 -c ':*)",
+      "Bash(powershell -Command ':*)"
     ]
   }
 }

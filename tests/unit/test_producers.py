@@ -21,7 +21,7 @@ from src.common.schemas import Channel, Currency, FraudType, MerchantCategory, T
 class TestProducerConfig:
     def test_default_values(self) -> None:
         cfg = ProducerConfig()
-        assert cfg.acks == "1"
+        assert cfg.acks == 1
         assert cfg.retries == 3
         assert cfg.batch_size == 16_384
         assert cfg.linger_ms == 10
@@ -195,15 +195,38 @@ class TestProducerRun:
         mock_producer = MagicMock()
         mock_producer.send.return_value = mock_future
 
-        # KafkaProducer é importado via 'from kafka import KafkaProducer' dentro de run()
-        with patch("kafka.KafkaProducer", return_value=mock_producer):
+        # Stub para DataGenerator — evita gerar 1 000 clientes reais (lento)
+        fake_customer = {"customer_id": "cust-test-1", "name": "Test"}
+        fake_tx = {
+            "transaction_id": "tx-test-1",
+            "customer_id": "cust-test-1",
+            "timestamp": "2024-01-01T10:00:00+00:00",
+            "amount": 100.0,
+            "currency": "BRL",
+            "transaction_type": "PIX",
+            "merchant_category": "TRANSFERENCIA",
+            "origin_account": "0001-1",
+            "destination_account": "0002-2",
+            "origin_bank": "BancA",
+            "destination_bank": "BancB",
+            "channel": "APP_MOBILE",
+            "is_fraud": False,
+            "fraud_type": None,
+            "fraud_score": None,
+        }
+
+        with patch("kafka.KafkaProducer", return_value=mock_producer), \
+             patch("src.ingestion.streaming.kafka_producer_transactions.DataGenerator") as MockGen:
+            MockGen.return_value.generate_customers.return_value = [fake_customer]
+            MockGen.return_value.generate_transactions.return_value = [fake_tx]
+
             def _run():
                 from src.ingestion.streaming.kafka_producer_transactions import run
                 run(stop_event=stop)
 
             t = threading.Thread(target=_run, daemon=True)
             t.start()
-            time.sleep(0.3)
+            time.sleep(0.5)
             stop.set()
             t.join(timeout=5)
 
