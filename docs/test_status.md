@@ -209,3 +209,150 @@
 | 1.5-COV-01 | `pytest tests/unit/test_batch_ingestion.py` | 17/17 testes PASSED | OK |
 | 1.5-COV-02 | Cobertura dos novos módulos (batch ingestion) | customer_loader=100%, market_data_collector=92%, transaction_loader=96% | OK |
 | 1.5-COV-03 | `make lint` sem erros | ruff + mypy passam | OK |
+
+---
+
+## Step 1.6 — Transformação Bronze → Silver (PySpark Batch)
+
+> Checklist completo: `docs/testes_step_1.6.txt`
+
+### 1. Testes Unitários — `tests/unit/test_bronze_to_silver.py`
+
+#### TestCleanTransactions
+
+| ID | Teste | Resultado Esperado | Status |
+|----|-------|--------------------|--------|
+| 1.6-CT-01 | `test_removes_null_transaction_id` | Registros com transaction_id=null removidos | OK |
+| 1.6-CT-02 | `test_casts_amount_to_decimal` | amount cast para DecimalType(18,2) com arredondamento correto | OK |
+| 1.6-CT-03 | `test_normalizes_currency_to_uppercase` | 'brl' normalizado para 'BRL' | OK |
+| 1.6-CT-04 | `test_filters_invalid_currency` | Moedas fora de {BRL, USD, EUR} removidas | OK |
+| 1.6-CT-05 | `test_fills_null_channel` | channel=null preenchido com 'UNKNOWN' | OK |
+| 1.6-CT-06 | `test_fills_null_merchant_category` | merchant_category=null preenchido com 'OUTROS' | OK |
+| 1.6-CT-07 | `test_deduplication_keeps_most_recent` | Duplicatas por transaction_id: mantém o mais recente | OK |
+| 1.6-CT-08 | `test_no_rows_discarded_for_clean_data` | 5 registros válidos → 5 registros na saída | OK |
+
+#### TestEnrichTransactions
+
+| ID | Teste | Resultado Esperado | Status |
+|----|-------|--------------------|--------|
+| 1.6-ET-01 | `test_adds_transaction_date` | transaction_date = '2024-06-15' | OK |
+| 1.6-ET-02 | `test_adds_transaction_hour` | transaction_hour = 14 para timestamp às 14:30 | OK |
+| 1.6-ET-03 | `test_is_business_hours_true_at_10h` | is_business_hours=True para hora 10 | OK |
+| 1.6-ET-04 | `test_is_business_hours_false_at_22h` | is_business_hours=False para hora 22 | OK |
+| 1.6-ET-05 | `test_amount_brl_same_for_brl` | amount_brl = amount para BRL | OK |
+| 1.6-ET-06 | `test_amount_brl_converted_for_usd` | amount_brl = amount × 5.0 para USD | OK |
+| 1.6-ET-07 | `test_amount_brl_converted_for_eur` | amount_brl = amount × 5.4 para EUR | OK |
+| 1.6-ET-08 | `test_adds_processing_timestamp` | processing_timestamp não é null | OK |
+| 1.6-ET-09 | `test_custom_fx_rates` | Taxa customizada USD=6.0 → 10 USD = 60 BRL | OK |
+
+#### TestCleanMarketData
+
+| ID | Teste | Resultado Esperado | Status |
+|----|-------|--------------------|--------|
+| 1.6-CM-01 | `test_removes_zero_volume` | Registro com volume=0 removido | OK |
+| 1.6-CM-02 | `test_removes_negative_close` | Registro com close<0 removido | OK |
+| 1.6-CM-03 | `test_valid_records_not_removed` | 5 registros válidos → 5 registros na saída | OK |
+
+#### TestCalculateMarketIndicators
+
+| ID | Teste | Resultado Esperado | Status |
+|----|-------|--------------------|--------|
+| 1.6-MI-01 | `test_daily_return_positive` | daily_return = (close−open)/open | OK |
+| 1.6-MI-02 | `test_daily_return_negative` | daily_return negativo para close<open | OK |
+| 1.6-MI-03 | `test_intraday_range` | intraday_range = (high−low)/low | OK |
+| 1.6-MI-04 | `test_sma_columns_present` | Colunas sma_5, sma_10, sma_20 presentes | OK |
+| 1.6-MI-05 | `test_sma_5_correct_value` | SMA-5 de [10,20,30,40,50] = 30.0 | OK |
+| 1.6-MI-06 | `test_adds_processing_timestamp` | processing_timestamp não é null | OK |
+
+#### TestTransformCustomers
+
+| ID | Teste | Resultado Esperado | Status |
+|----|-------|--------------------|--------|
+| 1.6-TC-01 | `test_age_is_calculated` | Idade calculada a partir de birth_date | OK |
+| 1.6-TC-02 | `test_age_group_18_24` | birth_date=2005 → age_group='18-24' | OK |
+| 1.6-TC-03 | `test_age_group_65_plus` | birth_date=1950 → age_group='65+' | OK |
+| 1.6-TC-04 | `test_age_group_25_34` | birth_date=1993 → age_group in {'25-34','35-44'} | OK |
+| 1.6-TC-05 | `test_processing_timestamp_added` | processing_timestamp não é null | OK |
+| 1.6-TC-06 | `test_cpf_masked_preserved` | cpf_masked preservado sem alteração | OK |
+
+#### TestFilterByDate
+
+| ID | Teste | Resultado Esperado | Status |
+|----|-------|--------------------|--------|
+| 1.6-FD-01 | `test_filter_start_date` | start_date='2024-06-10' → 2 de 3 registros | OK |
+| 1.6-FD-02 | `test_filter_end_date` | end_date='2024-06-12' → 2 de 3 registros | OK |
+| 1.6-FD-03 | `test_filter_date_range` | range [09..12] → 1 de 3 registros | OK |
+| 1.6-FD-04 | `test_no_filter_when_dates_are_none` | Sem filtro → todos os 3 registros | OK |
+
+#### TestPublicMethodsMocked
+
+| ID | Teste | Resultado Esperado | Status |
+|----|-------|--------------------|--------|
+| 1.6-PM-01 | `test_transform_transactions_returns_metrics` | rows_read=3, rows_written<=3 | OK |
+| 1.6-PM-02 | `test_transform_market_data_returns_metrics` | rows_read=2, rows_written presente | OK |
+| 1.6-PM-03 | `test_transform_customers_returns_metrics` | rows_read=4, rows_discarded=0 | OK |
+
+#### TestConstants
+
+| ID | Teste | Resultado Esperado | Status |
+|----|-------|--------------------|--------|
+| 1.6-CO-01 | `test_valid_currencies_contain_expected` | {BRL, USD, EUR} ⊆ _VALID_CURRENCIES | OK |
+| 1.6-CO-02 | `test_default_fx_brl_is_one` | _DEFAULT_FX_RATES['BRL'] == 1.0 | OK |
+| 1.6-CO-03 | `test_default_fx_usd_positive` | _DEFAULT_FX_RATES['USD'] > 0 | OK |
+| 1.6-CO-04 | `test_default_fx_eur_positive` | _DEFAULT_FX_RATES['EUR'] > 0 | OK |
+
+### 2. Testes de Integração (requer `make up && make setup`)
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|-------------------|--------|
+| 1.6-INT-01 | `make spark-submit-batch` (transactions) | Parquet em silver/transactions/transaction_date=YYYY-MM-DD/ | OK |
+| 1.6-INT-02 | `make spark-submit-batch` (market_data) | Parquet em silver/market_data/date=YYYY-MM-DD/ com sma_5/10/20 | OK¹ |
+| 1.6-INT-03 | `make spark-submit-batch` (customers) | Parquet em silver/customers/ com colunas age e age_group | OK |
+| 1.6-INT-04 | Idempotência — rodar job duas vezes | Segunda execução sobrescreve sem duplicatas | OK |
+| 1.6-INT-05 | Verificar Silver no MinIO Console | silver/transactions/, silver/market_data/, silver/customers/ presentes | OK |
+| 1.6-INT-06 | Filtro de datas via CLI | `--start-date 2024-01-01 --end-date 2024-01-31` filtra corretamente | OK² |
+
+¹ `ingest_market_data` (yfinance, step 1.5) só retornou 1 registro real neste ambiente sandbox — job Bronze→Silver processou corretamente, mas o volume não permite validar a tendência da SMA (ver 1.6-MAN-05).
+² Bug real encontrado e corrigido nesta rodada: `spark.sql.sources.partitionOverwriteMode` estava no modo estático (padrão do Spark), então rodar o job com `--start-date/--end-date` apagava **todas** as partições de `silver/transactions/`, não só as do intervalo filtrado. Corrigido em `src/common/spark_session.py` (modo `dynamic`) e revalidado: reprocessar 4 dias específicos preservou as outras 291 partições intactas.
+
+### 3. Validações Manuais dos Dados Transformados
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|-------------------|--------|
+| 1.6-MAN-01 | Coluna `transaction_date` no Silver | DATE type, sem nulls | OK |
+| 1.6-MAN-02 | Coluna `amount_brl` sempre > 0 | Conversão BRL/USD/EUR correta | OK (0 violações em 506.146 linhas) |
+| 1.6-MAN-03 | Distribuição de `is_business_hours` | ~40-50% TRUE | OK (41,4% TRUE — 209.775/506.146) |
+| 1.6-MAN-04 | Sem moedas inválidas no Silver | Apenas BRL, USD, EUR | OK |
+| 1.6-MAN-05 | Médias móveis consistentes (tendência alta) | sma_5 ≈ sma_10 ≈ sma_20 com diferença esperada | N/A — Bronze só tem 1 registro real de mercado neste ambiente (ver nota ¹ acima); lógica de SMA já coberta pelos testes unitários 1.6-MI-04/05 |
+| 1.6-MAN-06 | `age_group` cobre faixas corretas | 18-24, 25-34, 35-44, 45-54, 55-64, 65+ | OK (todas as 6 faixas presentes) |
+| 1.6-MAN-07 | `cpf_masked` no Silver | Formato ***.***.***-XX preservado | **NOK — bug encontrado** |
+
+**Bug 1.6-MAN-07**: `cpf_masked` chega ao Silver como `***.***. 196-00` em vez de `***.***.***-00`. Causa raiz em `src/common/data_generator.py:107-109` (step 1.3, já em `main`, fora do escopo deste branch):
+1. O formato implementado (`***.***.XXX-XX`) revela os últimos 5 dígitos do CPF, não 2 como documentado/esperado — risco de exposição de PII (LGPD) maior que o pretendido.
+2. Bug de digitação: há um espaço literal no f-string (`f"***.***. {cpf_digits[6:9]}-{cpf_digits[9:11]}"`) antes do terceiro grupo.
+
+`bronze_to_silver.py` está correto — apenas repassa o valor sem alterar (teste 1.6-TC-06 confirma isso). A correção pertence ao gerador de dados (step 1.3) e não foi aplicada aqui por estar fora do escopo do step 1.6; recomenda-se abrir tarefa separada.
+
+### 4. Cobertura
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|-------------------|--------|
+| 1.6-COV-01 | `pytest tests/unit/test_bronze_to_silver.py` | 43/43 testes PASSED | OK |
+| 1.6-COV-02 | Cobertura `bronze_to_silver.py` | >= 80% | OK (83%) |
+| 1.6-COV-03 | Cobertura geral (`src/`) | >= 70% | OK (86% — 113/113 testes da suíte completa passaram) |
+| 1.6-COV-04 | `ruff check` nos novos módulos | All checks passed! | OK |
+| 1.6-COV-05 | `mypy` nos novos módulos | Success: no issues found | OK |
+
+### 5. Bugs de infraestrutura corrigidos durante os testes de integração
+
+Nenhum destes pertence à lógica de negócio testada nos itens acima, mas todos bloqueavam `make spark-submit-batch` de rodar; correções aplicadas para viabilizar os testes:
+
+| Arquivo | Problema | Correção |
+|---------|----------|----------|
+| `docker/spark/Dockerfile` | `/home/spark` não existia na imagem `apache/spark:3.5.1` → Ivy falhava ao resolver pacotes (`--packages`) | `mkdir -p /home/spark && chown spark:spark /home/spark` |
+| `docker/spark/Dockerfile` | `src/` não estava no `PYTHONPATH` do container → `ModuleNotFoundError: No module named 'src'` | `ENV PYTHONPATH=/opt/spark/work-dir` |
+| `src/common/config.py`, `src/common/logger.py` | Imagem Spark roda Python 3.8 (projeto alvo é 3.11+); anotações `list[str]` / `str \| None` sem `from __future__ import annotations` quebram no import | Adicionado `from __future__ import annotations` |
+| `src/ingestion/batch/transaction_loader.py` | Partições diárias sem nenhuma fraude faziam o pandas inferir `fraud_type` como `float64` (coluna 100% NaN) em vez de string, causando `SchemaColumnConvertNotSupportedException` ao ler múltiplas partições juntas no Spark | Cast explícito `df["fraud_type"].astype("string")` antes de gravar Parquet |
+| `src/common/spark_session.py` | Overwrite estático apagava partições fora do filtro de data (ver nota ² acima) | `spark.sql.sources.partitionOverwriteMode=dynamic` |
+
+Além disso, `docker-compose.yml` teve as portas do Postgres (5432→5433) e MinIO (9000→9002) remapeadas por conflito com containers de **outro projeto** (`protege_*`) já rodando na máquina — não é um bug do projeto, específico deste ambiente local.

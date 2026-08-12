@@ -84,6 +84,11 @@ class TransactionLoader:
     def _ingest_file(self, csv_path: Path, key: str) -> int:
         """Lê um CSV, adiciona metadados e envia como Parquet."""
         df = pd.read_csv(csv_path)
+        if "fraud_type" in df.columns:
+            # Evita que partições sem nenhuma fraude sejam inferidas como float64
+            # (coluna 100% NaN) em vez de string, o que quebra a leitura no Spark
+            # ao combinar partições com tipos físicos Parquet diferentes.
+            df["fraud_type"] = df["fraud_type"].astype("string")
         df = self._add_metadata(df, source_file=str(csv_path))
 
         buf = io.BytesIO()

@@ -1,5 +1,7 @@
 """Logger estruturado com loguru para toda a plataforma."""
 
+from __future__ import annotations
+
 import sys
 from typing import Any
 

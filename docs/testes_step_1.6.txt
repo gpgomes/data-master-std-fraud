@@ -1,0 +1,296 @@
+================================================================================
+CHECKLIST DE TESTES — Step 1.6: Transformação Bronze → Silver (PySpark Batch)
+================================================================================
+
+Arquivos implementados:
+  - src/common/spark_session.py
+  - src/common/schemas.py           (StructType schemas adicionados)
+  - src/transformation/batch/bronze_to_silver.py
+  - tests/unit/test_bronze_to_silver.py
+
+================================================================================
+1. TESTES UNITÁRIOS AUTOMATIZADOS
+================================================================================
+
+Comando:
+  pytest tests/unit/test_bronze_to_silver.py -v
+
+Resultado esperado: 43 testes PASSED.
+
+--------------------------------------------------------------------------------
+1.1 TestCleanTransactions (8 testes)
+--------------------------------------------------------------------------------
+
+  ID         Teste                                  Resultado Esperado
+  -----------------------------------------------------------------------
+  1.6-CT-01  test_removes_null_transaction_id       Registros com transaction_id=null removidos
+  1.6-CT-02  test_casts_amount_to_decimal           amount castigado para DecimalType(18,2) com arredondamento correto
+  1.6-CT-03  test_normalizes_currency_to_uppercase  'brl' normalizado para 'BRL'
+  1.6-CT-04  test_filters_invalid_currency          Moedas fora de {BRL, USD, EUR} removidas
+  1.6-CT-05  test_fills_null_channel                channel=null preenchido com 'UNKNOWN'
+  1.6-CT-06  test_fills_null_merchant_category      merchant_category=null preenchido com 'OUTROS'
+  1.6-CT-07  test_deduplication_keeps_most_recent   Duplicatas por transaction_id: mantém o mais recente (amount=200)
+  1.6-CT-08  test_no_rows_discarded_for_clean_data  5 registros válidos → 5 registros na saída
+
+--------------------------------------------------------------------------------
+1.2 TestEnrichTransactions (9 testes)
+--------------------------------------------------------------------------------
+
+  ID         Teste                                  Resultado Esperado
+  -----------------------------------------------------------------------
+  1.6-ET-01  test_adds_transaction_date             transaction_date = '2024-06-15' para timestamp às 14:30
+  1.6-ET-02  test_adds_transaction_hour             transaction_hour = 14 para timestamp às 14:30
+  1.6-ET-03  test_is_business_hours_true_at_10h     is_business_hours=True para hora 10
+  1.6-ET-04  test_is_business_hours_false_at_22h    is_business_hours=False para hora 22
+  1.6-ET-05  test_amount_brl_same_for_brl           amount_brl = amount para currency=BRL
+  1.6-ET-06  test_amount_brl_converted_for_usd      amount_brl = amount * 5.0 para currency=USD
+  1.6-ET-07  test_amount_brl_converted_for_eur      amount_brl = amount * 5.4 para currency=EUR
+  1.6-ET-08  test_adds_processing_timestamp         processing_timestamp não é null
+  1.6-ET-09  test_custom_fx_rates                   Taxa customizada USD=6.0 → 10 USD = 60 BRL
+
+--------------------------------------------------------------------------------
+1.3 TestCleanMarketData (3 testes)
+--------------------------------------------------------------------------------
+
+  ID         Teste                                  Resultado Esperado
+  -----------------------------------------------------------------------
+  1.6-CM-01  test_removes_zero_volume               Registro com volume=0 removido
+  1.6-CM-02  test_removes_negative_close            Registro com close<0 removido
+  1.6-CM-03  test_valid_records_not_removed         5 registros válidos → 5 registros na saída
+
+--------------------------------------------------------------------------------
+1.4 TestCalculateMarketIndicators (6 testes)
+--------------------------------------------------------------------------------
+
+  ID         Teste                                  Resultado Esperado
+  -----------------------------------------------------------------------
+  1.6-MI-01  test_daily_return_positive             daily_return = (close-open)/open para close>open
+  1.6-MI-02  test_daily_return_negative             daily_return negativo para close<open
+  1.6-MI-03  test_intraday_range                    intraday_range = (high-low)/low correto
+  1.6-MI-04  test_sma_columns_present               Colunas sma_5, sma_10, sma_20 presentes
+  1.6-MI-05  test_sma_5_correct_value               SMA-5 de [10,20,30,40,50] = 30.0
+  1.6-MI-06  test_adds_processing_timestamp         processing_timestamp não é null
+
+--------------------------------------------------------------------------------
+1.5 TestTransformCustomers (6 testes)
+--------------------------------------------------------------------------------
+
+  ID         Teste                                  Resultado Esperado
+  -----------------------------------------------------------------------
+  1.6-TC-01  test_age_is_calculated                 Idade calculada a partir de birth_date (30-40 para 1990)
+  1.6-TC-02  test_age_group_18_24                   birth_date=2005 → age_group='18-24'
+  1.6-TC-03  test_age_group_65_plus                 birth_date=1950 → age_group='65+'
+  1.6-TC-04  test_age_group_25_34                   birth_date=1993 → age_group in {'25-34','35-44'}
+  1.6-TC-05  test_processing_timestamp_added        processing_timestamp não é null
+  1.6-TC-06  test_cpf_masked_preserved              cpf_masked preservado sem alteração
+
+--------------------------------------------------------------------------------
+1.6 TestFilterByDate (4 testes)
+--------------------------------------------------------------------------------
+
+  ID         Teste                                  Resultado Esperado
+  -----------------------------------------------------------------------
+  1.6-FD-01  test_filter_start_date                 start_date='2024-06-10' → 2 de 3 registros
+  1.6-FD-02  test_filter_end_date                   end_date='2024-06-12' → 2 de 3 registros
+  1.6-FD-03  test_filter_date_range                 range [09..12] → 1 de 3 registros
+  1.6-FD-04  test_no_filter_when_dates_are_none     Sem filtro → todos os 3 registros
+
+--------------------------------------------------------------------------------
+1.7 TestPublicMethodsMocked (3 testes)
+--------------------------------------------------------------------------------
+
+  ID         Teste                                  Resultado Esperado
+  -----------------------------------------------------------------------
+  1.6-PM-01  test_transform_transactions_returns_metrics  metrics com rows_read=3, rows_written<=3
+  1.6-PM-02  test_transform_market_data_returns_metrics   metrics com rows_read=2, rows_written presente
+  1.6-PM-03  test_transform_customers_returns_metrics     metrics com rows_read=4, rows_discarded=0
+
+--------------------------------------------------------------------------------
+1.8 TestConstants (4 testes)
+--------------------------------------------------------------------------------
+
+  ID         Teste                                  Resultado Esperado
+  -----------------------------------------------------------------------
+  1.6-CO-01  test_valid_currencies_contain_expected  {BRL, USD, EUR} ⊆ _VALID_CURRENCIES
+  1.6-CO-02  test_default_fx_brl_is_one              _DEFAULT_FX_RATES['BRL'] == 1.0
+  1.6-CO-03  test_default_fx_usd_positive            _DEFAULT_FX_RATES['USD'] > 0
+  1.6-CO-04  test_default_fx_eur_positive            _DEFAULT_FX_RATES['EUR'] > 0
+
+================================================================================
+2. COBERTURA DE TESTES
+================================================================================
+
+Comando:
+  pytest tests/unit/ --cov=src --cov-report=term-missing
+
+  ID         Módulo                              Cobertura Esperada
+  -----------------------------------------------------------------------
+  1.6-COV-01 bronze_to_silver.py                >= 80%
+  1.6-COV-02 spark_session.py                   >= 40% (sem infra real)
+  1.6-COV-03 schemas.py (StructType functions)  >= 80%
+  1.6-COV-04 Cobertura geral (src/)             >= 70%
+
+================================================================================
+3. LINT E TIPAGEM
+================================================================================
+
+Comandos:
+  ruff check src/transformation/batch/bronze_to_silver.py src/common/spark_session.py
+  mypy src/transformation/batch/bronze_to_silver.py src/common/spark_session.py
+
+  ID         Verificação                         Resultado Esperado
+  -----------------------------------------------------------------------
+  1.6-LIN-01 ruff check (novos módulos)          All checks passed! (0 erros)
+  1.6-LIN-02 mypy (novos módulos)                Success: no issues found
+  1.6-LIN-03 make lint (projeto todo)            ruff + mypy passam sem erros
+
+================================================================================
+4. SMOKE TEST — SPARK LOCAL (sem infra)
+================================================================================
+
+Pré-requisito: Python com PySpark instalado (pip install pyspark==3.5.1)
+
+  ID         Descrição                           Resultado Esperado
+  -----------------------------------------------------------------------
+  1.6-SMK-01 Importar bronze_to_silver           sem ImportError
+             python -c "from src.transformation.batch.bronze_to_silver import BronzeToSilverTransformer"
+
+  1.6-SMK-02 CLI --help                          Usage info sem erros
+             python -m src.transformation.batch.bronze_to_silver --help
+
+  1.6-SMK-03 Importar spark_session              sem ImportError
+             python -c "from src.common.spark_session import create_spark_session"
+
+  1.6-SMK-04 Importar StructType schemas         sem ImportError
+             python -c "from src.common.schemas import get_bronze_transaction_schema, get_silver_transaction_schema"
+
+================================================================================
+5. TESTES DE INTEGRAÇÃO (requer make up && make setup)
+================================================================================
+
+Pré-requisito: docker compose up com MinIO disponível
+
+  ID         Descrição                                    Resultado Esperado
+  -----------------------------------------------------------------------
+  1.6-INT-01 make spark-submit-batch (dataset=transactions)
+             spark-submit com --dataset transactions --local
+             → Lê bronze/transactions/, salva silver/transactions/ em Parquet
+             → Log: "transform_transactions concluído" com contadores
+
+  1.6-INT-02 make spark-submit-batch (dataset=market_data)
+             → Lê bronze/market_data/, salva silver/market_data/ com sma_5/10/20
+             → Log: "transform_market_data concluído"
+
+  1.6-INT-03 make spark-submit-batch (dataset=customers)
+             → Lê bronze/customers/, salva silver/customers/ com age/age_group
+             → Log: "transform_customers concluído"
+
+  1.6-INT-04 Idempotência — rodar duas vezes o mesmo job
+             → Segunda execução sobrescreve (mode=overwrite), sem duplicatas
+
+  1.6-INT-05 Verificar Silver no MinIO Console (http://localhost:9001)
+             → silver/transactions/transaction_date=YYYY-MM-DD/*.parquet
+             → silver/market_data/date=YYYY-MM-DD/*.parquet
+             → silver/customers/*.parquet
+
+  1.6-INT-06 Filtro de datas:
+             python -m src.transformation.batch.bronze_to_silver \
+               --dataset transactions --start-date 2024-01-01 --end-date 2024-01-31 --local
+             → Apenas registros de janeiro/2024 no Silver
+
+================================================================================
+6. VALIDAÇÕES MANUAIS DOS DADOS TRANSFORMADOS
+================================================================================
+
+  ID         Descrição                                    Resultado Esperado
+  -----------------------------------------------------------------------
+  1.6-MAN-01 Coluna transaction_date presente no Silver   DATE type, não null
+  1.6-MAN-02 Coluna amount_brl sempre > 0                Conversão BRL/USD/EUR correta
+  1.6-MAN-03 is_business_hours distribuição razoável      ~40-50% TRUE (horário comercial)
+  1.6-MAN-04 Sem registros com currency inválida          Apenas BRL, USD, EUR
+  1.6-MAN-05 sma_5 < sma_10 < sma_20 em tendência alta   Ordem de médias consistente
+  1.6-MAN-06 age_group cobre faixas esperadas             18-24, 25-34, 35-44, 45-54, 55-64, 65+
+  1.6-MAN-07 cpf_masked = "***.***.***-XX" no Silver      Apenas últimos 2 dígitos visíveis
+
+================================================================================
+RESULTADO DOS TESTES DE INTEGRAÇÃO E VALIDAÇÕES MANUAIS (executado em 2026-08-11)
+================================================================================
+
+  1.6-INT-01  OK  transactions: rows_read=506369, rows_discarded=223, rows_written=506146
+  1.6-INT-02  OK* market_data: rows_read=1, rows_written=1 (yfinance só retornou 1
+              registro real neste ambiente sandbox — ver observação abaixo)
+  1.6-INT-03  OK  customers: rows_read=11000, rows_written=11000
+  1.6-INT-04  OK  2a execução produziu métricas idênticas à 1a; contagem de
+              partições/arquivos no MinIO inalterada (sem duplicação)
+  1.6-INT-05  OK  silver/transactions/, silver/market_data/, silver/customers/
+              confirmados via `mc ls`
+  1.6-INT-06  OK* filtro --start-date/--end-date funciona corretamente — mas só
+              após corrigir um bug real (ver "BUGS ENCONTRADOS" abaixo)
+
+  1.6-MAN-01  OK  transaction_date: DATE, 0 nulls
+  1.6-MAN-02  OK  amount_brl <= 0: 0 de 506146
+  1.6-MAN-03  OK  is_business_hours=TRUE: 41,4% (209775/506146)
+  1.6-MAN-04  OK  apenas BRL (404909) / USD (60645) / EUR (40592)
+  1.6-MAN-05  N/A apenas 1 registro real de mercado disponível (ver observação);
+              lógica de SMA já coberta por 1.6-MI-04/05 (unitários)
+  1.6-MAN-06  OK  todas as 6 faixas etárias presentes (18-24 a 65+)
+  1.6-MAN-07  NOK BUG ENCONTRADO — ver abaixo
+
+  * Observação (1.6-INT-02 / 1.6-MAN-05): o volume real de dados de mercado
+    ingerido pela DAG (task ingest_market_data, step 1.5, via yfinance) ficou
+    limitado a 1 registro histórico neste ambiente. transform_market_data
+    funcionou corretamente sobre esse dado; não foi possível validar
+    visualmente a tendência das médias móveis por falta de volume.
+
+================================================================================
+BUGS ENCONTRADOS E CORRIGIDOS NESTA RODADA DE TESTES
+================================================================================
+
+  1. src/common/spark_session.py
+     Overwrite de partições estava no modo padrão do Spark (estático): rodar
+     o job com --start-date/--end-date apagava TODAS as partições de
+     silver/transactions/, não só as do intervalo processado — perda de dados
+     em reprocessamentos parciais. Corrigido com
+     spark.sql.sources.partitionOverwriteMode=dynamic. Revalidado: reprocessar
+     4 dias específicos preservou as outras 291 partições intactas.
+
+  2. src/ingestion/batch/transaction_loader.py (step 1.5, já em main)
+     Partições diárias sem nenhuma fraude faziam o pandas inferir a coluna
+     fraud_type como float64 (100% NaN) em vez de string, quebrando a leitura
+     no Spark ao combinar partições com tipos físicos Parquet diferentes
+     (SchemaColumnConvertNotSupportedException). Corrigido com cast explícito
+     para "string" antes de gravar Parquet.
+
+  3. docker/spark/Dockerfile (infraestrutura, não é bug de código)
+     - /home/spark não existia na imagem base → Ivy não conseguia resolver
+       --packages. Corrigido criando o diretório com dono correto.
+     - src/ não estava no PYTHONPATH do container → ModuleNotFoundError ao
+       importar módulos do projeto. Corrigido com ENV PYTHONPATH.
+
+  4. src/common/config.py, src/common/logger.py
+     A imagem oficial do Spark roda Python 3.8 (o projeto alvo é 3.11+);
+     anotações como list[str] e str | None quebram o import nesse Python.
+     Corrigido adicionando `from __future__ import annotations`.
+
+  5. src/common/data_generator.py:107-109 (step 1.3, já em main — NÃO corrigido
+     aqui, fora do escopo deste branch)
+     cpf_masked usa formato "***.***.XXX-XX" (revela os últimos 5 dígitos do
+     CPF, não 2 como a spec do 1.6 espera) e tem um espaço literal indevido
+     no f-string antes do terceiro grupo, produzindo
+     "***.***. 196-00" em vez de "***.***.***-00" ou "***.***.196-00".
+     bronze_to_silver.py está correto (apenas repassa o valor). Recomenda-se
+     tarefa separada para corrigir o gerador.
+
+================================================================================
+RESULTADO DO STEP 1.6
+================================================================================
+
+  Testes unitários:      43/43 PASSED
+  Suíte completa:        113/113 PASSED (sem regressão das correções acima)
+  Cobertura geral:       86% (>= 70% obrigatório)
+  bronze_to_silver:      83%
+  Lint (ruff):           All checks passed!
+  Mypy:                  Success: no issues found
+  Testes de integração:  OK (6/6, com ressalvas documentadas acima)
+  Validações manuais:    6 OK, 1 N/A (dado insuficiente), 1 NOK (bug em
+                          código de outro step — não corrigido aqui)
