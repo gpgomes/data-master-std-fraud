@@ -201,3 +201,223 @@ MARKET_OHLCV_SPARK_SCHEMA = """
     volume LONG,
     adjusted_close DOUBLE
 """
+
+# ── PySpark StructType Schemas ─────────────────────────────────────────────────
+# Importação lazy para não forçar dependência do PySpark em contextos leves.
+# Use estas funções apenas dentro de jobs PySpark.
+
+
+def get_bronze_transaction_schema():
+    """StructType para transações na camada Bronze (dados brutos do CSV/Parquet)."""
+    from pyspark.sql.types import (
+        BooleanType,
+        DecimalType,
+        DoubleType,
+        StringType,
+        StructField,
+        StructType,
+        TimestampType,
+    )
+
+    return StructType(
+        [
+            StructField("transaction_id", StringType(), True),
+            StructField("customer_id", StringType(), True),
+            StructField("timestamp", TimestampType(), True),
+            StructField("amount", DecimalType(18, 2), True),
+            StructField("currency", StringType(), True),
+            StructField("transaction_type", StringType(), True),
+            StructField("merchant_category", StringType(), True),
+            StructField("origin_account", StringType(), True),
+            StructField("destination_account", StringType(), True),
+            StructField("origin_bank", StringType(), True),
+            StructField("destination_bank", StringType(), True),
+            StructField("channel", StringType(), True),
+            StructField("device_id", StringType(), True),
+            StructField("ip_address", StringType(), True),
+            StructField("latitude", DoubleType(), True),
+            StructField("longitude", DoubleType(), True),
+            StructField("is_fraud", BooleanType(), True),
+            StructField("fraud_type", StringType(), True),
+            StructField("fraud_score", DoubleType(), True),
+            # metadados de ingestão
+            StructField("ingestion_timestamp", StringType(), True),
+            StructField("source_file", StringType(), True),
+            StructField("batch_id", StringType(), True),
+        ]
+    )
+
+
+def get_silver_transaction_schema():
+    """StructType para transações na camada Silver (limpa e enriquecida)."""
+    from pyspark.sql.types import (
+        BooleanType,
+        DateType,
+        DecimalType,
+        DoubleType,
+        IntegerType,
+        StringType,
+        StructField,
+        StructType,
+        TimestampType,
+    )
+
+    return StructType(
+        [
+            StructField("transaction_id", StringType(), False),
+            StructField("customer_id", StringType(), True),
+            StructField("timestamp", TimestampType(), True),
+            StructField("amount", DecimalType(18, 2), True),
+            StructField("currency", StringType(), True),
+            StructField("transaction_type", StringType(), True),
+            StructField("merchant_category", StringType(), True),
+            StructField("origin_account", StringType(), True),
+            StructField("destination_account", StringType(), True),
+            StructField("origin_bank", StringType(), True),
+            StructField("destination_bank", StringType(), True),
+            StructField("channel", StringType(), True),
+            StructField("device_id", StringType(), True),
+            StructField("ip_address", StringType(), True),
+            StructField("latitude", DoubleType(), True),
+            StructField("longitude", DoubleType(), True),
+            StructField("is_fraud", BooleanType(), True),
+            StructField("fraud_type", StringType(), True),
+            StructField("fraud_score", DoubleType(), True),
+            # colunas enriquecidas
+            StructField("transaction_date", DateType(), True),
+            StructField("transaction_hour", IntegerType(), True),
+            StructField("is_business_hours", BooleanType(), True),
+            StructField("amount_brl", DoubleType(), True),
+            StructField("processing_timestamp", TimestampType(), True),
+        ]
+    )
+
+
+def get_bronze_market_data_schema():
+    """StructType para dados de mercado OHLCV na camada Bronze."""
+    from pyspark.sql.types import (
+        DateType,
+        DoubleType,
+        LongType,
+        StringType,
+        StructField,
+        StructType,
+        TimestampType,
+    )
+
+    return StructType(
+        [
+            StructField("symbol", StringType(), True),
+            StructField("date", DateType(), True),
+            StructField("open", DoubleType(), True),
+            StructField("high", DoubleType(), True),
+            StructField("low", DoubleType(), True),
+            StructField("close", DoubleType(), True),
+            StructField("volume", LongType(), True),
+            StructField("adjusted_close", DoubleType(), True),
+            StructField("ingestion_timestamp", TimestampType(), True),
+            StructField("source_system", StringType(), True),
+        ]
+    )
+
+
+def get_silver_market_data_schema():
+    """StructType para dados de mercado na camada Silver (com indicadores calculados)."""
+    from pyspark.sql.types import (
+        DateType,
+        DoubleType,
+        LongType,
+        StringType,
+        StructField,
+        StructType,
+        TimestampType,
+    )
+
+    return StructType(
+        [
+            StructField("symbol", StringType(), False),
+            StructField("date", DateType(), False),
+            StructField("open", DoubleType(), True),
+            StructField("high", DoubleType(), True),
+            StructField("low", DoubleType(), True),
+            StructField("close", DoubleType(), True),
+            StructField("volume", LongType(), True),
+            StructField("adjusted_close", DoubleType(), True),
+            # indicadores calculados
+            StructField("daily_return", DoubleType(), True),
+            StructField("intraday_range", DoubleType(), True),
+            StructField("sma_5", DoubleType(), True),
+            StructField("sma_10", DoubleType(), True),
+            StructField("sma_20", DoubleType(), True),
+            StructField("processing_timestamp", TimestampType(), True),
+        ]
+    )
+
+
+def get_bronze_customer_schema():
+    """StructType para clientes na camada Bronze (snapshot diário com SCD2)."""
+    from pyspark.sql.types import (
+        BooleanType,
+        DoubleType,
+        StringType,
+        StructField,
+        StructType,
+    )
+
+    return StructType(
+        [
+            StructField("customer_id", StringType(), True),
+            StructField("name", StringType(), True),
+            StructField("cpf_masked", StringType(), True),
+            StructField("birth_date", StringType(), True),
+            StructField("gender", StringType(), True),
+            StructField("account_opening_date", StringType(), True),
+            StructField("risk_score", DoubleType(), True),
+            StructField("segment", StringType(), True),
+            StructField("city", StringType(), True),
+            StructField("state", StringType(), True),
+            StructField("country", StringType(), True),
+            # SCD2
+            StructField("valid_from", StringType(), True),
+            StructField("valid_to", StringType(), True),
+            StructField("is_current", BooleanType(), True),
+            StructField("ingestion_timestamp", StringType(), True),
+            StructField("batch_id", StringType(), True),
+        ]
+    )
+
+
+def get_silver_customer_schema():
+    """StructType para clientes na camada Silver (com idade e faixa etária)."""
+    from pyspark.sql.types import (
+        BooleanType,
+        DoubleType,
+        IntegerType,
+        StringType,
+        StructField,
+        StructType,
+        TimestampType,
+    )
+
+    return StructType(
+        [
+            StructField("customer_id", StringType(), False),
+            StructField("name", StringType(), True),
+            StructField("cpf_masked", StringType(), True),
+            StructField("birth_date", StringType(), True),
+            StructField("gender", StringType(), True),
+            StructField("account_opening_date", StringType(), True),
+            StructField("risk_score", DoubleType(), True),
+            StructField("segment", StringType(), True),
+            StructField("city", StringType(), True),
+            StructField("state", StringType(), True),
+            StructField("country", StringType(), True),
+            StructField("valid_from", StringType(), True),
+            StructField("valid_to", StringType(), True),
+            StructField("is_current", BooleanType(), True),
+            # enriquecimento
+            StructField("age", IntegerType(), True),
+            StructField("age_group", StringType(), True),
+            StructField("processing_timestamp", TimestampType(), True),
+        ]
+    )

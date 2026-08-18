@@ -1,5 +1,7 @@
 """Configurações centralizadas da plataforma via variáveis de ambiente."""
 
+from __future__ import annotations
+
 from functools import lru_cache
 
 from pydantic import Field

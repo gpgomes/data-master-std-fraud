@@ -12,7 +12,13 @@
       "Bash(cmd /c dir \"C:\\\\Users\\\\Pichau\\\\Projetos\\\\data-master-std-fraud\\\\docker\\\\spark\")",
       "Bash(cmd /c \"dir C:\\\\Users\\\\Pichau\\\\Projetos\\\\data-master-std-fraud\\\\docker\\\\spark\")",
       "Bash(python3 -c ':*)",
-      "Bash(powershell -Command ':*)"
+      "Bash(powershell -Command ':*)",
+      "Bash(make spark-submit-batch *)",
+      "Bash(cd c:/Users/Pichau/Projetos/data-master-std-fraud && cat docker/spark/Dockerfile 2>&1; echo \"---compose spark-master---\"; sed -n '/spark-master:/,/^  [a-z-]*:$/p' docker-compose.yml | head -40)",
+      "Bash(.venv/Scripts/python.exe -m ruff check src/ tests/ scripts/)",
+      "Bash(.venv/Scripts/python.exe -m ruff check --fix tests/unit/test_bronze_to_silver.py)",
+      "Bash(.venv/Scripts/python.exe -m mypy src/transformation/batch/bronze_to_silver.py src/common/spark_session.py src/common/config.py src/common/logger.py --ignore-missing-imports)",
+      "Bash(grep -viE \"INFO |WARN Utils: Copying|downloading|SUCCESSFUL|resolving|found .* in central|resolution report|modules in use|conf .*number|default.*[0-9]+.*[0-9]+|artifacts copied|^\\\\s*$|^---|ivy2\")"
     ]
   }
 }
