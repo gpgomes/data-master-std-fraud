@@ -356,3 +356,56 @@ Nenhum destes pertence à lógica de negócio testada nos itens acima, mas todos
 | `src/common/spark_session.py` | Overwrite estático apagava partições fora do filtro de data (ver nota ² acima) | `spark.sql.sources.partitionOverwriteMode=dynamic` |
 
 Além disso, `docker-compose.yml` teve as portas do Postgres (5432→5433) e MinIO (9000→9002) remapeadas por conflito com containers de **outro projeto** (`protege_*`) já rodando na máquina — não é um bug do projeto, específico deste ambiente local.
+
+---
+
+## Step 1.7 — Reprodutibilidade do Ambiente Local
+
+> Checklist completo: `docs/testes_step_1.7.txt`
+
+### 1. Testes Unitários — `tests/unit/test_environment_consistency.py`
+
+| ID | Teste | Resultado Esperado | Status |
+|----|-------|--------------------|--------|
+| 1.7-DC-01 | `test_no_obsolete_version_attribute` | `docker-compose.yml` sem atributo `version:` top-level | OK |
+| 1.7-DC-02 | `test_minio_external_port_default_matches_env_example` | Porta default de `${MINIO_EXTERNAL_PORT:-9000}` bate com `.env.example` | OK |
+| 1.7-DC-03 | `test_postgres_external_port_default_matches_env_example` | Porta default de `${POSTGRES_EXTERNAL_PORT:-5432}` bate com `.env.example` | OK |
+| 1.7-CFG-01 | `test_minio_endpoint_default_matches_env_example` | `MinIOSettings().endpoint` == `MINIO_ENDPOINT` do `.env.example` | OK |
+| 1.7-CFG-02 | `test_postgres_port_default_matches_env_example` | `PostgresSettings().port` == `POSTGRES_PORT` do `.env.example` | OK |
+| 1.7-PY-01 | `test_python_variable_is_not_windows_path` | `PYTHON` do Makefile sem `\` (caminho Windows) | OK |
+
+### 2. Validação Docker Compose
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|--------------------|--------|
+| 1.7-CMP-01 | `docker compose config --quiet` sem override | MinIO publica 9000, Postgres publica 5432 | OK |
+| 1.7-CMP-02 | Com `MINIO_EXTERNAL_PORT`/`POSTGRES_EXTERNAL_PORT` customizados | Portas respeitadas (ex.: 9099/5499) | OK |
+
+### 3. Suíte Completa e Lint
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|--------------------|--------|
+| 1.7-SUITE-01 | `make test-unit` (todos os steps) | 119/119 PASSED, cobertura >= 70% | OK (86,42%) |
+| 1.7-LIN-01 | `ruff check` | All checks passed! | OK |
+| 1.7-LIN-02 | `mypy` | Success: no issues found | OK |
+
+### 4. Validação Manual — Ambiente do Zero (macOS)
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|--------------------|--------|
+| 1.7-MAN-01 | `.venv` criado com Python 3.11 e `make` resolve o interpretador sem config manual | `make test-unit` usa `.venv/bin/python` automaticamente | OK |
+| 1.7-MAN-02 | `make test-unit` sem JRE instalado | Falha com `JAVA_GATEWAY_EXITED`, documentado no runbook | OK |
+| 1.7-MAN-03 | Serviços acessíveis nas portas documentadas após `make up` | MinIO (9001/9000), Postgres (5432) sem remapeamento manual | OK |
+
+### 5. Lacunas encontradas e corrigidas nesta rodada
+
+| Arquivo | Problema | Correção |
+|---------|----------|----------|
+| `Makefile` | `PYTHON := .venv\Scripts\python` — caminho Windows hardcoded, quebrava em macOS/Linux | Detecção de `.venv/bin/python` com fallback para `python3`, sobrescrevível |
+| `docker-compose.yml` | Portas do MinIO (9002:9000) e Postgres (5433:5432) remapeadas divergiam de `.env.example`/`config.py` | Parametrizadas via `${MINIO_EXTERNAL_PORT:-9000}`/`${POSTGRES_EXTERNAL_PORT:-5432}` |
+| `docker-compose.yml` | Atributo `version: "3.9"` obsoleto no Compose v2 | Removido |
+| `README.md` | Pré-requisito de Java (necessário para PySpark local) não documentado — `make test-unit` falhava sem pista em máquina limpa | Documentado no README e no runbook (`docs/runbook.md`) |
+
+Fora de escopo (pertence a outras issues): nomes de variável divergentes para taxa dos producers (issue #8) e máscara de CPF incorreta em `data_generator.py` (issue #12).
+
+PR: [#19](https://github.com/gpgomes/data-master-std-fraud/pull/19) — Closes #7.

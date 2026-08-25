@@ -1,0 +1,176 @@
+================================================================================
+CHECKLIST DE TESTES — Step 1.7: Reprodutibilidade do Ambiente Local (issue #7)
+================================================================================
+
+Arquivos alterados/criados:
+  - Makefile
+  - docker-compose.yml
+  - .env.example
+  - README.md
+  - docs/runbook.md
+  - tests/unit/test_environment_consistency.py  (novo)
+
+================================================================================
+1. TESTES UNITÁRIOS AUTOMATIZADOS
+================================================================================
+
+Comando:
+  pytest tests/unit/test_environment_consistency.py -v
+
+Resultado esperado: 6 testes PASSED.
+
+--------------------------------------------------------------------------------
+1.1 TestDockerComposePorts (3 testes)
+--------------------------------------------------------------------------------
+
+  ID         Teste                                          Resultado Esperado
+  -----------------------------------------------------------------------------
+  1.7-DC-01  test_no_obsolete_version_attribute             docker-compose.yml não tem atributo 'version:' top-level
+  1.7-DC-02  test_minio_external_port_default_matches_env   Porta default de ${MINIO_EXTERNAL_PORT:-N} bate com MINIO_ENDPOINT/MINIO_EXTERNAL_PORT do .env.example
+  1.7-DC-03  test_postgres_external_port_default_matches    Porta default de ${POSTGRES_EXTERNAL_PORT:-N} bate com POSTGRES_PORT/POSTGRES_EXTERNAL_PORT do .env.example
+
+--------------------------------------------------------------------------------
+1.2 TestConfigMatchesEnvExample (2 testes)
+--------------------------------------------------------------------------------
+
+  ID         Teste                                          Resultado Esperado
+  -----------------------------------------------------------------------------
+  1.7-CFG-01 test_minio_endpoint_default_matches_env_example  MinIOSettings().endpoint == MINIO_ENDPOINT do .env.example
+  1.7-CFG-02 test_postgres_port_default_matches_env_example   PostgresSettings().port == POSTGRES_PORT do .env.example
+
+--------------------------------------------------------------------------------
+1.3 TestMakefilePython (1 teste)
+--------------------------------------------------------------------------------
+
+  ID         Teste                                          Resultado Esperado
+  -----------------------------------------------------------------------------
+  1.7-PY-01  test_python_variable_is_not_windows_path       Variável PYTHON do Makefile não contém '\' (caminho Windows)
+
+================================================================================
+2. VALIDAÇÃO DO DOCKER COMPOSE
+================================================================================
+
+Comandos:
+  docker compose config --quiet
+  MINIO_EXTERNAL_PORT=9099 POSTGRES_EXTERNAL_PORT=5499 docker compose config --quiet
+
+  ID         Descrição                                     Resultado Esperado
+  -----------------------------------------------------------------------------
+  1.7-CMP-01 docker compose config sem override             Sobe válido; MinIO publica 9000, Postgres publica 5432
+  1.7-CMP-02 docker compose config com override de portas   Respeita MINIO_EXTERNAL_PORT/POSTGRES_EXTERNAL_PORT (ex.: 9099/5499)
+
+================================================================================
+3. LINT E TIPAGEM
+================================================================================
+
+Comando:
+  make lint
+
+  ID         Verificação                         Resultado Esperado
+  -----------------------------------------------------------------------
+  1.7-LIN-01 ruff check (projeto todo)            All checks passed! (0 erros)
+  1.7-LIN-02 mypy (projeto todo)                  Success: no issues found
+
+================================================================================
+4. SUÍTE COMPLETA DE TESTES UNITÁRIOS
+================================================================================
+
+Comando:
+  make test-unit
+
+  ID          Descrição                          Resultado Esperado
+  -----------------------------------------------------------------------
+  1.7-SUITE-01 Suíte completa (todos os steps)    119/119 PASSED, cobertura >= 70%
+
+================================================================================
+5. VALIDAÇÃO MANUAL — AMBIENTE LOCAL DO ZERO (macOS)
+================================================================================
+
+  ID         Descrição                                     Resultado Esperado
+  -----------------------------------------------------------------------------
+  1.7-MAN-01 Criar .venv com Python 3.11 e make resolver    `python3.11 -m venv .venv` + `make test-unit` usa
+             o interpretador automaticamente                .venv/bin/python sem configuração manual
+  1.7-MAN-02 make test-unit falha de forma clara sem JRE    Erro JAVA_GATEWAY_EXITED, documentado no runbook
+  1.7-MAN-03 Serviços acessíveis nas URLs documentadas      MinIO Console (9001), Postgres (5432), conforme README
+             após `make up` com as portas corrigidas
+
+================================================================================
+RESULTADO DOS TESTES (executado em 2026-08-25)
+================================================================================
+
+  1.7-DC-01    OK  docker-compose.yml sem atributo 'version'
+  1.7-DC-02    OK  MinIO: ${MINIO_EXTERNAL_PORT:-9000} == .env.example (9000)
+  1.7-DC-03    OK  Postgres: ${POSTGRES_EXTERNAL_PORT:-5432} == .env.example (5432)
+  1.7-CFG-01   OK  MinIOSettings().endpoint == "http://localhost:9000"
+  1.7-CFG-02   OK  PostgresSettings().port == 5432
+  1.7-PY-01    OK  PYTHON sem caractere '\' no Makefile
+
+  1.7-CMP-01   OK  `docker compose config --quiet` — MinIO publica 9000, Postgres publica 5432
+  1.7-CMP-02   OK  Com MINIO_EXTERNAL_PORT=9099 POSTGRES_EXTERNAL_PORT=5499 — portas respeitadas
+
+  1.7-LIN-01   OK  ruff check — All checks passed!
+  1.7-LIN-02   OK  mypy — Success: no issues found in 30 source files
+
+  1.7-SUITE-01 OK  119/119 PASSED, cobertura total 86,42% (>= 70% obrigatório)
+
+  1.7-MAN-01   OK  .venv criado com Python 3.11.15 (python@3.11 via Homebrew);
+               `make test-unit` sem argumentos já usou .venv/bin/python
+  1.7-MAN-02   OK  Confirmado: PySpark local falha com JAVA_GATEWAY_EXITED sem JRE
+               instalado — reproduzido antes da correção, corrigido instalando
+               openjdk@17 via Homebrew
+  1.7-MAN-03   OK  Após `make up`, MinIO Console e Postgres acessíveis nas portas
+               documentadas (sem precisar de remapeamento manual)
+
+================================================================================
+BUGS/LACUNAS ENCONTRADOS E CORRIGIDOS NESTA RODADA
+================================================================================
+
+  1. Makefile
+     PYTHON := .venv\Scripts\python — caminho hardcoded para Windows, quebrava
+     make test-unit/make lint/make seed-data em qualquer macOS/Linux sem venv
+     nesse caminho exato. Corrigido para detectar .venv/bin/python (Unix) com
+     fallback para python3, sobrescrevível via `make ALVO PYTHON=...`.
+
+  2. docker-compose.yml
+     Portas externas do MinIO (9002:9000) e do Postgres serving (5433:5432)
+     estavam remapeadas — resquício de um ajuste pontual para evitar conflito
+     com outro projeto local (ver docs/test_status.md, step 1.6), mas
+     divergiam de .env.example e src/common/config.py (9000/5432), quebrando
+     a app fora daquele ambiente específico. Corrigido parametrizando via
+     ${MINIO_EXTERNAL_PORT:-9000} e ${POSTGRES_EXTERNAL_PORT:-5432}, com
+     defaults alinhados e escape hatch documentado em .env.example para quem
+     tiver conflito de porta local.
+
+  3. docker-compose.yml
+     Atributo `version: "3.9"` obsoleto (Compose v2 ignora e alguns clientes
+     emitem warning). Removido.
+
+  4. README.md (lacuna de documentação, não bug de código)
+     Pré-requisitos não mencionavam Java — `make test-unit`/`make test` rodam
+     PySpark em modo local, que precisa de um JRE. Em uma máquina limpa (sem
+     Java), a suíte falhava com JAVA_GATEWAY_EXITED sem nenhuma pista no
+     README. Documentado o pré-requisito (Java 17) e adicionada linha de
+     troubleshooting em docs/runbook.md.
+
+================================================================================
+FORA DE ESCOPO (pertence a outras issues, não corrigido aqui)
+================================================================================
+
+  - Nomes de variável divergentes para taxa dos producers
+    (TRANSACTION_PRODUCER_RATE no .env.example vs PRODUCER_RATE_TPS usado em
+    src/ingestion/streaming/kafka_producer_transactions.py) — issue #8.
+  - Máscara de CPF incorreta em src/common/data_generator.py:109 — issue #12.
+
+================================================================================
+RESULTADO DO STEP 1.7
+================================================================================
+
+  Testes unitários (novo arquivo):  6/6 PASSED
+  Suíte completa:                   119/119 PASSED (sem regressão)
+  Cobertura geral:                  86,42% (>= 70% obrigatório)
+  Lint (ruff):                      All checks passed!
+  Mypy:                             Success: no issues found
+  docker compose config:            OK (default e com override de portas)
+  Ambiente validado do zero:        OK (.venv + Python 3.11.15 + openjdk@17)
+
+  PR: https://github.com/gpgomes/data-master-std-fraud/pull/19 (Closes #7)
