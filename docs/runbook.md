@@ -66,3 +66,4 @@ make seed-data
 | Spark OOM | Memória insuficiente | Aumentar SPARK_EXECUTOR_MEMORY no .env |
 | Airflow DB error | PostgreSQL não pronto | Aguardar healthcheck, `make logs-postgres` |
 | GX checkpoint falha | Schema incompatível | Atualizar expectations em `src/governance/great_expectations/expectations/` |
+| `make test-unit` falha com `JAVA_GATEWAY_EXITED` | JDK ausente no PATH (PySpark local precisa de um JRE) | Instalar Java 17, ex. `brew install openjdk@17` no macOS, e garantir `JAVA_HOME`/`java` no PATH da shell |
