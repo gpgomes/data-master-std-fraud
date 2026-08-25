@@ -5,7 +5,9 @@ COMPOSE          := docker compose
 SPARK_MASTER     := spark://localhost:7077
 BATCH_JOB        := src/transformation/batch/bronze_to_silver.py
 STREAM_JOB       := src/transformation/streaming/stream_processor.py
-PYTHON           := .venv\Scripts\python
+# Usa o interpretador do .venv se existir (criado via `python3.11 -m venv .venv`),
+# senão cai para python3 do PATH. Sobrescrevível: `make test PYTHON=python3.11`.
+PYTHON           ?= $(shell [ -x .venv/bin/python ] && echo .venv/bin/python || echo python3)
 PYTEST_ARGS      ?= -v
 
 # ── Infra ──────────────────────────────────────────────────────────────────────

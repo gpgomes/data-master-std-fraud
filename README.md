@@ -147,6 +147,7 @@ data-master-std-fraud/
 
 - Docker Desktop 24+ com Docker Compose v2
 - Python 3.11+
+- Java 17 (JDK) — necessário para `make test-unit`/`make test`, que rodam PySpark em modo local
 - Make (GNU Make)
 - 8GB RAM disponível para os containers
 
