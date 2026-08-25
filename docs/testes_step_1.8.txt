@@ -1,0 +1,172 @@
+================================================================================
+CHECKLIST DE TESTES — Step 1.8: Privacidade, Qualidade e Semântica dos Dados (issue #12)
+================================================================================
+
+Arquivos alterados:
+  - src/common/data_generator.py
+  - src/common/schemas.py
+  - docs/data_dictionary.md
+  - docs/test_status.md
+  - docs/testes_step_1.3.txt
+  - tests/unit/test_data_generator.py
+  - tests/unit/test_schemas.py            (novo: TestCustomerRecord)
+
+================================================================================
+1. TESTES UNITÁRIOS AUTOMATIZADOS
+================================================================================
+
+--------------------------------------------------------------------------------
+1.1 tests/unit/test_data_generator.py — TestGenerateCustomers (2 testes novos)
+--------------------------------------------------------------------------------
+
+  ID          Teste                                        Resultado Esperado
+  -----------------------------------------------------------------------------
+  1.8-CPF-01  test_cpf_masked_format                        cpf_masked bate com
+              o padrão ***.***.***-XX (via CPF_MASKED_PATTERN de schemas.py)
+              para todo cliente gerado — sem espaço, só 2 dígitos visíveis
+  1.8-CPF-02  test_customers_validate_against_pydantic_model Todo cliente
+              gerado constrói CustomerRecord(**c) sem ValidationError
+
+--------------------------------------------------------------------------------
+1.2 tests/unit/test_data_generator.py — TestGenerateTransactions (1 teste novo)
+--------------------------------------------------------------------------------
+
+  ID          Teste                                        Resultado Esperado
+  -----------------------------------------------------------------------------
+  1.8-FS-01   test_fraud_score_never_set_by_generator       fraud_score ausente
+              ou None em toda transação gerada — é campo derivado da detecção
+              de fraude (streaming, issue #11), não da geração/ingestão
+
+--------------------------------------------------------------------------------
+1.3 tests/unit/test_schemas.py — TestCustomerRecord (novo, 6 testes)
+--------------------------------------------------------------------------------
+
+  ID          Teste                                        Resultado Esperado
+  -----------------------------------------------------------------------------
+  1.8-VAL-01  test_valid_cpf_masked_accepted                "***.***.***-42" aceito
+  1.8-VAL-02  test_invalid_cpf_masked_rejected[...]          ValidationError para:
+              - "***.***. 196-00"  (bug original: espaço literal)
+              - "***.***.196-00"   (expõe 3 dígitos em vez de mascarar)
+              - "***.***.***.00"   (separador errado)
+              - "***.***.***-0"    (só 1 dígito visível)
+              - "123.456.789-00"   (sem mascaramento nenhum)
+
+================================================================================
+2. LINT E TIPAGEM
+================================================================================
+
+Comando:
+  make lint
+
+  ID         Verificação                         Resultado Esperado
+  -----------------------------------------------------------------------
+  1.8-LIN-01 ruff check (projeto todo)            All checks passed!
+  1.8-LIN-02 mypy (projeto todo)                  Success: no issues found
+
+================================================================================
+3. SUÍTE COMPLETA DE TESTES UNITÁRIOS
+================================================================================
+
+Comando:
+  make test-unit
+
+  ID          Descrição                          Resultado Esperado
+  -----------------------------------------------------------------------
+  1.8-SUITE-01 Suíte completa (todos os steps)    128/128 PASSED, cobertura >= 70%
+
+================================================================================
+4. VALIDAÇÃO MANUAL
+================================================================================
+
+  ID         Descrição                                     Resultado Esperado
+  -----------------------------------------------------------------------------
+  1.8-MAN-01 Gerar 5 clientes e inspecionar cpf_masked      Formato ***.***.***-XX,
+             python -c "from src.common.data_generator ..."  sem espaço, 2 dígitos
+  1.8-MAN-02 Revisão de logger.py e chamadas logger.* em    Nenhum log interpola
+             src/ingestion, src/transformation                nome, CPF, IP,
+                                                                device_id ou coords
+                                                                — só ids/contadores/paths
+  1.8-MAN-03 Revisão de tests/conftest.py e fixtures        Sem PII real; dados
+                                                                sintéticos via Faker
+
+================================================================================
+RESULTADO DOS TESTES (executado em 2026-08-25)
+================================================================================
+
+  1.8-CPF-01   OK  Amostra de 100 clientes (seed=42/99): todos batem com o regex
+  1.8-CPF-02   OK  100/100 clientes validam contra CustomerRecord sem erro
+  1.8-FS-01    OK  200 transações geradas, fraud_score None em todas (inclusive
+               as marcadas is_fraud=True)
+  1.8-VAL-01   OK  "***.***.***-42" aceito
+  1.8-VAL-02   OK  5/5 formatos inválidos rejeitados com ValidationError
+               mencionando "cpf_masked"
+
+  1.8-LIN-01   OK  ruff check — All checks passed!
+  1.8-LIN-02   OK  mypy — Success: no issues found in 30 source files
+
+  1.8-SUITE-01 OK  128/128 PASSED, cobertura total 86,53% (>= 70% obrigatório)
+
+  1.8-MAN-01   OK  DataGenerator(seed=42).generate_customers(n=5) →
+               ***.***.***-00, ***.***.***-23, ***.***.***-59, ***.***.***-41,
+               ***.***.***-13 — todos no formato correto
+  1.8-MAN-02   OK  Nenhuma chamada de log em src/ingestion/ ou
+               src/transformation/ interpola campos de PII; usam apenas
+               file, key, batch_id, rows, contadores e paths
+  1.8-MAN-03   OK  tests/conftest.py usa apenas ids sintéticos (cust-001,
+               tx-001) — sem nome/CPF/IP reais
+
+================================================================================
+BUGS/LACUNAS ENCONTRADOS E CORRIGIDOS NESTA RODADA
+================================================================================
+
+  1. src/common/data_generator.py:109
+     cpf_masked = f"***.***. {cpf_digits[6:9]}-{cpf_digits[9:11]}"
+     Bug já identificado no step 1.6 (docs/test_status.md, 1.6-MAN-07) mas não
+     corrigido naquele branch por estar fora de escopo. Expunha 5 dígitos do
+     CPF (3 do terceiro grupo + 2 finais) em vez de 2, e tinha um espaço
+     literal indevido no f-string. Corrigido para
+     f"***.***.***-{cpf_digits[9:11]}", batendo com o formato documentado em
+     CustomerRecord (schemas.py) e no dicionário de dados.
+
+  2. src/common/schemas.py — CustomerRecord.cpf_masked
+     Não havia validação de formato no schema — um valor mal mascarado
+     passaria pela validação Pydantic sem erro. Adicionado
+     CPF_MASKED_PATTERN + field_validator, com testes cobrindo o formato
+     válido e 5 variações inválidas (incluindo o bug original).
+
+  3. src/common/schemas.py — TransactionEvent.fraud_score
+     Semântica não estava documentada: não ficava claro se fraud_score
+     deveria ser preenchido pela geração/ingestão (como is_fraud/fraud_type)
+     ou apenas pela detecção de fraude em streaming. Documentado
+     explicitamente no Field description e no dicionário de dados: é sempre
+     None/nulo em dados brutos, populado só a jusante (issue #11). Adicionado
+     teste que trava esse invariante no gerador.
+
+  4. docs/testes_step_1.3.txt, docs/test_status.md (documentação apenas)
+     Referenciavam segmento "PREMIUM", que nunca existiu no código — o enum
+     CustomerSegment sempre teve ALTA_RENDA (confirmado via git log de
+     schemas.py desde o commit que introduziu o enum). Corrigido para
+     ALTA_RENDA nos dois arquivos.
+
+================================================================================
+FORA DE ESCOPO (pertence a outras issues, não alterado aqui)
+================================================================================
+
+  - Contrato de dados entre producers/Pydantic/Avro/Spark (nomes de campo,
+    variáveis de ambiente divergentes) — issue #8.
+  - Implementação real do cálculo de fraud_score no streaming — issue #11.
+    Este step apenas define e trava a semântica (campo derivado, nulo na
+    origem); a lógica de cálculo ainda não existe.
+
+================================================================================
+RESULTADO DO STEP 1.8
+================================================================================
+
+  Testes unitários (novos):        9/9 PASSED
+  Suíte completa:                  128/128 PASSED (sem regressão)
+  Cobertura geral:                 86,53% (>= 70% obrigatório)
+  Lint (ruff):                     All checks passed!
+  Mypy:                            Success: no issues found
+  cpf_masked:                      formato corrigido e validado via Pydantic
+  fraud_score:                     semântica documentada e travada por teste
+  segment (PREMIUM/ALTA_RENDA):    documentação alinhada ao enum real

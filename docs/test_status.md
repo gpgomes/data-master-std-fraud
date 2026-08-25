@@ -27,7 +27,7 @@
 |----|-----------|-------------------|--------|
 | 1.3-2.1 | Executar script com 1.000 transações, 100 clientes, 10 dias de mercado, seed 42 | Taxa de fraude entre 1–5%, PIX dominante (~45%), 4 tipos de fraude | OK |
 | 1.3-2.2 | Verificar arquivos CSV gerados em `data/test_smoke/` | `customers.csv`, `transactions/YYYY/MM/DD/transactions.csv`, `market_data/YYYY/MM/DD/market.csv` presentes | OK |
-| 1.3-2.3 | Verificar conteúdo do `customers.csv` (100 linhas) | 100 registros com todas as colunas; `country="BR"`, `segment` em {VAREJO, PREMIUM, PRIVATE}, `risk_score` em [0, 100] | OK |
+| 1.3-2.3 | Verificar conteúdo do `customers.csv` (100 linhas) | 100 registros com todas as colunas; `country="BR"`, `segment` em {VAREJO, ALTA_RENDA, PRIVATE}, `risk_score` em [0, 100] | OK |
 | 1.3-2.4 | Verificar conteúdo do `transactions.csv` | Todas as colunas presentes; `amount > 0`; `fraud_type` preenchido somente quando `is_fraud=True` | OK |
 | 1.3-2.5 | Verificar conteúdo do `market.csv` | Colunas corretas; `high >= low`; preços > 0; 10 símbolos B3 presentes | OK |
 
@@ -409,3 +409,40 @@ Além disso, `docker-compose.yml` teve as portas do Postgres (5432→5433) e Min
 Fora de escopo (pertence a outras issues): nomes de variável divergentes para taxa dos producers (issue #8) e máscara de CPF incorreta em `data_generator.py` (issue #12).
 
 PR: [#19](https://github.com/gpgomes/data-master-std-fraud/pull/19) — Closes #7.
+
+---
+
+## Step 1.8 — Privacidade, Qualidade e Semântica dos Dados
+
+> Checklist completo: `docs/testes_step_1.8.txt`
+
+### 1. Testes Unitários
+
+| ID | Teste | Resultado Esperado | Status |
+|----|-------|--------------------|--------|
+| 1.8-CPF-01 | `test_cpf_masked_format` | `cpf_masked` bate com `***.***.***-XX` para todo cliente gerado | OK |
+| 1.8-CPF-02 | `test_customers_validate_against_pydantic_model` | Todo cliente gerado valida contra `CustomerRecord` sem erro | OK |
+| 1.8-FS-01 | `test_fraud_score_never_set_by_generator` | `fraud_score` ausente/None em toda transação gerada (campo derivado da detecção, não da geração) | OK |
+| 1.8-VAL-01 | `test_valid_cpf_masked_accepted` | `"***.***.***-42"` aceito pelo validador | OK |
+| 1.8-VAL-02 | `test_invalid_cpf_masked_rejected[...]` (5 casos) | `ValidationError` para espaço literal, excesso de dígitos, separador errado, dígito único, CPF sem máscara | OK |
+
+### 2. Lint, Suíte Completa e Validação Manual
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|--------------------|--------|
+| 1.8-LIN-01/02 | `make lint` | ruff + mypy sem erros | OK |
+| 1.8-SUITE-01 | `make test-unit` | 128/128 PASSED, cobertura >= 70% | OK (86,53%) |
+| 1.8-MAN-01 | Geração manual de 5 clientes | `cpf_masked` no formato `***.***.***-XX` | OK |
+| 1.8-MAN-02 | Revisão de todos os `logger.*` em `src/ingestion/` e `src/transformation/` | Nenhum log interpola nome/CPF/IP/device_id/coordenadas | OK |
+| 1.8-MAN-03 | Revisão de `tests/conftest.py` | Sem PII real, apenas ids sintéticos | OK |
+
+### 3. Bugs/lacunas encontrados e corrigidos
+
+| Arquivo | Problema | Correção |
+|---------|----------|----------|
+| `src/common/data_generator.py:109` | `cpf_masked` expunha 5 dígitos do CPF (não 2) e tinha espaço literal no f-string — bug já identificado no step 1.6 (`1.6-MAN-07`) mas não corrigido naquele branch | Reescrito para `***.***.***-{últimos 2 dígitos}` |
+| `src/common/schemas.py` — `CustomerRecord` | Nenhuma validação de formato para `cpf_masked` no schema | Adicionado `CPF_MASKED_PATTERN` + `field_validator` |
+| `src/common/schemas.py` — `TransactionEvent.fraud_score` | Semântica não documentada (geração vs. detecção) | Documentado como campo derivado, sempre nulo na origem; travado por teste |
+| `docs/testes_step_1.3.txt`, `docs/test_status.md` | Referenciavam segmento "PREMIUM", que nunca existiu no enum `CustomerSegment` | Corrigido para `ALTA_RENDA` |
+
+Fora de escopo: contrato de dados entre producers/schemas (issue #8) e implementação real do cálculo de `fraud_score` no streaming (issue #11).

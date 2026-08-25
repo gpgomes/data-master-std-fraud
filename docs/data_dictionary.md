@@ -23,8 +23,9 @@ Dados raw de transações financeiras conforme recebidos dos producers Kafka.
 | ip_address | string | IP do cliente (pode ser nulo) |
 | latitude | double | Latitude do cliente (pode ser nulo) |
 | longitude | double | Longitude do cliente (pode ser nulo) |
-| is_fraud | boolean | Flag de fraude (label) |
+| is_fraud | boolean | Flag de fraude (label, ground truth conhecida na origem) |
 | fraud_type | string | Tipo de fraude (nulo se não for fraude) |
+| fraud_score | double | Score de risco (0-1); sempre nulo no Bronze — campo derivado, populado pela detecção de fraude (streaming/Z-Score), nunca pela geração/ingestão |
 
 ### bronze/market_data/
 Dados OHLCV de ativos conforme coletados via yfinance.
@@ -86,7 +87,7 @@ Registros de anomalias detectadas no streaming com Z-Score e contexto.
 |-------|-----------|
 | **VWAP** | Volume-Weighted Average Price — preço médio ponderado pelo volume |
 | **Volatilidade** | Desvio padrão dos retornos diários em uma janela de N dias |
-| **Fraud Score** | Probabilidade de fraude calculada pelo detector (0=legítimo, 1=fraude) |
+| **Fraud Score** | Probabilidade de fraude calculada pelo detector de streaming (0=legítimo, 1=fraude). Campo derivado: nulo em Bronze/geração, populado apenas a partir da detecção (streaming/Z-Score). Não confundir com `is_fraud`, que é o rótulo de ground truth conhecido na origem dos dados |
 | **Z-Score** | Número de desvios padrão da média — usado para detectar outliers de valor |
 | **Velocity Check** | Verificação de frequência anormal de transações em curto intervalo |
 | **Account Takeover** | Acesso não autorizado e operações em conta alheia |
