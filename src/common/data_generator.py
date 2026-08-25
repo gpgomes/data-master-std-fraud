@@ -104,9 +104,9 @@ class DataGenerator:
             birth_date = self.fake.date_of_birth(minimum_age=18, maximum_age=75)
             opening_date = self.fake.date_between(start_date="-10y", end_date="today")
 
-            # CPF mascarado: formato ***.***.XXX-XX
+            # CPF mascarado: formato ***.***.***-XX (só os 2 últimos dígitos visíveis)
             cpf_digits = "".join([str(self.rng.randint(0, 9)) for _ in range(11)])
-            cpf_masked = f"***.***. {cpf_digits[6:9]}-{cpf_digits[9:11]}"
+            cpf_masked = f"***.***.***-{cpf_digits[9:11]}"
 
             customers.append(
                 {
