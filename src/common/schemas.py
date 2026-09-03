@@ -94,6 +94,17 @@ class TransactionEvent(BaseModel):
             "populado downstream, nunca usado como input da geração ou do rótulo is_fraud."
         ),
     )
+    produced_at: datetime | None = Field(
+        default=None,
+        description=(
+            "Timestamp de produção no Kafka (issue #8). None para eventos vindos do "
+            "batch (CSV/Bronze), que não passam pelo producer streaming."
+        ),
+    )
+    source_system: str | None = Field(
+        default=None,
+        description="Sistema/producer de origem (issue #8). None para eventos de batch.",
+    )
 
     @field_validator("fraud_type")
     @classmethod
@@ -116,7 +127,16 @@ class MarketTradeEvent(BaseModel):
     bid: float = Field(gt=0, description="Melhor oferta de compra")
     ask: float = Field(gt=0, description="Melhor oferta de venda")
     spread: float = Field(ge=0, description="Diferença entre ask e bid")
-    source: str = Field(default="simulator", description="Fonte dos dados")
+    produced_at: datetime | None = Field(
+        default=None, description="Timestamp de produção no Kafka (issue #8)"
+    )
+    source_system: str | None = Field(
+        default=None,
+        description=(
+            "Sistema/producer de origem (issue #8) — renomeado de `source` pra bater "
+            "com o que o producer e o Avro schema (market_event.avsc) realmente enviam."
+        ),
+    )
 
     model_config = {"use_enum_values": True}
 
@@ -203,7 +223,9 @@ TRANSACTION_SPARK_SCHEMA = """
     longitude DOUBLE,
     is_fraud BOOLEAN,
     fraud_type STRING,
-    fraud_score DOUBLE
+    fraud_score DOUBLE,
+    produced_at TIMESTAMP,
+    source_system STRING
 """
 
 MARKET_TRADE_SPARK_SCHEMA = """
@@ -215,7 +237,8 @@ MARKET_TRADE_SPARK_SCHEMA = """
     bid DOUBLE,
     ask DOUBLE,
     spread DOUBLE,
-    source STRING
+    produced_at TIMESTAMP,
+    source_system STRING
 """
 
 MARKET_OHLCV_SPARK_SCHEMA = """

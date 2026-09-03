@@ -13,6 +13,7 @@ from loguru import logger
 
 from src.common.config import settings
 from src.common.data_generator import DataGenerator
+from src.common.schemas import TransactionEvent
 from src.ingestion.streaming.producer_config import ProducerConfig
 
 # ── Configuração ───────────────────────────────────────────────────────────────
@@ -40,12 +41,18 @@ def _avg_latency() -> float:
 # ── Serialização ───────────────────────────────────────────────────────────────
 
 def _build_message(tx: dict[str, Any]) -> dict[str, Any]:
-    """Adiciona campos de metadados ao evento de transação."""
-    return {
+    """Valida a transação contra TransactionEvent e adiciona metadados de proveniência.
+
+    A validação garante que o payload publicado no Kafka sempre respeita o
+    contrato de dados (issue #8) — falha rápido se o gerador produzir algo
+    incompatível com o schema, em vez de propagar dado inválido no stream.
+    """
+    event = TransactionEvent(
         **tx,
-        "produced_at": datetime.now(tz=UTC).isoformat(),
-        "source_system": SOURCE_SYSTEM,
-    }
+        produced_at=datetime.now(tz=UTC),
+        source_system=SOURCE_SYSTEM,
+    )
+    return event.model_dump(mode="json")
 
 
 def _serialize(msg: dict[str, Any]) -> str:

@@ -560,3 +560,46 @@ PR: [#19](https://github.com/gpgomes/data-master-std-fraud/pull/19) — Closes #
 | `docs/testes_step_1.3.txt`, `docs/test_status.md` | Referenciavam segmento "PREMIUM", que nunca existiu no enum `CustomerSegment` | Corrigido para `ALTA_RENDA` |
 
 Fora de escopo: contrato de dados entre producers/schemas (issue #8) e implementação real do cálculo de `fraud_score` no streaming (issue #11).
+
+---
+
+## Issue #8 — Contrato de Dados Ingestion ↔ Transformação (executado em 2026-09-03)
+
+> Checklist completo: `docs/testes_issue_8.txt`
+
+Objetivo: eliminar divergências entre producers Kafka, modelos Pydantic, schemas Avro e Spark.
+
+**Achados da investigação** (antes de qualquer mudança):
+1. `MarketTradeEvent` tinha campo `source`, mas o producer de mercado e o Avro (já corretos) sempre mandaram `source_system`+`produced_at` — validar o payload real contra o modelo antigo descartava o valor real (caía no default `"simulator"`) e perdia `produced_at`. Sem impacto em runtime hoje porque nada ainda consome essas mensagens (só passa a importar na issue #11).
+2. `TransactionEvent` nem declarava `produced_at`/`source_system` — mesmo problema, mais brando (Pydantic ignora campo extra por padrão).
+3. `.env`/`.env.example` documentavam `TRANSACTION_PRODUCER_RATE`/`MARKET_PRODUCER_RATE`, mas o código sempre leu `PRODUCER_RATE_TPS`/`MARKET_PRODUCER_RATE_TPS` — e `docker-compose.yml` já usava os nomes certos (hardcoded nos serviços `producer-transactions`/`producer-market`). Só o `.env.example` estava desalinhado.
+4. Nenhum producer validava o payload contra o modelo Pydantic antes de publicar — só `json.dumps` de um dict cru.
+
+**Mudanças**: `MarketTradeEvent.source` → `source_system` + `produced_at` novo; `TransactionEvent` ganhou os mesmos dois campos (opcionais — `None` para eventos de batch, que não passam pelo producer); `TRANSACTION_SPARK_SCHEMA`/`MARKET_TRADE_SPARK_SCHEMA` atualizados; os dois producers agora constroem e validam um `TransactionEvent`/`MarketTradeEvent` de verdade em `_build_message()` antes de serializar (antes só mesclavam dicts); `.env`/`.env.example` corrigidos pros nomes que o código/compose já usam, com `GENERATOR_SEED` documentado.
+
+### 1. Testes — `tests/unit/test_data_contract.py`
+
+| ID | Classe | Descrição | Status |
+|----|--------|-----------|--------|
+| 8-VAL | `TestProducerValidatesPayload` | `_build_message` valida e preserva `produced_at`/`source_system` reais, payload continua JSON válido (4 testes) | OK |
+| 8-TX | `TestTransactionEventContract` | Campos do Avro cobertos pelo Pydantic, DDL Spark atualizado, round-trip sem perda, 200 transações do `DataGenerator` real passam na validação (4 testes) | OK |
+| 8-MKT | `TestMarketTradeEventContract` | Campos do Avro cobertos, `source` removido/`source_system` presente, DDL Spark atualizado, round-trip sem perda (4 testes) | OK |
+| 8-ENV | `TestCanonicalEnvVarNames` | Producers leem os nomes canônicos; `.env.example` e `docker-compose.yml` documentam os mesmos nomes (4 testes) | OK |
+
+**Total: 16/16 testes PASSED.**
+
+### 2. Validação manual contra Kafka real
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|-------------------|--------|
+| 8-MAN-01 | Rodar producer de transações contra Kafka real, consumir 1 mensagem | `produced_at`/`source_system` corretos no payload | OK — `"produced_at": "2026-09-03T20:46:28...", "source_system": "transaction-simulator"` |
+
+Producer de mercado não testado contra Kafka real (só roda em horário de pregão B3, 13h–20h UTC, fora da janela na hora do teste) — coberto pelos testes unitários com `TickSimulator` real (8-VAL-02, 8-MKT-04).
+
+### 3. Suíte Completa e Lint
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|-------------------|--------|
+| 8-SUITE-01 | `pytest tests/unit/` | Sem regressão | OK (172/173 PASSED — 1 falha local pré-existente de `.env`, não relacionada) |
+| 8-LIN-01 | `ruff check` | All checks passed! | OK |
+| 8-LIN-02 | `mypy` | Success: no issues found | OK |

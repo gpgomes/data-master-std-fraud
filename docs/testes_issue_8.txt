@@ -1,0 +1,189 @@
+================================================================================
+CHECKLIST DE TESTES — Contrato de Dados Ingestion <-> Transformação (issue #8)
+================================================================================
+
+Objetivo: eliminar divergências entre os producers Kafka, modelos Pydantic,
+schemas Avro e schemas Spark.
+
+Arquivos alterados:
+  - src/common/schemas.py (TransactionEvent, MarketTradeEvent, DDLs Spark)
+  - src/ingestion/streaming/kafka_producer_transactions.py
+  - src/ingestion/streaming/kafka_producer_market.py
+  - .env / .env.example
+  - tests/conftest.py (fixture sample_market_trade)
+  - tests/unit/test_data_contract.py (novo)
+
+================================================================================
+1. ACHADOS DA INVESTIGAÇÃO (antes de qualquer mudança)
+================================================================================
+
+  1. MarketTradeEvent tinha campo `source: str = "simulator"`, mas o producer
+     de mercado e o Avro (market_event.avsc, já correto) sempre mandaram
+     `source_system` + `produced_at`. Validar o payload real contra o modelo
+     antigo descartava o valor real de source_system (sempre caía no default
+     "simulator") e perdia produced_at — bug de perda de dado silenciosa,
+     confirmado por leitura de código (nada ainda consome/valida essas
+     mensagens em runtime — só passará a importar quando a issue #11
+     (streaming) for implementada).
+
+  2. TransactionEvent nem declarava produced_at/source_system — mesma classe
+     de problema, mais branda (Pydantic v2 ignora campos extra por padrão,
+     então não quebra, só descarta).
+
+  3. .env/.env.example documentavam TRANSACTION_PRODUCER_RATE/
+     MARKET_PRODUCER_RATE, mas o código sempre leu PRODUCER_RATE_TPS/
+     MARKET_PRODUCER_RATE_TPS — e docker-compose.yml (serviços
+     producer-transactions/producer-market) já usava os nomes certos,
+     hardcoded. Ou seja: só o .env/.env.example estava desalinhado; os
+     valores documentados lá nunca foram lidos por nada.
+
+  4. Nenhum dos dois producers validava o payload contra o modelo Pydantic
+     correspondente antes de publicar no Kafka — só montavam um dict cru e
+     mandavam json.dumps direto.
+
+================================================================================
+2. MUDANÇAS APLICADAS
+================================================================================
+
+  - MarketTradeEvent: `source` renomeado para `source_system` (str | None),
+    adicionado `produced_at` (datetime | None).
+  - TransactionEvent: adicionados `produced_at` e `source_system`
+    (datetime | None / str | None) — None é o caso de eventos vindos do
+    batch (CSV/Bronze), que não passam pelo producer streaming.
+  - TRANSACTION_SPARK_SCHEMA: adicionadas colunas produced_at TIMESTAMP,
+    source_system STRING.
+  - MARKET_TRADE_SPARK_SCHEMA: coluna `source` renomeada para
+    `source_system`, adicionada `produced_at TIMESTAMP`.
+  - kafka_producer_transactions.py: `_build_message()` agora constrói um
+    TransactionEvent (valida) e retorna `model_dump(mode="json")`, em vez de
+    só mesclar dicts.
+  - kafka_producer_market.py: `next_tick()` voltou a gerar só o tick "puro"
+    (sem metadados); nova função `_build_message()` (mesmo padrão do
+    producer de transações) valida contra MarketTradeEvent e adiciona
+    produced_at/source_system. `run()` atualizado pra usar `_build_message`.
+  - .env / .env.example: TRANSACTION_PRODUCER_RATE -> PRODUCER_RATE_TPS,
+    MARKET_PRODUCER_RATE -> MARKET_PRODUCER_RATE_TPS, adicionado
+    GENERATOR_SEED (documentava só no código, faltava no .env.example).
+
+================================================================================
+3. TESTES UNITÁRIOS — tests/unit/test_data_contract.py
+================================================================================
+
+Comando:
+  pytest tests/unit/test_data_contract.py -v
+
+Resultado esperado: 16 testes PASSED.
+
+--------------------------------------------------------------------------------
+3.1 TestProducerValidatesPayload (4 testes) — critério de aceite 1
+--------------------------------------------------------------------------------
+
+  ID          Teste                                              Resultado Esperado
+  -----------------------------------------------------------------------
+  8-VAL-01    test_transaction_message_validated_and_carries_metadata
+              _build_message valida e preserva source_system/produced_at reais
+  8-VAL-02    test_market_message_validated_and_carries_metadata
+              idem, para o producer de mercado
+  8-VAL-03    test_transaction_message_is_valid_json_after_validation
+              payload validado ainda serializa em JSON válido
+  8-VAL-04    test_market_message_is_valid_json_after_validation
+              idem, mercado
+
+--------------------------------------------------------------------------------
+3.2 TestTransactionEventContract (4 testes) — critério de aceite 2
+--------------------------------------------------------------------------------
+
+  ID          Teste                                              Resultado Esperado
+  -----------------------------------------------------------------------
+  8-TX-01     test_avro_fields_covered_by_pydantic_model
+              todo campo do transaction_event.avsc existe em TransactionEvent
+  8-TX-02     test_spark_ddl_covers_produced_at_and_source_system
+              TRANSACTION_SPARK_SCHEMA tem produced_at e source_system
+  8-TX-03     test_producer_payload_validates_against_pydantic_model
+              round-trip: mensagem publicada revalida sem perda
+  8-TX-04     test_real_data_generator_output_passes_producer_validation
+              200 transações do DataGenerator real (não mock) passam por
+              _build_message sem ValidationError
+
+--------------------------------------------------------------------------------
+3.3 TestMarketTradeEventContract (4 testes) — critério de aceite 2
+--------------------------------------------------------------------------------
+
+  ID          Teste                                              Resultado Esperado
+  -----------------------------------------------------------------------
+  8-MKT-01    test_avro_fields_covered_by_pydantic_model
+              todo campo do market_event.avsc existe em MarketTradeEvent
+  8-MKT-02    test_pydantic_model_has_no_stale_source_field
+              campo `source` não existe mais; `source_system` existe
+  8-MKT-03    test_spark_ddl_uses_source_system_not_source
+              MARKET_TRADE_SPARK_SCHEMA usa source_system, não source
+  8-MKT-04    test_producer_payload_validates_against_pydantic_model
+              round-trip: mensagem publicada revalida sem perda
+
+--------------------------------------------------------------------------------
+3.4 TestCanonicalEnvVarNames (4 testes) — critério de aceite 3
+--------------------------------------------------------------------------------
+
+  ID          Teste                                              Resultado Esperado
+  -----------------------------------------------------------------------
+  8-ENV-01    test_transaction_producer_reads_canonical_rate_var
+              código lê os.getenv("PRODUCER_RATE_TPS", ...)
+  8-ENV-02    test_market_producer_reads_canonical_rate_var
+              código lê os.getenv("MARKET_PRODUCER_RATE_TPS", ...)
+  8-ENV-03    test_env_example_documents_names_producers_actually_read
+              .env.example tem os nomes novos; nomes antigos não voltam
+  8-ENV-04    test_docker_compose_producer_services_match_env_example_names
+              docker-compose.yml e .env.example usam os mesmos nomes
+
+================================================================================
+4. VALIDAÇÃO MANUAL CONTRA KAFKA REAL (executado em 2026-09-03)
+================================================================================
+
+Pré-requisito: docker compose up -d zookeeper kafka kafka-init kafka-ui
+(infra leve — não precisa do stack completo pra esse teste)
+
+  ID          Descrição                                    Resultado Esperado
+  -----------------------------------------------------------------------
+  8-MAN-01    Rodar producer de transações por alguns segundos
+              contra Kafka real, consumir 1 mensagem          Mensagem no tópico
+                                                               raw-transactions
+                                                               tem produced_at e
+                                                               source_system
+                                                               corretos
+
+Resultado real (mensagem consumida via kafka-console-consumer):
+  {"transaction_id": "df4cf377-...", ..., "produced_at":
+   "2026-09-03T20:46:28.604666Z", "source_system": "transaction-simulator"}
+  -> OK, campos presentes com valores corretos (antes da correção, um
+  consumer que validasse contra TransactionEvent teria descartado ambos).
+
+Producer de mercado não testado contra Kafka real nesta rodada — só roda em
+horário de pregão B3 (13h-20h UTC) e a execução caiu fora da janela; coberto
+com confiança suficiente pelos testes unitários com TickSimulator real
+(8-VAL-02, 8-MKT-04).
+
+================================================================================
+5. SUÍTE COMPLETA E LINT
+================================================================================
+
+  ID          Descrição                                    Resultado Esperado
+  -----------------------------------------------------------------------
+  8-SUITE-01  pytest tests/unit/                            172/173 PASSED
+                                                              (1 falha local
+                                                              pré-existente,
+                                                              não relacionada)
+  8-LIN-01    ruff check src/ tests/                        All checks passed!
+  8-LIN-02    mypy src/ --ignore-missing-imports             Success: no issues
+                                                              found in 31 files
+
+================================================================================
+RESULTADO FINAL — ISSUE #8
+================================================================================
+
+  Testes novos (test_data_contract.py):  16/16 PASSED
+  Suíte completa:                        172/173 PASSED (1 falha local
+                                          pré-existente, não relacionada)
+  Cobertura geral:                       85%
+  Lint / mypy:                           All checks passed! / Success
+  Validação manual (Kafka real):         OK (producer de transações)
+  Critérios de aceite da issue:          4/4 atendidos
