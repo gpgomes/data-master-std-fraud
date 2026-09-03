@@ -30,6 +30,13 @@ make lint      # ruff check + mypy
 make format    # black + ruff --fix
 ```
 
+### CI (GitHub Actions)
+`.github/workflows/ci.yml` runs on every push/PR to `main` (plus manual `workflow_dispatch`), two parallel jobs mirroring the Makefile targets above so there's no drift between CI and local dev:
+- `lint` — `make lint` (ruff + mypy)
+- `test` — `make test-unit`, with Java 17 set up first (PySpark needs a JVM even in local mode); enforces the `--cov-fail-under=70` gate already defined in `pyproject.toml`; uploads `htmlcov/` as an artifact
+
+Integration tests (`tests/integration/`) are intentionally **not** run in CI — they need the full Docker Compose stack (Kafka, Zookeeper, Airflow, Superset, Postgres, MinIO, Spark cluster), which is too slow/heavy for a per-PR gate. Run them locally via `make up && make setup && make test-integration`.
+
 ### Infrastructure (Docker)
 ```bash
 make up        # Start all containers (Kafka, MinIO, Spark, Airflow, Postgres, etc.)
@@ -137,7 +144,7 @@ The project is being built in phases (see `CaseFinancialDataLakeHouse.md`):
 - **Phase 3 (Weeks 5–6):** Data governance (Great Expectations, OpenMetadata, Delta Lake)
 - **Phase 4 (Weeks 7–8):** Serving layer (Postgres, FastAPI, dashboards)
 - **Phase 5 (Weeks 9–10):** AWS migration via Terraform
-- **Phase 6 (Weeks 11–12):** CI/CD, QuickSight, documentation
+- **Phase 6 (Weeks 11–12):** CI/CD, QuickSight, documentation (the lint + unit-test slice of CI/CD — `.github/workflows/ci.yml` — was set up early, ahead of this phase; deploy automation is still pending)
 
 ## Code Style
 

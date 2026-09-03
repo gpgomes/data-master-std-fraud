@@ -76,3 +76,8 @@ Simulador Python → Kafka (raw-transactions)
 | Schema Registry | Avro embutido no JSON | Simplicidade no ambiente local; substituir por Confluent Schema Registry em produção |
 | Detecção de fraude | Z-Score em janelas deslizantes | Baseline simples e interpretável; extensível com ML |
 | Serving layer | PostgreSQL + DuckDB | PostgreSQL para OLTP/API; DuckDB para queries analíticas ad-hoc |
+| Escopo do CI (GitHub Actions) | Só lint + testes unitários, sem os testes de integração | `tests/unit/` roda 100% local (SparkSession `local[*]`, storage mockado); o stack completo (Kafka, Zookeeper, Airflow, Superset, Postgres, MinIO, cluster Spark) é pesado/lento demais para rodar em todo PR — ver `.github/workflows/ci.yml` |
+
+## CI/CD
+
+Job `lint` (ruff + mypy) e job `test` (`pytest tests/unit/`, gate de cobertura ≥70%) rodam em paralelo a cada push/PR para `main`, via `.github/workflows/ci.yml`. Reflete só a camada de qualidade de código da futura Fase 6 do roadmap (`CaseFinancialDataLakeHouse.md`, item 6.1) — o deploy automatizado para AWS ainda não existe.

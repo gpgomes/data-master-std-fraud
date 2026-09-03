@@ -57,6 +57,17 @@ make setup
 make seed-data
 ```
 
+## CI (GitHub Actions)
+
+`.github/workflows/ci.yml` roda em todo push/PR para `main`: job `lint` (`ruff check` + `mypy`) e job `test` (`pytest tests/unit/`, Java 17 + Python 3.11, gate de cobertura ≥70%). Reproduza o gate localmente antes de abrir PR:
+
+```bash
+make lint
+make test-unit
+```
+
+Só `tests/unit/` roda no CI — testes de integração (`tests/integration/`) exigem o stack Docker completo e continuam rodando só localmente (`make up && make setup && make test-integration`).
+
 ## Troubleshooting
 
 | Problema | Causa Provável | Solução |
@@ -67,3 +78,4 @@ make seed-data
 | Airflow DB error | PostgreSQL não pronto | Aguardar healthcheck, `make logs-postgres` |
 | GX checkpoint falha | Schema incompatível | Atualizar expectations em `src/governance/great_expectations/expectations/` |
 | `make test-unit` falha com `JAVA_GATEWAY_EXITED` | JDK ausente no PATH (PySpark local precisa de um JRE) | Instalar Java 17, ex. `brew install openjdk@17` no macOS, e garantir `JAVA_HOME`/`java` no PATH da shell |
+| CI falha no `pip install -e ".[dev]"` do job `test`, no pacote `confluent-kafka` | Runner sem a lib nativa `librdkafka` (a wheel manylinux pode não cobrir a imagem do runner) | Adicionar um step `apt-get install -y librdkafka-dev` antes do `pip install` em `.github/workflows/ci.yml`, job `test` |
