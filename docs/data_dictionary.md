@@ -62,24 +62,74 @@ Colunas adicionais:
 
 ## Gold Layer
 
-### gold/fato_transacoes/
-Tabela fato de transações — modelo Star Schema.
+Star schema gerado pelo job `silver_to_gold.py` a partir da camada Silver.
+Chaves de dimensão reutilizam as chaves naturais do Silver (`customer_id` →
+`customer_key`, `transaction_date` → `date_key`) — não há geração de surrogate
+keys sintéticas nesta etapa.
+
+### gold/fact_transactions/
+Tabela fato de transações — grão: uma linha por transação. Particionado por `date_key`.
 
 | Campo | Tipo | Descrição |
 |-------|------|-----------|
 | transaction_id | string | PK |
-| customer_key | string | FK dim_clientes |
-| date_key | date | FK dim_data |
+| customer_key | string | FK gold/dim_customers |
+| date_key | date | FK gold/dim_date |
 | amount_brl | double | Valor em BRL |
-| transaction_type | string | Tipo |
+| currency | string | Moeda original |
+| transaction_type | string | PIX, TED, DOC, ... |
+| channel | string | Canal de operação |
+| merchant_category | string | Categoria do estabelecimento |
 | is_fraud | boolean | Flag de fraude |
-| fraud_score | double | Score de risco (0-1) |
+| fraud_type | string | Tipo de fraude (nulo se não for fraude) |
+| fraud_score | double | Score de risco (0-1); populado pelo streaming, nulo no batch puro |
 
-### gold/dim_clientes/
-Dimensão de clientes com atributos para análise.
+### gold/dim_customers/
+Dimensão de clientes com atributos para análise. Mantém apenas o registro
+corrente (`is_current=True`) do Silver (SCD2).
 
-### gold/fato_anomalias/
-Registros de anomalias detectadas no streaming com Z-Score e contexto.
+| Campo | Tipo | Descrição |
+|-------|------|-----------|
+| customer_key | string | PK |
+| name, cpf_masked, gender, birth_date | string | Atributos de identificação |
+| age, age_group | int, string | Idade e faixa etária |
+| segment | string | VAREJO, ALTA_RENDA, PRIVATE |
+| city, state, country | string | Localização |
+| risk_score | double | Score de risco cadastral (0-100) |
+| account_opening_date | string | Data de abertura da conta |
+
+### gold/dim_date/
+Dimensão de calendário, derivada das datas distintas presentes em
+`silver/transactions`. Reconstruída por completo a cada execução (não
+particionada, não respeita `--start-date/--end-date`), para nunca deixar a FK
+`date_key` da fato órfã em reprocessamentos parciais.
+
+| Campo | Tipo | Descrição |
+|-------|------|-----------|
+| date_key | date | PK |
+| year, month, day, quarter | int | Componentes da data |
+| day_of_week | int | 1=domingo ... 7=sábado (convenção Spark) |
+| day_name | string | Nome do dia da semana |
+| week_of_year | int | Semana do ano |
+| is_weekend | boolean | Sábado ou domingo |
+
+### gold/agg_daily_fraud_metrics/
+Agregação diária de volume e taxa de fraude por dia e tipo de transação.
+Particionado por `date_key`.
+
+| Campo | Tipo | Descrição |
+|-------|------|-----------|
+| date_key | date | Data |
+| transaction_type | string | Tipo de transação |
+| total_transactions | long | Total de transações no grupo |
+| total_amount_brl | double | Soma de amount_brl |
+| avg_amount_brl | double | Ticket médio |
+| fraud_count | long | Total de transações fraudulentas |
+| fraud_rate | double | fraud_count / total_transactions |
+
+### gold/fato_anomalias/ *(ainda não implementado)*
+Registros de anomalias detectadas no streaming com Z-Score e contexto —
+depende do job de streaming (roadmap 2.3/2.4), não incluído no batch Silver→Gold.
 
 ## Glossário de Negócio
 
