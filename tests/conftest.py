@@ -71,7 +71,7 @@ def sample_market_trade() -> MarketTradeEvent:
         bid=38.45,
         ask=38.55,
         spread=0.10,
-        source="simulator",
+        source_system="simulator",
     )
 
 

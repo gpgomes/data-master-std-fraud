@@ -15,6 +15,7 @@ import numpy as np
 from loguru import logger
 
 from src.common.config import settings
+from src.common.schemas import MarketTradeEvent
 from src.ingestion.streaming.producer_config import ProducerConfig
 
 # ── Configuração ───────────────────────────────────────────────────────────────
@@ -101,8 +102,6 @@ class TickSimulator:
             "bid": bid,
             "ask": ask,
             "spread": spread,
-            "produced_at": now_utc.isoformat(),
-            "source_system": SOURCE_SYSTEM,
         }
 
 
@@ -110,6 +109,21 @@ def _is_pregao() -> bool:
     """Retorna True se estiver dentro do horário de pregão B3."""
     hour = datetime.now(tz=UTC).hour
     return PREGAO_START_HOUR_UTC <= hour < PREGAO_END_HOUR_UTC
+
+
+def _build_message(tick: dict[str, Any]) -> dict[str, Any]:
+    """Valida o tick contra MarketTradeEvent e adiciona metadados de proveniência.
+
+    A validação garante que o payload publicado no Kafka sempre respeita o
+    contrato de dados (issue #8) — falha rápido se o simulador produzir algo
+    incompatível com o schema, em vez de propagar dado inválido no stream.
+    """
+    event = MarketTradeEvent(
+        **tick,
+        produced_at=datetime.now(tz=UTC),
+        source_system=SOURCE_SYSTEM,
+    )
+    return event.model_dump(mode="json")
 
 
 def _serialize(msg: dict[str, Any]) -> str:
@@ -153,12 +167,13 @@ def run(stop_event: Event | None = None) -> None:
 
             symbol = random.choice(symbols)
             tick = simulator.next_tick(symbol)
-            payload = _serialize(tick)
+            msg = _build_message(tick)
+            payload = _serialize(msg)
 
             t0 = time.monotonic()
             try:
                 future = producer.send(TOPIC, value=payload, key=symbol, headers=[
-                    ("produced_at", tick["produced_at"].encode()),
+                    ("produced_at", msg["produced_at"].encode()),
                     ("source_system", SOURCE_SYSTEM.encode()),
                 ])
                 future.get(timeout=10)
