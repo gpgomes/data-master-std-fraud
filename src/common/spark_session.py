@@ -1,4 +1,4 @@
-"""Factory para SparkSession configurada com Delta Lake e MinIO/S3."""
+"""Factory para SparkSession configurada com MinIO/S3."""
 
 from __future__ import annotations
 
@@ -17,10 +17,16 @@ def create_spark_session(
     """Cria e retorna uma SparkSession configurada para a plataforma.
 
     Configurações incluem:
-    - Delta Lake support (formato e extensões)
     - S3/MinIO connectivity via hadoop-aws (fs.s3a)
     - Configurações de memória para dev local
     - Suporte ao Kafka connector (structured streaming)
+
+    Formato de armazenamento: Parquet puro (não Delta Lake) — decisão da
+    issue #9. As camadas Silver e Gold são reescritas por completo a cada
+    execução (idempotente via overwrite dinâmico por partição), então o
+    log de transação ACID do Delta não é necessário no cenário atual;
+    time travel/versionamento fica para a fase de governança (roadmap
+    item 3.6), quando justificar a complexidade extra.
 
     Args:
         app_name: Nome da aplicação Spark.
@@ -35,15 +41,6 @@ def create_spark_session(
     builder = (
         SparkSession.builder.appName(app_name)
         .master(master)
-        # ── Delta Lake ──────────────────────────────────────────────────────────
-        .config(
-            "spark.sql.extensions",
-            "io.delta.sql.DeltaSparkSessionExtension",
-        )
-        .config(
-            "spark.sql.catalog.spark_catalog",
-            "org.apache.spark.sql.delta.catalog.DeltaCatalog",
-        )
         # ── S3 / MinIO ──────────────────────────────────────────────────────────
         .config("spark.hadoop.fs.s3a.endpoint", settings.minio.internal_endpoint)
         .config("spark.hadoop.fs.s3a.access.key", settings.minio.access_key)

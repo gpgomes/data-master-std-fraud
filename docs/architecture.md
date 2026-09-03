@@ -33,6 +33,11 @@ yfinance / CSV → Python Collector → MinIO (Bronze/Parquet)
                               MinIO (Gold/Parquet) → PostgreSQL
 ```
 
+Orquestrado por duas DAGs Airflow em sequência: `batch_ingestion_pipeline`
+(06:00 UTC, fontes → Bronze) e `batch_transformation_pipeline` (07:00 UTC,
+Bronze → Silver → Gold, via `SparkSubmitOperator`). O loader Gold→PostgreSQL
+ainda não existe (issue #10).
+
 ### Streaming
 ```
 Simulador Python → Kafka (raw-transactions)
@@ -52,7 +57,7 @@ Simulador Python → Kafka (raw-transactions)
 
 ### Armazenamento
 - **MinIO** — Object storage S3-compatible com três buckets: bronze, silver, gold
-- **Delta Lake** — Versionamento e time travel sobre Parquet
+- **Parquet** — Formato único de Silver e Gold (issue #9); ver "Decisões Arquiteturais" abaixo
 
 ### Transformação
 - **PySpark Batch** — Jobs Bronze→Silver e Silver→Gold
@@ -72,7 +77,7 @@ Simulador Python → Kafka (raw-transactions)
 | Decisão | Escolha | Justificativa |
 |---------|---------|---------------|
 | Padrão batch+streaming | Lambda (não Kappa) | Trilha batch auditável para dados financeiros regulados; evita retenção longa/cara no Kafka que o replay completo do Kappa exigiria |
-| Formato de armazenamento | Parquet + Delta Lake | Compressão eficiente, schema evolution, time travel |
+| Formato de armazenamento | Parquet puro (não Delta Lake) | Silver/Gold são reescritos por completo a cada execução (idempotente via overwrite dinâmico por partição, ver `spark_session.py`), então o log de transação ACID do Delta não agrega valor agora. O Spark session e o Makefile chegaram a configurar extensões Delta (`io.delta:delta-core_2.12:2.4.0`), mas com versão incompatível com o Spark 3.5.1 do cluster (Delta 2.4 é pra Spark 3.4) e nunca de fato usadas (todo `.write` já era `.format("parquet")`) — configuração removida na issue #9. Time travel/versionamento fica para a fase de governança (roadmap 3.6), quando justificar a complexidade extra |
 | Schema Registry | Avro embutido no JSON | Simplicidade no ambiente local; substituir por Confluent Schema Registry em produção |
 | Detecção de fraude | Z-Score em janelas deslizantes | Baseline simples e interpretável; extensível com ML |
 | Serving layer | PostgreSQL + DuckDB | PostgreSQL para OLTP/API; DuckDB para queries analíticas ad-hoc |

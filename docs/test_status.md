@@ -422,6 +422,48 @@ Validação extra (não prevista no checklist original, adicionada durante a exe
 | 1.7-COV-04b | `ruff check` | All checks passed! | OK |
 | 1.7-COV-05b | `mypy` | Success: no issues found | OK |
 
+### 6. Fechamento da issue #9 (executado em 2026-09-03)
+
+A issue #9 pedia duas coisas além do job em si (já validado acima): decidir e
+aplicar consistentemente Parquet ou Delta Lake, e integrar o job a uma DAG
+Airflow. Checklist completo em `docs/testes_step_1.7.txt`.
+
+**Parquet vs. Delta Lake** — decisão (validada com o usuário): manter Parquet
+puro. O Spark session e o Makefile configuravam extensões Delta com versão
+incompatível com o cluster (`delta-core_2.12:2.4.0` é pra Spark 3.4; o cluster
+roda Spark 3.5.1) e nunca usada de fato (todo `.write` já era `.format("parquet")`).
+Como Silver/Gold são reescritos por completo a cada execução (idempotente via
+overwrite dinâmico por partição), o log ACID do Delta não agrega valor agora.
+Config Delta removida de `spark_session.py`, `Makefile` (3 targets) e
+`pyproject.toml` (dependência `delta-spark` não usada em lugar nenhum do código).
+
+**DAG Airflow** (`dags/dag_batch_transformation.py`) — `bronze_to_silver >>
+silver_to_gold >> notify_completion` via `SparkSubmitOperator`, schedule 07:00
+UTC. O container do Airflow não tinha JVM/PySpark; adicionado
+`openjdk-17-jre-headless` + `pyspark==3.5.1` + `PYTHONPATH=/opt/airflow` em
+`docker/airflow/Dockerfile`, e `AIRFLOW_CONN_SPARK_DEFAULT` em `docker-compose.yml`.
+
+Dois bugs só apareceram rodando via Airflow (não no `spark-submit` direto
+contra o `spark-master`, onde o driver já tem todos os jars):
+
+| Bug | Causa | Correção |
+|-----|-------|----------|
+| `spark-submit --master spark-master:7077` (sem `spark://`) | `SparkSubmitHook` monta `master = f"{host}:{port}"` — não reconstrói esquema | Connection como JSON (não URI), com `host="spark://spark-master"` |
+| `ClassNotFoundException: S3AFileSystem` | Driver roda em modo client dentro do container do Airflow, sem os jars `hadoop-aws`/`aws-java-sdk-bundle` da imagem customizada do Spark | `packages=` com esses 2 jars nas duas `SparkSubmitOperator` (resolvidos via Ivy) |
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|-------------------|--------|
+| 9-DAG-01 | DAG aparece no Airflow sem import errors | Sem erros | OK |
+| 9-DAG-02 | Trigger manual — pipeline completa de ponta a ponta | 3 tasks success | OK (após os 2 bugs acima corrigidos) |
+| 9-DAG-03 | `gold/` populado ao final da DAG | 4 tabelas, partições corretas | OK — 295 partições em `fact_transactions`/`agg_daily_fraud_metrics` |
+
+Execução real (`manual__2026-09-03T18:09:02+00:00`): `bronze_to_silver` →
+transactions=506.146, market_data=1, customers=71.000; `silver_to_gold` → Gold
+completo. Durante a execução houve ~13 min de falhas de heartbeat por DNS
+intermitente no container (`could not translate host name postgres-airflow`)
+— instabilidade pontual do Docker Desktop/WSL2 local, autorresolvida, não é
+bug do projeto.
+
 ---
 
 ## Issue #7 — Reprodutibilidade do Ambiente Local
