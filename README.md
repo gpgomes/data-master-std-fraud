@@ -1,5 +1,6 @@
 # Data Master — Financial Fraud Detection Platform
 
+[![CI](https://github.com/gpgomes/data-master-std-fraud/actions/workflows/ci.yml/badge.svg)](https://github.com/gpgomes/data-master-std-fraud/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![PySpark](https://img.shields.io/badge/pyspark-3.5-orange.svg)](https://spark.apache.org/)
 [![Apache Kafka](https://img.shields.io/badge/kafka-3.6-black.svg)](https://kafka.apache.org/)
@@ -195,12 +196,34 @@ make spark-submit-stream
 make up                  # Subir todos os containers
 make down                # Derrubar todos os containers
 make setup               # Inicializar buckets MinIO e tópicos Kafka
-make test                # Executar todos os testes (pytest)
-make lint                # Verificar código (ruff + black)
+make test                # Executar todos os testes (pytest, requer infra)
+make test-unit           # Executar só os testes unitários (sem infra Docker)
+make lint                # Verificar código (ruff + mypy)
 make spark-submit-batch  # Submeter job batch PySpark
 make spark-submit-stream # Submeter job streaming PySpark
 make seed-data           # Gerar dados sintéticos de exemplo
 make clean               # Limpar volumes e dados temporários
+```
+
+---
+
+## CI/CD
+
+O workflow [`.github/workflows/ci.yml`](.github/workflows/ci.yml) roda automaticamente em todo push/PR para `main` (e pode ser disparado manualmente via `workflow_dispatch`), com dois jobs em paralelo:
+
+| Job | O que roda | Equivalente local |
+|-----|-----------|---------------------|
+| `lint` | `ruff check` + `mypy` | `make lint` |
+| `test` | Testes unitários (`tests/unit/`), com o gate de cobertura ≥70% já configurado em `pyproject.toml` | `make test-unit` |
+
+O job `test` usa Python 3.11 + Java 17 (PySpark roda em modo local `local[*]`, sem precisar do cluster Spark real). O relatório de cobertura HTML é publicado como artefato do workflow.
+
+**Testes de integração (`tests/integration/`) não rodam no CI** — dependem do stack Docker completo (Kafka, Zookeeper, Airflow, Superset, Postgres, MinIO, cluster Spark), pesado demais para rodar em todo PR; ver `docs/runbook.md` para rodá-los localmente com `make up && make setup`.
+
+Antes de abrir um PR, reproduza o gate localmente:
+```bash
+make lint
+make test-unit
 ```
 
 ---

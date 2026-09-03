@@ -421,43 +421,53 @@ Validação extra (não prevista no checklist original, adicionada durante a exe
 | 1.7-COV-01b | Suíte completa (`pytest tests/unit/`) | Sem regressão | OK (143/143 PASSED, cobertura geral 85%) |
 | 1.7-COV-04b | `ruff check` | All checks passed! | OK |
 | 1.7-COV-05b | `mypy` | Success: no issues found | OK |
-## Step 1.7 — Reprodutibilidade do Ambiente Local
 
-> Checklist completo: `docs/testes_step_1.7.txt`
+---
+
+## Issue #7 — Reprodutibilidade do Ambiente Local
+
+> Este trabalho foi commitado originalmente como "step-1.7", em paralelo e sem
+> conhecimento do step 1.7 acima (Silver → Gold) — os dois branches
+> `feature/step_1.7` colidiram no mesmo número. Renomeado aqui para "Issue #7"
+> e os IDs de teste de `1.7-*` para `ISSUE7-*` para eliminar a ambiguidade
+> (ex.: `1.7-DC-01` tinha dois significados diferentes). Nenhum código foi
+> alterado, só a documentação.
+>
+> Checklist completo: `docs/testes_issue_7.txt`
 
 ### 1. Testes Unitários — `tests/unit/test_environment_consistency.py`
 
 | ID | Teste | Resultado Esperado | Status |
 |----|-------|--------------------|--------|
-| 1.7-DC-01 | `test_no_obsolete_version_attribute` | `docker-compose.yml` sem atributo `version:` top-level | OK |
-| 1.7-DC-02 | `test_minio_external_port_default_matches_env_example` | Porta default de `${MINIO_EXTERNAL_PORT:-9000}` bate com `.env.example` | OK |
-| 1.7-DC-03 | `test_postgres_external_port_default_matches_env_example` | Porta default de `${POSTGRES_EXTERNAL_PORT:-5432}` bate com `.env.example` | OK |
-| 1.7-CFG-01 | `test_minio_endpoint_default_matches_env_example` | `MinIOSettings().endpoint` == `MINIO_ENDPOINT` do `.env.example` | OK |
-| 1.7-CFG-02 | `test_postgres_port_default_matches_env_example` | `PostgresSettings().port` == `POSTGRES_PORT` do `.env.example` | OK |
-| 1.7-PY-01 | `test_python_variable_is_not_windows_path` | `PYTHON` do Makefile sem `\` (caminho Windows) | OK |
+| ISSUE7-DC-01 | `test_no_obsolete_version_attribute` | `docker-compose.yml` sem atributo `version:` top-level | OK |
+| ISSUE7-DC-02 | `test_minio_external_port_default_matches_env_example` | Porta default de `${MINIO_EXTERNAL_PORT:-9000}` bate com `.env.example` | OK |
+| ISSUE7-DC-03 | `test_postgres_external_port_default_matches_env_example` | Porta default de `${POSTGRES_EXTERNAL_PORT:-5432}` bate com `.env.example` | OK |
+| ISSUE7-CFG-01 | `test_minio_endpoint_default_matches_env_example` | `MinIOSettings().endpoint` == `MINIO_ENDPOINT` do `.env.example` | OK |
+| ISSUE7-CFG-02 | `test_postgres_port_default_matches_env_example` | `PostgresSettings().port` == `POSTGRES_PORT` do `.env.example` | OK |
+| ISSUE7-PY-01 | `test_python_variable_is_not_windows_path` | `PYTHON` do Makefile sem `\` (caminho Windows) | OK |
 
 ### 2. Validação Docker Compose
 
 | ID | Descrição | Resultado Esperado | Status |
 |----|-----------|--------------------|--------|
-| 1.7-CMP-01 | `docker compose config --quiet` sem override | MinIO publica 9000, Postgres publica 5432 | OK |
-| 1.7-CMP-02 | Com `MINIO_EXTERNAL_PORT`/`POSTGRES_EXTERNAL_PORT` customizados | Portas respeitadas (ex.: 9099/5499) | OK |
+| ISSUE7-CMP-01 | `docker compose config --quiet` sem override | MinIO publica 9000, Postgres publica 5432 | OK |
+| ISSUE7-CMP-02 | Com `MINIO_EXTERNAL_PORT`/`POSTGRES_EXTERNAL_PORT` customizados | Portas respeitadas (ex.: 9099/5499) | OK |
 
 ### 3. Suíte Completa e Lint
 
 | ID | Descrição | Resultado Esperado | Status |
 |----|-----------|--------------------|--------|
-| 1.7-SUITE-01 | `make test-unit` (todos os steps) | 119/119 PASSED, cobertura >= 70% | OK (86,42%) |
-| 1.7-LIN-01 | `ruff check` | All checks passed! | OK |
-| 1.7-LIN-02 | `mypy` | Success: no issues found | OK |
+| ISSUE7-SUITE-01 | `make test-unit` (todos os steps) | 119/119 PASSED, cobertura >= 70% | OK (86,42%) |
+| ISSUE7-LIN-01 | `ruff check` | All checks passed! | OK |
+| ISSUE7-LIN-02 | `mypy` | Success: no issues found | OK |
 
 ### 4. Validação Manual — Ambiente do Zero (macOS)
 
 | ID | Descrição | Resultado Esperado | Status |
 |----|-----------|--------------------|--------|
-| 1.7-MAN-01 | `.venv` criado com Python 3.11 e `make` resolve o interpretador sem config manual | `make test-unit` usa `.venv/bin/python` automaticamente | OK |
-| 1.7-MAN-02 | `make test-unit` sem JRE instalado | Falha com `JAVA_GATEWAY_EXITED`, documentado no runbook | OK |
-| 1.7-MAN-03 | Serviços acessíveis nas portas documentadas após `make up` | MinIO (9001/9000), Postgres (5432) sem remapeamento manual | OK |
+| ISSUE7-MAN-01 | `.venv` criado com Python 3.11 e `make` resolve o interpretador sem config manual | `make test-unit` usa `.venv/bin/python` automaticamente | OK |
+| ISSUE7-MAN-02 | `make test-unit` sem JRE instalado | Falha com `JAVA_GATEWAY_EXITED`, documentado no runbook | OK |
+| ISSUE7-MAN-03 | Serviços acessíveis nas portas documentadas após `make up` | MinIO (9001/9000), Postgres (5432) sem remapeamento manual | OK |
 
 ### 5. Lacunas encontradas e corrigidas nesta rodada
 
