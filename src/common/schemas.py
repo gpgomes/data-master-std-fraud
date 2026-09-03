@@ -1,9 +1,13 @@
 """Schemas Pydantic e PySpark para toda a plataforma."""
 
+import re
 from datetime import datetime
 from enum import StrEnum
 
 from pydantic import BaseModel, Field, field_validator
+
+# CPF mascarado: apenas os 2 últimos dígitos visíveis, sem espaços.
+CPF_MASKED_PATTERN = re.compile(r"^\*\*\*\.\*\*\*\.\*\*\*-\d{2}$")
 
 # ── Enums ──────────────────────────────────────────────────────────────────────
 
@@ -76,9 +80,20 @@ class TransactionEvent(BaseModel):
     ip_address: str | None = None
     latitude: float | None = None
     longitude: float | None = None
-    is_fraud: bool = Field(default=False)
+    is_fraud: bool = Field(
+        default=False, description="Label de fraude (ground truth), conhecida na origem/geração"
+    )
     fraud_type: FraudType | None = None
-    fraud_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    fraud_score: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Score de risco (0-1) atribuído pela detecção de fraude (streaming/Z-Score). "
+            "Sempre None nos dados brutos gerados/ingeridos — é um campo derivado, "
+            "populado downstream, nunca usado como input da geração ou do rótulo is_fraud."
+        ),
+    )
 
     @field_validator("fraud_type")
     @classmethod
@@ -111,7 +126,9 @@ class CustomerRecord(BaseModel):
 
     customer_id: str
     name: str
-    cpf_masked: str = Field(description="CPF mascarado (***.***.***-**)")
+    cpf_masked: str = Field(
+        description="CPF mascarado (***.***.***-XX) — apenas os 2 últimos dígitos visíveis"
+    )
     birth_date: str = Field(description="Data de nascimento (YYYY-MM-DD)")
     gender: str
     account_opening_date: str
@@ -120,6 +137,16 @@ class CustomerRecord(BaseModel):
     city: str
     state: str
     country: str = Field(default="BR")
+
+    @field_validator("cpf_masked")
+    @classmethod
+    def validate_cpf_masked(cls, v: str) -> str:
+        if not CPF_MASKED_PATTERN.match(v):
+            raise ValueError(
+                "cpf_masked deve seguir o formato ***.***.***-XX "
+                "(apenas os 2 últimos dígitos visíveis)"
+            )
+        return v
 
     model_config = {"use_enum_values": True}
 

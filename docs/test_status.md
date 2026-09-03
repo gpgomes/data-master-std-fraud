@@ -27,7 +27,7 @@
 |----|-----------|-------------------|--------|
 | 1.3-2.1 | Executar script com 1.000 transações, 100 clientes, 10 dias de mercado, seed 42 | Taxa de fraude entre 1–5%, PIX dominante (~45%), 4 tipos de fraude | OK |
 | 1.3-2.2 | Verificar arquivos CSV gerados em `data/test_smoke/` | `customers.csv`, `transactions/YYYY/MM/DD/transactions.csv`, `market_data/YYYY/MM/DD/market.csv` presentes | OK |
-| 1.3-2.3 | Verificar conteúdo do `customers.csv` (100 linhas) | 100 registros com todas as colunas; `country="BR"`, `segment` em {VAREJO, PREMIUM, PRIVATE}, `risk_score` em [0, 100] | OK |
+| 1.3-2.3 | Verificar conteúdo do `customers.csv` (100 linhas) | 100 registros com todas as colunas; `country="BR"`, `segment` em {VAREJO, ALTA_RENDA, PRIVATE}, `risk_score` em [0, 100] | OK |
 | 1.3-2.4 | Verificar conteúdo do `transactions.csv` | Todas as colunas presentes; `amount > 0`; `fraud_type` preenchido somente quando `is_fraud=True` | OK |
 | 1.3-2.5 | Verificar conteúdo do `market.csv` | Colunas corretas; `high >= low`; preços > 0; 10 símbolos B3 presentes | OK |
 
@@ -421,3 +421,90 @@ Validação extra (não prevista no checklist original, adicionada durante a exe
 | 1.7-COV-01b | Suíte completa (`pytest tests/unit/`) | Sem regressão | OK (143/143 PASSED, cobertura geral 85%) |
 | 1.7-COV-04b | `ruff check` | All checks passed! | OK |
 | 1.7-COV-05b | `mypy` | Success: no issues found | OK |
+## Step 1.7 — Reprodutibilidade do Ambiente Local
+
+> Checklist completo: `docs/testes_step_1.7.txt`
+
+### 1. Testes Unitários — `tests/unit/test_environment_consistency.py`
+
+| ID | Teste | Resultado Esperado | Status |
+|----|-------|--------------------|--------|
+| 1.7-DC-01 | `test_no_obsolete_version_attribute` | `docker-compose.yml` sem atributo `version:` top-level | OK |
+| 1.7-DC-02 | `test_minio_external_port_default_matches_env_example` | Porta default de `${MINIO_EXTERNAL_PORT:-9000}` bate com `.env.example` | OK |
+| 1.7-DC-03 | `test_postgres_external_port_default_matches_env_example` | Porta default de `${POSTGRES_EXTERNAL_PORT:-5432}` bate com `.env.example` | OK |
+| 1.7-CFG-01 | `test_minio_endpoint_default_matches_env_example` | `MinIOSettings().endpoint` == `MINIO_ENDPOINT` do `.env.example` | OK |
+| 1.7-CFG-02 | `test_postgres_port_default_matches_env_example` | `PostgresSettings().port` == `POSTGRES_PORT` do `.env.example` | OK |
+| 1.7-PY-01 | `test_python_variable_is_not_windows_path` | `PYTHON` do Makefile sem `\` (caminho Windows) | OK |
+
+### 2. Validação Docker Compose
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|--------------------|--------|
+| 1.7-CMP-01 | `docker compose config --quiet` sem override | MinIO publica 9000, Postgres publica 5432 | OK |
+| 1.7-CMP-02 | Com `MINIO_EXTERNAL_PORT`/`POSTGRES_EXTERNAL_PORT` customizados | Portas respeitadas (ex.: 9099/5499) | OK |
+
+### 3. Suíte Completa e Lint
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|--------------------|--------|
+| 1.7-SUITE-01 | `make test-unit` (todos os steps) | 119/119 PASSED, cobertura >= 70% | OK (86,42%) |
+| 1.7-LIN-01 | `ruff check` | All checks passed! | OK |
+| 1.7-LIN-02 | `mypy` | Success: no issues found | OK |
+
+### 4. Validação Manual — Ambiente do Zero (macOS)
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|--------------------|--------|
+| 1.7-MAN-01 | `.venv` criado com Python 3.11 e `make` resolve o interpretador sem config manual | `make test-unit` usa `.venv/bin/python` automaticamente | OK |
+| 1.7-MAN-02 | `make test-unit` sem JRE instalado | Falha com `JAVA_GATEWAY_EXITED`, documentado no runbook | OK |
+| 1.7-MAN-03 | Serviços acessíveis nas portas documentadas após `make up` | MinIO (9001/9000), Postgres (5432) sem remapeamento manual | OK |
+
+### 5. Lacunas encontradas e corrigidas nesta rodada
+
+| Arquivo | Problema | Correção |
+|---------|----------|----------|
+| `Makefile` | `PYTHON := .venv\Scripts\python` — caminho Windows hardcoded, quebrava em macOS/Linux | Detecção de `.venv/bin/python` com fallback para `python3`, sobrescrevível |
+| `docker-compose.yml` | Portas do MinIO (9002:9000) e Postgres (5433:5432) remapeadas divergiam de `.env.example`/`config.py` | Parametrizadas via `${MINIO_EXTERNAL_PORT:-9000}`/`${POSTGRES_EXTERNAL_PORT:-5432}` |
+| `docker-compose.yml` | Atributo `version: "3.9"` obsoleto no Compose v2 | Removido |
+| `README.md` | Pré-requisito de Java (necessário para PySpark local) não documentado — `make test-unit` falhava sem pista em máquina limpa | Documentado no README e no runbook (`docs/runbook.md`) |
+
+Fora de escopo (pertence a outras issues): nomes de variável divergentes para taxa dos producers (issue #8) e máscara de CPF incorreta em `data_generator.py` (issue #12).
+
+PR: [#19](https://github.com/gpgomes/data-master-std-fraud/pull/19) — Closes #7.
+
+---
+
+## Step 1.8 — Privacidade, Qualidade e Semântica dos Dados
+
+> Checklist completo: `docs/testes_step_1.8.txt`
+
+### 1. Testes Unitários
+
+| ID | Teste | Resultado Esperado | Status |
+|----|-------|--------------------|--------|
+| 1.8-CPF-01 | `test_cpf_masked_format` | `cpf_masked` bate com `***.***.***-XX` para todo cliente gerado | OK |
+| 1.8-CPF-02 | `test_customers_validate_against_pydantic_model` | Todo cliente gerado valida contra `CustomerRecord` sem erro | OK |
+| 1.8-FS-01 | `test_fraud_score_never_set_by_generator` | `fraud_score` ausente/None em toda transação gerada (campo derivado da detecção, não da geração) | OK |
+| 1.8-VAL-01 | `test_valid_cpf_masked_accepted` | `"***.***.***-42"` aceito pelo validador | OK |
+| 1.8-VAL-02 | `test_invalid_cpf_masked_rejected[...]` (5 casos) | `ValidationError` para espaço literal, excesso de dígitos, separador errado, dígito único, CPF sem máscara | OK |
+
+### 2. Lint, Suíte Completa e Validação Manual
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|--------------------|--------|
+| 1.8-LIN-01/02 | `make lint` | ruff + mypy sem erros | OK |
+| 1.8-SUITE-01 | `make test-unit` | 128/128 PASSED, cobertura >= 70% | OK (86,53%) |
+| 1.8-MAN-01 | Geração manual de 5 clientes | `cpf_masked` no formato `***.***.***-XX` | OK |
+| 1.8-MAN-02 | Revisão de todos os `logger.*` em `src/ingestion/` e `src/transformation/` | Nenhum log interpola nome/CPF/IP/device_id/coordenadas | OK |
+| 1.8-MAN-03 | Revisão de `tests/conftest.py` | Sem PII real, apenas ids sintéticos | OK |
+
+### 3. Bugs/lacunas encontrados e corrigidos
+
+| Arquivo | Problema | Correção |
+|---------|----------|----------|
+| `src/common/data_generator.py:109` | `cpf_masked` expunha 5 dígitos do CPF (não 2) e tinha espaço literal no f-string — bug já identificado no step 1.6 (`1.6-MAN-07`) mas não corrigido naquele branch | Reescrito para `***.***.***-{últimos 2 dígitos}` |
+| `src/common/schemas.py` — `CustomerRecord` | Nenhuma validação de formato para `cpf_masked` no schema | Adicionado `CPF_MASKED_PATTERN` + `field_validator` |
+| `src/common/schemas.py` — `TransactionEvent.fraud_score` | Semântica não documentada (geração vs. detecção) | Documentado como campo derivado, sempre nulo na origem; travado por teste |
+| `docs/testes_step_1.3.txt`, `docs/test_status.md` | Referenciavam segmento "PREMIUM", que nunca existiu no enum `CustomerSegment` | Corrigido para `ALTA_RENDA` |
+
+Fora de escopo: contrato de dados entre producers/schemas (issue #8) e implementação real do cálculo de `fraud_score` no streaming (issue #11).

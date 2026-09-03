@@ -6,8 +6,10 @@ import pytest
 
 from src.common.data_generator import MARKET_SYMBOLS, DataGenerator
 from src.common.schemas import (
+    CPF_MASKED_PATTERN,
     Channel,
     Currency,
+    CustomerRecord,
     CustomerSegment,
     FraudType,
     MerchantCategory,
@@ -74,6 +76,17 @@ class TestGenerateCustomers:
         c1 = g1.generate_customers(n=10)
         c2 = g2.generate_customers(n=10)
         assert [c["customer_id"] for c in c1] == [c["customer_id"] for c in c2]
+
+    def test_cpf_masked_format(self, small_customers: list[dict]) -> None:
+        """Regressão: cpf_masked não pode ter espaço nem expor mais que os 2 últimos dígitos."""
+        for c in small_customers:
+            assert CPF_MASKED_PATTERN.match(c["cpf_masked"]), c["cpf_masked"]
+
+    def test_customers_validate_against_pydantic_model(
+        self, small_customers: list[dict]
+    ) -> None:
+        for c in small_customers:
+            CustomerRecord(**c)
 
 
 class TestGenerateTransactions:
@@ -175,6 +188,18 @@ class TestGenerateTransactions:
         txs = gen.generate_transactions(small_customers, n=100)
         for tx in txs:
             assert tx["customer_id"] in valid_ids
+
+    def test_fraud_score_never_set_by_generator(
+        self, gen: DataGenerator, small_customers: list[dict]
+    ) -> None:
+        """fraud_score é derivado da detecção de fraude (streaming), não da geração/ingestão.
+
+        A geração só conhece o ground truth (is_fraud/fraud_type); popular fraud_score
+        aqui vazaria o rótulo para dentro do próprio dado bruto.
+        """
+        txs = gen.generate_transactions(small_customers, n=200)
+        for tx in txs:
+            assert "fraud_score" not in tx or tx["fraud_score"] is None
 
 
 class TestGenerateMarketData:

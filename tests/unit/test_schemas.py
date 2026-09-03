@@ -8,6 +8,8 @@ from pydantic import ValidationError
 from src.common.schemas import (
     Channel,
     Currency,
+    CustomerRecord,
+    CustomerSegment,
     MarketTradeEvent,
     MerchantCategory,
     TransactionEvent,
@@ -83,3 +85,39 @@ class TestMarketTradeEvent:
                 ask=10.1,
                 spread=0.1,
             )
+
+
+class TestCustomerRecord:
+    def _customer(self, **overrides):
+        base = {
+            "customer_id": "cust-001",
+            "name": "Fulano de Tal",
+            "cpf_masked": "***.***.***-00",
+            "birth_date": "1990-01-01",
+            "gender": "M",
+            "account_opening_date": "2020-01-01",
+            "risk_score": 10.0,
+            "segment": CustomerSegment.VAREJO,
+            "city": "São Paulo",
+            "state": "SP",
+        }
+        base.update(overrides)
+        return CustomerRecord(**base)
+
+    def test_valid_cpf_masked_accepted(self):
+        customer = self._customer(cpf_masked="***.***.***-42")
+        assert customer.cpf_masked == "***.***.***-42"
+
+    @pytest.mark.parametrize(
+        "invalid_cpf",
+        [
+            "***.***. 196-00",  # bug original: espaço literal
+            "***.***.196-00",  # expõe 3 dígitos em vez de mascarar
+            "***.***.***.00",  # separador errado (ponto em vez de hífen)
+            "***.***.***-0",  # só 1 dígito visível
+            "123.456.789-00",  # sem mascaramento nenhum
+        ],
+    )
+    def test_invalid_cpf_masked_rejected(self, invalid_cpf: str):
+        with pytest.raises(ValidationError, match="cpf_masked"):
+            self._customer(cpf_masked=invalid_cpf)
