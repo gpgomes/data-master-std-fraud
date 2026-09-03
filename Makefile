@@ -87,6 +87,11 @@ spark-submit-silver-gold: ## Submeter job Silver → Gold
 		--master $(SPARK_MASTER) \
 		src/transformation/batch/silver_to_gold.py
 
+spark-submit-gold-postgres: ## Submeter job Gold → PostgreSQL (serving layer)
+	$(COMPOSE) exec spark-master spark-submit \
+		--master $(SPARK_MASTER) \
+		src/serving/loaders/gold_to_postgres.py
+
 # ── Producers ──────────────────────────────────────────────────────────────────
 producer-transactions: ## Iniciar producer de transações financeiras
 	$(PYTHON) -m src.ingestion.streaming.kafka_producer_transactions

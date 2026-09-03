@@ -603,3 +603,95 @@ Producer de mercado não testado contra Kafka real (só roda em horário de preg
 | 8-SUITE-01 | `pytest tests/unit/` | Sem regressão | OK (172/173 PASSED — 1 falha local pré-existente de `.env`, não relacionada) |
 | 8-LIN-01 | `ruff check` | All checks passed! | OK |
 | 8-LIN-02 | `mypy` | Success: no issues found | OK |
+
+---
+
+## Issue #10 — Loader Gold para PostgreSQL (executado em 2026-09-03)
+
+> Checklist completo: `docs/testes_issue_10.txt`
+
+Objetivo: disponibilizar `dim_customers`, `dim_date`, `fact_transactions` e
+`agg_daily_fraud_metrics` no PostgreSQL da serving layer. Decisão de
+arquitetura (confirmada com o usuário): PySpark + JDBC — o loader roda dentro
+do cluster Spark (mesmo padrão de `bronze_to_silver.py`/`silver_to_gold.py`),
+lendo o Gold via `spark.read.parquet` e escrevendo via
+`spark.write.format("jdbc")`. Estratégia de carga: truncate + reload completo
+por tabela a cada execução (sempre idempotente; sem upsert real — os volumes
+atuais, maior tabela ~500k linhas, não justificam merge via JDBC).
+
+**Arquivos criados**: `src/serving/loaders/gold_to_postgres.py`
+(`GoldToPostgresLoader`), `src/serving/loaders/schema.sql` (DDL das 4
+tabelas, sem FKs — truncate+reload por tabela dispensa ordenação/CASCADE),
+`tests/unit/test_gold_to_postgres.py` (11 testes).
+
+**Arquivos modificados**: `docker/spark/Dockerfile` (driver JDBC
+`postgresql-42.7.3.jar` + `psycopg2-binary`), `Makefile` (target
+`spark-submit-gold-postgres`), `dags/dag_batch_transformation.py` (task
+`load_gold_postgres`, pipeline agora `bronze_to_silver >> silver_to_gold >>
+load_gold_postgres >> notify_completion`).
+
+### 1. Testes Unitários — `tests/unit/test_gold_to_postgres.py`
+
+| ID | Classe | Descrição | Status |
+|----|--------|-----------|--------|
+| 10-JDBC | `TestJdbcConfig` | URL JDBC usa host interno (sem credenciais hardcoded); options de escrita incluem `truncate=true`/driver/user/password (2 testes) | OK |
+| 10-DDL | `TestEnsureSchema` | DDL idempotente executado e commitado; falha → rollback + exceção repropagada (2 testes) | OK |
+| 10-LOAD | `TestLoadTable` | Métricas `rows_read`/`rows_written`; falha de leitura (MinIO) e de escrita (Postgres) logadas e repropagadas (4 testes) | OK |
+| 10-ALL | `TestRunAll` | `ensure_schema` chamado 1x; métricas das 4 tabelas presentes (1 teste) | OK |
+| 10-SQL | `TestSchemaSQL` | `schema.sql` declara as 4 tabelas; sem foreign keys (2 testes) | OK |
+
+**Total: 11/11 testes PASSED.**
+
+### 2. Bug real encontrado e corrigido — duplicidade em `dim_customers`
+
+A primeira carga real (`make spark-submit-gold-postgres`) falhou com
+`duplicate key value violates unique constraint "dim_customers_pkey"` — na
+tabela recém-truncada, ou seja, o **Gold Parquet já continha `customer_key`
+duplicado**; só passou a ser detectado agora porque é a primeira vez que uma
+PK é imposta sobre `dim_customers` (Parquet não tem constraint).
+
+Investigação: 71.000 linhas no Gold para só 10.000 `customer_key` distintos,
+com atributos (`name`/`birth_date`/`segment`) **diferentes** entre as
+"duplicatas" do mesmo cliente — versões conflitantes, não cópias idênticas.
+Causa raiz: `src/ingestion/batch/customer_loader.py` implementa um SCD2
+simplificado que grava um snapshot diário e marca `is_current=True` em todas
+as linhas, mas **nunca fecha o snapshot anterior**. Como `make seed-data`
+rodou em vários dias diferentes ao longo do projeto, cada dia deixou um
+snapshot inteiro "corrente" para sempre, e `silver_to_gold.py` só filtrava
+`is_current=True` sem deduplicar por `customer_id`.
+
+**Correção**: `_build_dim_customers` (`silver_to_gold.py`) agora deduplica
+por `customer_id` mantendo a linha de maior `ingestion_timestamp` (Window +
+`row_number`). Reprocessamento confirmou: `rows_read=71000,
+rows_discarded=61000, rows_written=10000`. Teste unitário adicionado
+(`test_dedups_multiple_current_snapshots_keeping_latest`). A causa raiz de
+fundo (`customer_loader.py` não fechar snapshots antigos) não foi alterada —
+gap de design do SCD2 simplificado, fora do escopo desta issue; a correção
+aplicada garante a invariante que toda dimensão Gold exige (unicidade por
+chave), para qualquer consumidor.
+
+### 3. Teste de Integração Real (Docker + PostgreSQL real)
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|-------------------|--------|
+| 10-INT-01/04 | `make spark-submit-gold-postgres` (4 tabelas) | Métricas batem com o Gold Parquet | OK (10.000 / 295 / 506.146 / 1.745) |
+| 10-INT-05/06 | Tabelas + contagens via `psql` | 4 tabelas, contagens 1:1 com o job | OK |
+| 10-IDEM-01/02 | 2ª execução — idempotência | Mesmas métricas; `count(*) == count(distinct <chave>)` nas 4 tabelas | OK — 0 duplicatas |
+| 10-DAG-01/02 | DAG sem import errors; `airflow tasks test ... load_gold_postgres` | Task SUCCESS, mesmas métricas | OK |
+| 10-IDEM-03 | 3ª execução (via Airflow) — idempotência | 0 duplicatas | OK |
+
+Achado sem impacto real, investigado durante o rebuild da imagem Spark: o
+`pip install` puxou `pyspark==3.5.9` via dependência transitiva não fixada de
+`delta-spark==3.1.0`, divergindo do `3.5.1` da imagem base
+(`apache/spark:3.5.1`). Confirmado que `spark-submit` continua resolvendo
+`pyspark` via `$SPARK_HOME/python` (bundled, compatível com os JARs
+Scala/JVM) — o `3.5.9` do pip fica órfão em site-packages, nunca importado
+pelos jobs.
+
+### 4. Suíte Completa e Lint
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|-------------------|--------|
+| 10-SUITE-01 | `pytest tests/unit/` | Sem regressão | OK (185/186 PASSED — 1 falha local pré-existente de `.env`, não relacionada) |
+| 10-LIN-01 | `ruff check` | All checks passed! | OK |
+| 10-LIN-02 | `mypy` | Success: no issues found | OK |

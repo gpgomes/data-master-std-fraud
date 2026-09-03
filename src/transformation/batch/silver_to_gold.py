@@ -14,7 +14,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import DataFrame, SparkSession, Window
 from pyspark.sql import functions as F
 
 from src.common.config import settings
@@ -82,8 +82,19 @@ class SilverToGoldTransformer:
         return metrics
 
     def _build_dim_customers(self, df: DataFrame) -> DataFrame:
-        """Filtra clientes correntes e seleciona atributos da dimensão."""
+        """Filtra clientes correntes e seleciona atributos da dimensão.
+
+        O SCD2 simplificado do CustomerLoader marca is_current=True em cada novo
+        snapshot diário sem fechar o snapshot anterior — reexecuções de
+        `make seed-data` em dias diferentes podem deixar mais de um registro
+        "corrente" para o mesmo customer_id. Deduplicamos aqui mantendo o
+        snapshot mais recente (maior ingestion_timestamp), garantindo a
+        unicidade que uma dimensão exige (contrato reforçado pela PK de
+        `dim_customers` na serving layer Postgres).
+        """
         df = df.filter(F.col("is_current"))
+        latest = Window.partitionBy("customer_id").orderBy(F.col("ingestion_timestamp").desc())
+        df = df.withColumn("_rn", F.row_number().over(latest)).filter(F.col("_rn") == 1).drop("_rn")
         return df.select(
             F.col("customer_id").alias("customer_key"),
             "name",

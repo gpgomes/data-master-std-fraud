@@ -85,6 +85,7 @@ _SILVER_CUSTOMER_SCHEMA = StructType(
         StructField("risk_score", DoubleType(), True),
         StructField("account_opening_date", StringType(), True),
         StructField("is_current", BooleanType(), True),
+        StructField("ingestion_timestamp", StringType(), True),
     ]
 )
 
@@ -170,6 +171,7 @@ def _sample_silver_customer(**overrides) -> dict:
         "risk_score": 42.5,
         "account_opening_date": "2015-01-10",
         "is_current": True,
+        "ingestion_timestamp": "2024-06-15T10:00:00+00:00",
     }
     base.update(overrides)
     return base
@@ -214,6 +216,29 @@ class TestBuildDimCustomers:
         df = _make_cust(spark, [_sample_silver_customer()])
         result = transformer._build_dim_customers(df)
         assert result.first()["processing_timestamp"] is not None
+
+    def test_dedups_multiple_current_snapshots_keeping_latest(
+        self, spark: SparkSession, transformer
+    ):
+        """SCD2 simplificado do CustomerLoader não fecha snapshots antigos —
+        mais de um registro is_current=True pode existir para o mesmo
+        customer_id (um por dia em que `make seed-data` rodou)."""
+        rows = [
+            _sample_silver_customer(
+                customer_id="cust-001",
+                segment="VAREJO",
+                ingestion_timestamp="2024-06-10T10:00:00+00:00",
+            ),
+            _sample_silver_customer(
+                customer_id="cust-001",
+                segment="PRIVATE",
+                ingestion_timestamp="2024-06-15T10:00:00+00:00",
+            ),
+        ]
+        df = _make_cust(spark, rows)
+        result = transformer._build_dim_customers(df)
+        assert result.count() == 1
+        assert result.first()["segment"] == "PRIVATE"
 
 
 # ── TestBuildDimDate ────────────────────────────────────────────────────────────
