@@ -73,25 +73,18 @@ seed-data: ## Gerar dados sintéticos de transações e mercado
 spark-submit-batch: ## Submeter job PySpark batch (Bronze → Silver → Gold)
 	$(COMPOSE) exec spark-master spark-submit \
 		--master $(SPARK_MASTER) \
-		--packages io.delta:delta-core_2.12:2.4.0,org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1 \
-		--conf "spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension" \
-		--conf "spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog" \
+		--packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1 \
 		$(BATCH_JOB)
 
 spark-submit-stream: ## Submeter job PySpark streaming (Kafka → Silver + detecção de fraude)
 	$(COMPOSE) exec spark-master spark-submit \
 		--master $(SPARK_MASTER) \
-		--packages io.delta:delta-core_2.12:2.4.0,org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1 \
-		--conf "spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension" \
-		--conf "spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog" \
+		--packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1 \
 		$(STREAM_JOB)
 
 spark-submit-silver-gold: ## Submeter job Silver → Gold
 	$(COMPOSE) exec spark-master spark-submit \
 		--master $(SPARK_MASTER) \
-		--packages io.delta:delta-core_2.12:2.4.0 \
-		--conf "spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension" \
-		--conf "spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog" \
 		src/transformation/batch/silver_to_gold.py
 
 # ── Producers ──────────────────────────────────────────────────────────────────

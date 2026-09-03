@@ -243,3 +243,123 @@ RESULTADO DO STEP 1.7
   Bugs encontrados:      1 (fraud_score ausente no batch — corrigido nesta rodada)
 
   PR: https://github.com/gpgomes/data-master-std-fraud/pull/22
+
+================================================================================
+FECHAMENTO DA ISSUE #9 — LACUNAS RESOLVIDAS (executado em 2026-09-03)
+================================================================================
+
+A issue #9 pedia, além do job em si (já concluído acima), duas coisas que
+ficaram pendentes: (1) decidir e aplicar consistentemente Parquet ou Delta
+Lake, e (2) integrar o job a uma DAG Airflow. Ambas fechadas nesta rodada.
+
+--------------------------------------------------------------------------------
+1. DECISÃO: PARQUET (NÃO DELTA LAKE)
+--------------------------------------------------------------------------------
+
+O código sempre gravou .format("parquet") em Silver/Gold, mas o Spark session
+e o Makefile configuravam extensões Delta com versão incompatível com o
+cluster (delta-core_2.12:2.4.0 é para Spark 3.4; o cluster roda Spark 3.5.1,
+que precisaria de delta-spark_2.12:3.1.0) — Delta nunca foi de fato usado.
+
+Decisão (validada com o usuário): manter Parquet puro. Silver/Gold são
+reescritos por completo a cada execução (idempotente via overwrite dinâmico
+por partição), então o log de transação ACID do Delta não agrega valor agora.
+Time travel/versionamento fica para a fase de governança (roadmap 3.6).
+
+Arquivos alterados:
+  - src/common/spark_session.py — removida config de extensões/catalog Delta
+  - Makefile — removidos --packages/--conf Delta dos 3 targets spark-submit-*
+  - pyproject.toml — removida dependência delta-spark (não importada em lugar
+    nenhum do código)
+  - docs/architecture.md — "Decisões Arquiteturais" e "Componentes" atualizados
+
+  ID          Descrição                                    Resultado Esperado
+  -----------------------------------------------------------------------
+  9-DELTA-01  make spark-submit-silver-gold (dataset=dim_customers)
+              sem --packages/--conf Delta                  OK — rows_read=11000,
+                                                             rows_written=11000,
+                                                             mais rápido (sem
+                                                             resolver jars Delta)
+  9-DELTA-02  Suíte completa após remoção do Delta          OK — 157/158 PASSED
+                                                             (mesma falha local
+                                                             pré-existente,
+                                                             não relacionada)
+
+--------------------------------------------------------------------------------
+2. DAG AIRFLOW: batch_transformation_pipeline
+--------------------------------------------------------------------------------
+
+Nova DAG dags/dag_batch_transformation.py: bronze_to_silver >> silver_to_gold
+>> notify_completion, via SparkSubmitOperator (schedule 07:00 UTC, uma hora
+depois de batch_ingestion_pipeline às 06:00).
+
+Infra necessária para o SparkSubmitOperator funcionar (o container do Airflow
+não tinha JVM/PySpark nenhum antes):
+  - docker/airflow/Dockerfile: openjdk-17-jre-headless + pyspark==3.5.1
+    (JAVA_HOME resolvido dinamicamente, funciona em amd64 e arm64) +
+    PYTHONPATH=/opt/airflow (senão "import src.common.config" quebra dentro
+    de bronze_to_silver.py/silver_to_gold.py, mesmo ajuste do step 1.6 pro
+    container do Spark)
+  - docker-compose.yml: AIRFLOW_CONN_SPARK_DEFAULT nos serviços
+    airflow-scheduler/airflow-webserver
+
+  ID         Descrição                                    Resultado Esperado
+  -----------------------------------------------------------------------
+  9-DAG-01   DAG aparece no Airflow sem import errors      OK
+  9-DAG-02   Trigger manual — pipeline completa            OK (após 2 bugs
+                                                             corrigidos, ver
+                                                             abaixo)
+  9-DAG-03   gold/ populado ao final da DAG                OK — 4 tabelas,
+                                                             295 partições em
+                                                             fact_transactions
+
+BUGS ENCONTRADOS E CORRIGIDOS (só apareceram rodando via Airflow — o
+spark-submit direto contra o spark-master não os expõe, porque lá o driver
+roda dentro da própria imagem do Spark, com todos os jars já presentes):
+
+  1. Master URL sem esquema
+     AIRFLOW_CONN_SPARK_DEFAULT como URI simples (spark://spark-master:7077)
+     resultava em "spark-submit --master spark-master:7077" (sem "spark://").
+     Causa: SparkSubmitHook._resolve_connection() monta
+     master = f"{conn.host}:{conn.port}" quando conn.port existe — não
+     reconstrói o esquema. Corrigido usando o formato JSON da connection
+     (AIRFLOW_CONN_SPARK_DEFAULT como JSON, não URI), com host já contendo
+     "spark://spark-master" — assim host:port vira "spark://spark-master:7077"
+     corretamente.
+
+  2. ClassNotFoundException: org.apache.hadoop.fs.s3a.S3AFileSystem
+     O driver roda em modo client dentro do próprio container do Airflow
+     (pyspark instalado via pip, sem os jars extras hadoop-aws/aws-java-sdk-
+     bundle que só existem na imagem customizada do Spark). Corrigido
+     adicionando packages=_S3A_PACKAGES (hadoop-aws:3.3.4 +
+     aws-java-sdk-bundle:1.12.262) nas duas SparkSubmitOperator da DAG —
+     resolvidos via Ivy a cada submit, mesmo padrão já usado nos outros
+     spark-submit do projeto.
+
+RESULTADO DA EXECUÇÃO REAL (run_id manual__2026-09-03T18:09:02+00:00):
+
+  bronze_to_silver:   success — rows_written: transactions=506146,
+                       market_data=1, customers=71000
+  silver_to_gold:      success — gold/ com 4 tabelas, 295 partições em
+                       fact_transactions e agg_daily_fraud_metrics
+  notify_completion:   success
+
+Observação operacional (não é bug do projeto): durante a execução, o
+container airflow-scheduler teve ~13 min de falhas de heartbeat por erro de
+resolução DNS intermitente ("could not translate host name postgres-airflow
+to address") — sintoma de instabilidade pontual do Docker Desktop/WSL2 na
+máquina de teste, não do código. Autorresolveu sem intervenção; a DAG
+continuou rodando e completou com sucesso.
+
+================================================================================
+RESULTADO FINAL — ISSUE #9 FECHADA
+================================================================================
+
+  Job Silver → Gold:        OK (já validado antes desta rodada)
+  Formato de armazenamento: Decidido — Parquet puro, Delta removido
+  Integração Makefile:      OK (spark-submit-silver-gold, já existia)
+  Integração Airflow:       OK (dags/dag_batch_transformation.py, testada
+                             de ponta a ponta com dados reais)
+  Suíte completa:           157/158 PASSED (1 falha local pré-existente,
+                             não relacionada, não afeta CI)
+  Lint/mypy:                All checks passed! / Success: no issues found
