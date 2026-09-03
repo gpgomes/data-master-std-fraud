@@ -421,3 +421,118 @@ def get_silver_customer_schema():
             StructField("processing_timestamp", TimestampType(), True),
         ]
     )
+
+
+def get_gold_dim_customers_schema():
+    """StructType para a dimensão de clientes na camada Gold."""
+    from pyspark.sql.types import (
+        DoubleType,
+        IntegerType,
+        StringType,
+        StructField,
+        StructType,
+        TimestampType,
+    )
+
+    return StructType(
+        [
+            StructField("customer_key", StringType(), False),
+            StructField("name", StringType(), True),
+            StructField("cpf_masked", StringType(), True),
+            StructField("gender", StringType(), True),
+            StructField("birth_date", StringType(), True),
+            StructField("age", IntegerType(), True),
+            StructField("age_group", StringType(), True),
+            StructField("segment", StringType(), True),
+            StructField("city", StringType(), True),
+            StructField("state", StringType(), True),
+            StructField("country", StringType(), True),
+            StructField("risk_score", DoubleType(), True),
+            StructField("account_opening_date", StringType(), True),
+            StructField("processing_timestamp", TimestampType(), True),
+        ]
+    )
+
+
+def get_gold_dim_date_schema():
+    """StructType para a dimensão de data (calendário) na camada Gold."""
+    from pyspark.sql.types import (
+        BooleanType,
+        DateType,
+        IntegerType,
+        StringType,
+        StructField,
+        StructType,
+        TimestampType,
+    )
+
+    return StructType(
+        [
+            StructField("date_key", DateType(), False),
+            StructField("year", IntegerType(), True),
+            StructField("month", IntegerType(), True),
+            StructField("day", IntegerType(), True),
+            StructField("quarter", IntegerType(), True),
+            StructField("day_of_week", IntegerType(), True),
+            StructField("day_name", StringType(), True),
+            StructField("week_of_year", IntegerType(), True),
+            StructField("is_weekend", BooleanType(), True),
+            StructField("processing_timestamp", TimestampType(), True),
+        ]
+    )
+
+
+def get_gold_fact_transactions_schema():
+    """StructType para a tabela fato de transações na camada Gold."""
+    from pyspark.sql.types import (
+        BooleanType,
+        DateType,
+        DoubleType,
+        StringType,
+        StructField,
+        StructType,
+        TimestampType,
+    )
+
+    return StructType(
+        [
+            StructField("transaction_id", StringType(), False),
+            StructField("customer_key", StringType(), True),
+            StructField("date_key", DateType(), True),
+            StructField("amount_brl", DoubleType(), True),
+            StructField("currency", StringType(), True),
+            StructField("transaction_type", StringType(), True),
+            StructField("channel", StringType(), True),
+            StructField("merchant_category", StringType(), True),
+            StructField("is_fraud", BooleanType(), True),
+            StructField("fraud_type", StringType(), True),
+            StructField("fraud_score", DoubleType(), True),
+            StructField("processing_timestamp", TimestampType(), True),
+        ]
+    )
+
+
+def get_gold_agg_daily_fraud_metrics_schema():
+    """StructType para a agregação diária de métricas de fraude na camada Gold."""
+    from pyspark.sql.types import (
+        DateType,
+        DoubleType,
+        LongType,
+        StringType,
+        StructField,
+        StructType,
+        TimestampType,
+    )
+
+    return StructType(
+        [
+            StructField("date_key", DateType(), False),
+            StructField("transaction_type", StringType(), False),
+            StructField("total_transactions", LongType(), True),
+            StructField("total_amount_brl", DoubleType(), True),
+            StructField("avg_amount_brl", DoubleType(), True),
+            StructField("fraud_count", LongType(), True),
+            StructField("fraud_rate", DoubleType(), True),
+            StructField("processing_timestamp", TimestampType(), True),
+        ]
+    )

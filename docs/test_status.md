@@ -356,3 +356,68 @@ Nenhum destes pertence à lógica de negócio testada nos itens acima, mas todos
 | `src/common/spark_session.py` | Overwrite estático apagava partições fora do filtro de data (ver nota ² acima) | `spark.sql.sources.partitionOverwriteMode=dynamic` |
 
 Além disso, `docker-compose.yml` teve as portas do Postgres (5432→5433) e MinIO (9000→9002) remapeadas por conflito com containers de **outro projeto** (`protege_*`) já rodando na máquina — não é um bug do projeto, específico deste ambiente local.
+
+---
+
+## Step 1.7 — Transformação Silver → Gold (PySpark Batch)
+
+Job `silver_to_gold.py`: constrói um star schema (`dim_customers`, `dim_date`,
+`fact_transactions`) e uma agregação diária de métricas de fraude
+(`agg_daily_fraud_metrics`) a partir da camada Silver. Detalhes de schema em
+`docs/data_dictionary.md`.
+
+### 1. Testes Unitários — `tests/unit/test_silver_to_gold.py`
+
+| ID | Classe | Descrição | Status |
+|----|--------|-----------|--------|
+| 1.7-DC | `TestBuildDimCustomers` | Filtra `is_current`, renomeia `customer_id`→`customer_key`, preserva atributos, adiciona `processing_timestamp` (4 testes) | OK |
+| 1.7-DD | `TestBuildDimDate` | Componentes de calendário (year/month/day/quarter/day_of_week/day_name/week_of_year/is_weekend), sem perda de datas distintas (8 testes) | OK |
+| 1.7-FT | `TestBuildFactTransactions` | Renomeia chaves, preserva medidas, grão de 1 linha por transação, `processing_timestamp`, `fraud_score` ausente tratado como nulo (5 testes) | OK |
+| 1.7-AG | `TestBuildAggDailyFraudMetrics` | Agrupamento por data+tipo, `total_transactions`, `total_amount_brl`, `fraud_count`/`fraud_rate` (5 testes) | OK |
+| 1.7-FD | `TestFilterByDate` | Filtro start/end/range/sem filtro (4 testes) | OK |
+| 1.7-PM | `TestPublicMethodsMocked` | Métodos públicos com leitura/escrita mockadas, métricas retornadas corretamente (4 testes) | OK |
+
+**Total: 30/30 testes PASSED** (29 originais + `test_handles_missing_fraud_score_column`, adicionado após bug encontrado em 1.7-INT-03).
+
+### 2. Cobertura
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|-------------------|--------|
+| 1.7-COV-01 | `pytest tests/unit/test_silver_to_gold.py` | Todos os testes PASSED | OK (30/30) |
+| 1.7-COV-02 | Cobertura `silver_to_gold.py` | >= 80% | OK (80%) |
+| 1.7-COV-03 | Suíte completa (`pytest tests/unit/`) | Sem regressão | OK (142/142 PASSED, cobertura geral 85%) |
+| 1.7-COV-04 | `ruff check` | All checks passed! | OK |
+| 1.7-COV-05 | `mypy` | Success: no issues found | OK |
+
+### 3. Testes de Integração (requer `make up && make setup` + Silver populado pelo step 1.6)
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|-------------------|--------|
+| 1.7-INT-01 | `make spark-submit-silver-gold` (dim_customers) | Parquet em gold/dim_customers/ | OK (rows_read=11000, rows_written=11000) |
+| 1.7-INT-02 | `make spark-submit-silver-gold` (dim_date) | Parquet em gold/dim_date/ | OK (295 datas distintas) |
+| 1.7-INT-03 | `make spark-submit-silver-gold` (fact_transactions) | Parquet em gold/fact_transactions/date_key=YYYY-MM-DD/ | OK (506.146 linhas, 295 partições) |
+| 1.7-INT-04 | `make spark-submit-silver-gold` (agg_daily_fraud_metrics) | Parquet em gold/agg_daily_fraud_metrics/date_key=YYYY-MM-DD/ | OK (1.745 grupos, 295 partições) |
+| 1.7-INT-05 | Idempotência — rodar job duas vezes | Segunda execução sobrescreve sem duplicatas | OK — métricas idênticas na 2ª execução, contagem de arquivos inalterada |
+| 1.7-INT-06 | Filtro de datas via CLI (`--dataset fact_transactions --start-date --end-date`) | Filtra corretamente sem afetar outras partições/dim_date | OK — 8.227 linhas no intervalo 2026-08-01..04; 295 partições totais preservadas (overwrite dinâmico herdado do step 1.6) |
+
+**Bug encontrado e corrigido durante 1.7-INT-03**: `_build_fact_transactions` selecionava a coluna `fraud_score` incondicionalmente, mas ela não existe em `silver/transactions` no batch puro (só é populada pelo streaming, roadmap 2.3/2.4 — ainda não implementado). O job quebrava com `UNRESOLVED_COLUMN.WITH_SUGGESTION`. Corrigido em `silver_to_gold.py` para tratar `fraud_score` como opcional (nulo quando a coluna está ausente do schema de entrada); teste unitário `test_handles_missing_fraud_score_column` adicionado para cobrir o caso.
+
+### 4. Validações Manuais dos Dados Transformados
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|-------------------|--------|
+| 1.7-MAN-01 | `dim_customers` só tem clientes correntes | Contagem == clientes com `is_current=True` no Silver | OK (11.000 == 11.000) |
+| 1.7-MAN-02 | `dim_date` cobre todas as datas de `fact_transactions` | Nenhum `date_key` órfão (join fact↔dim_date sem nulls) | OK (0 órfãos) |
+| 1.7-MAN-03 | `fact_transactions.amount_brl` bate com Silver | Soma agregada igual à soma em `silver/transactions` | OK (diferença ~3.6e-7, arredondamento de ponto flutuante) |
+| 1.7-MAN-04 | `agg_daily_fraud_metrics` bate com a fato | `sum(total_transactions)` == `count(fact_transactions)` | OK (506.146 == 506.146) |
+| 1.7-MAN-05 | `agg_daily_fraud_metrics.fraud_rate` coerente | `fraud_rate` entre 0 e 1 para todos os grupos | OK (min=0.0, max=1.0, média=2,67%) |
+
+Validação extra (não prevista no checklist original, adicionada durante a execução): `fact_transactions.customer_key` sem correspondência em `dim_customers` → 0 órfãos.
+
+### 5. Cobertura (após correção do bug de fraud_score)
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|-------------------|--------|
+| 1.7-COV-01b | Suíte completa (`pytest tests/unit/`) | Sem regressão | OK (143/143 PASSED, cobertura geral 85%) |
+| 1.7-COV-04b | `ruff check` | All checks passed! | OK |
+| 1.7-COV-05b | `mypy` | Success: no issues found | OK |
