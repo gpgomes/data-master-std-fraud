@@ -1,0 +1,280 @@
+================================================================================
+CHECKLIST DE TESTES — Loader Gold → PostgreSQL (issue #10)
+================================================================================
+
+Objetivo: disponibilizar os dados Gold (star schema) no PostgreSQL da serving
+layer, com carga idempotente e sem credenciais hardcoded.
+
+Decisão de arquitetura (confirmada com o usuário): PySpark + JDBC, em vez de
+pandas + psycopg2. O job roda dentro do cluster Spark (mesmo padrão dos jobs
+bronze_to_silver.py/silver_to_gold.py), lê o Gold via spark.read.parquet e
+escreve via spark.write.format("jdbc"). Estratégia de carga: truncate + reload
+completo por tabela a cada execução — sempre idempotente, sem upsert real (os
+volumes atuais, maior tabela ~500k linhas, não justificam a complexidade extra
+de merge via JDBC).
+
+Arquivos criados:
+  - src/serving/loaders/gold_to_postgres.py (GoldToPostgresLoader)
+  - src/serving/loaders/schema.sql (DDL das 4 tabelas, sem FKs)
+  - tests/unit/test_gold_to_postgres.py (11 testes)
+
+Arquivos modificados:
+  - docker/spark/Dockerfile (psycopg2-binary + driver JDBC postgresql-42.7.3.jar)
+  - Makefile (target spark-submit-gold-postgres)
+  - dags/dag_batch_transformation.py (task load_gold_postgres)
+  - src/transformation/batch/silver_to_gold.py (bug real encontrado durante o
+    teste de integração — ver seção 2)
+  - tests/unit/test_silver_to_gold.py (schema/fixture ganharam
+    ingestion_timestamp; novo teste de deduplicação)
+
+================================================================================
+1. TESTES UNITÁRIOS — tests/unit/test_gold_to_postgres.py
+================================================================================
+
+Comando:
+  pytest tests/unit/test_gold_to_postgres.py -v
+
+Resultado: 11/11 PASSED.
+
+--------------------------------------------------------------------------------
+1.1 TestJdbcConfig (2 testes)
+--------------------------------------------------------------------------------
+  10-JDBC-01  test_jdbc_url_uses_internal_host
+              URL JDBC usa POSTGRES_INTERNAL_HOST (não localhost) — conexão
+              interna ao cluster Docker, sem credenciais hardcoded
+  10-JDBC-02  test_write_options_include_truncate_and_driver
+              options() inclui dbtable, truncate=true, driver postgresql,
+              user/password vindos de settings.postgres
+
+--------------------------------------------------------------------------------
+1.2 TestEnsureSchema (2 testes) — critério "DDL/estratégia de criação"
+--------------------------------------------------------------------------------
+  10-DDL-01   test_executes_ddl_and_commits
+              psycopg2.connect mockado; DDL executado (CREATE TABLE IF NOT
+              EXISTS das 4 tabelas); commit + close chamados
+  10-DDL-02   test_rolls_back_and_reraises_on_failure
+              Exceção durante execução do DDL → rollback + close chamados,
+              exceção repropagada (não engolida)
+
+--------------------------------------------------------------------------------
+1.3 TestLoadTable (4 testes) — critério "tratamento de erros/métricas úteis"
+--------------------------------------------------------------------------------
+  10-LOAD-01  test_load_dim_customers_returns_metrics
+              Leitura+escrita mockadas → {"rows_read": N, "rows_written": N}
+  10-LOAD-02  test_load_fact_transactions_returns_metrics
+              Idem, para fact_transactions
+  10-LOAD-03  test_read_failure_is_logged_and_reraised
+              Falha ao ler Gold do MinIO → logger.exception + exceção
+              repropagada
+  10-LOAD-04  test_write_failure_is_logged_and_reraised
+              Falha ao escrever no Postgres (ex.: conexão recusada) →
+              logger.exception + exceção repropagada
+
+--------------------------------------------------------------------------------
+1.4 TestRunAll (1 teste)
+--------------------------------------------------------------------------------
+  10-ALL-01   test_run_all_ensures_schema_and_loads_all_datasets
+              ensure_schema chamado uma vez; métricas de todas as 4 tabelas
+              presentes no dict retornado
+
+--------------------------------------------------------------------------------
+1.5 TestSchemaSQL (2 testes)
+--------------------------------------------------------------------------------
+  10-SQL-01   test_schema_sql_declares_all_four_tables
+              schema.sql declara CREATE TABLE IF NOT EXISTS para as 4 tabelas
+  10-SQL-02   test_schema_sql_has_no_foreign_keys
+              Decisão documentada: sem FK entre fato e dimensões (evita
+              ordenação/CASCADE no truncate+reload)
+
+================================================================================
+2. BUG REAL ENCONTRADO E CORRIGIDO DURANTE O TESTE DE INTEGRAÇÃO
+================================================================================
+
+A primeira execução real de `make spark-submit-gold-postgres` (dados Gold já
+existentes de sessões anteriores) falhou na carga de dim_customers:
+
+  java.sql.BatchUpdateException: ... duplicate key value violates unique
+  constraint "dim_customers_pkey"
+  Detail: Key (customer_key)=(815ef6d1-...) already exists.
+
+Isso ocorreu na PRIMEIRA carga (tabela recém-truncada) — ou seja, o Gold
+Parquet em si já continha customer_key duplicado, algo que só passou a ser
+detectado agora porque é a primeira vez que uma PK é imposta sobre
+dim_customers (Parquet não tem constraint).
+
+Investigação (query PySpark ad-hoc contra gold/dim_customers/):
+  - 71.000 linhas no Gold, mas só 10.000 customer_key distintos.
+  - Para um mesmo customer_key, linhas com name/birth_date/segment/
+    account_opening_date DIFERENTES — não é duplicata idêntica, são "versões"
+    conflitantes do mesmo cliente.
+
+Causa raiz: src/ingestion/batch/customer_loader.py implementa um "SCD Type 2
+simplificado" que grava um novo snapshot diário em
+bronze/customers/snapshot_date=YYYY-MM-DD/ e marca is_current=True
+incondicionalmente em TODAS as linhas — mas nunca fecha (is_current=False) o
+snapshot anterior. Como este projeto rodou `make seed-data` em vários dias
+diferentes ao longo das últimas semanas (uma vez por sessão/feature), cada dia
+deixou um snapshot inteiro "corrente" para sempre. silver_to_gold.py's
+_build_dim_customers só filtrava is_current=True, sem deduplicar por
+customer_id — os 7+ snapshots acumulados (7 × 10.000 + 1.000 de uma sessão
+anterior com --customers diferente = 71.000) passavam direto para o Gold.
+
+Correção aplicada em `src/transformation/batch/silver_to_gold.py`
+(_build_dim_customers): após filtrar is_current, deduplica por customer_id
+mantendo a linha com o maior ingestion_timestamp (Window + row_number).
+
+Reprocessamento (`make spark-submit-silver-gold --dataset dim_customers`):
+  rows_read=71000, rows_discarded=61000, rows_written=10000 — confirma a
+  correção: 61.000 linhas de snapshots obsoletos descartadas, sobra 1 por
+  cliente.
+
+Teste unitário adicionado (test_silver_to_gold.py):
+  test_dedups_multiple_current_snapshots_keeping_latest — dois registros
+  is_current=True para o mesmo customer_id com segment diferente e
+  ingestion_timestamp diferente → resultado tem 1 linha, com o segment do
+  ingestion_timestamp mais recente.
+
+Nota: a causa raiz de fundo (customer_loader.py nunca fecha o snapshot
+anterior) não foi alterada — é um gap de design do SCD2 simplificado, fora do
+escopo desta issue. A correção aplicada garante a invariante que uma dimensão
+Gold exige (unicidade por chave), independente de quem a consome — Postgres
+hoje, qualquer outro consumidor (Superset, etc.) amanhã.
+
+================================================================================
+3. TESTE DE INTEGRAÇÃO REAL — DOCKER (executado em 2026-09-03)
+================================================================================
+
+Pré-requisito: make up && make setup (Bronze/Silver/Gold já populados de
+sessões anteriores — volume minio-data persistente).
+
+--------------------------------------------------------------------------------
+3.1 Rebuild da imagem Spark
+--------------------------------------------------------------------------------
+  ID          Descrição                                    Resultado
+  -----------------------------------------------------------------------
+  10-BUILD-01 make up (rebuild spark-master: psycopg2-binary
+              + postgresql-42.7.3.jar)                      OK — build
+                                                              completo, todos
+                                                              os containers
+                                                              healthy
+
+  Observação investigada (sem impacto real): o pip install do spark-master
+  puxou pyspark==3.5.9 via dependência transitiva não fixada do
+  delta-spark==3.1.0 (pyspark<3.6.0,>=3.5.0), divergindo do 3.5.1 que já vem
+  na imagem base apache/spark:3.5.1 (JARs Scala/JVM). Verificado que isso NÃO
+  quebra nada: `spark-submit` resolve pyspark via $SPARK_HOME/python (o
+  ENV PYTHONPATH=/opt/spark/work-dir do Dockerfile não inclui site-packages
+  antes do bundled), confirmado rodando um script de checagem via spark-submit
+  dentro do container: `VERSION: 3.5.1, FILE: /opt/spark/python/lib/
+  pyspark.zip/pyspark/__init__.py`. O 3.5.9 instalado via pip fica órfão em
+  site-packages, nunca importado pelos jobs (todos rodam via spark-submit).
+
+--------------------------------------------------------------------------------
+3.2 Primeira carga (após correção do bug de dim_customers)
+--------------------------------------------------------------------------------
+  ID          Descrição                                    Resultado
+  -----------------------------------------------------------------------
+  10-INT-01   make spark-submit-gold-postgres (dim_customers) rows_read=10000,
+                                                              rows_written=10000
+  10-INT-02   make spark-submit-gold-postgres (dim_date)     rows_read=295,
+                                                              rows_written=295
+  10-INT-03   make spark-submit-gold-postgres (fact_transactions) rows_read=
+                                                              506146,
+                                                              rows_written=
+                                                              506146
+  10-INT-04   make spark-submit-gold-postgres (agg_daily_fraud_metrics)
+                                                              rows_read=1745,
+                                                              rows_written=1745
+  10-INT-05   Verificar tabelas via psql \dt                 4 tabelas
+                                                              presentes
+  10-INT-06   Verificar contagens via SELECT count(*)        Bate 1:1 com as
+                                                              métricas do job
+
+--------------------------------------------------------------------------------
+3.3 Idempotência — reexecução (critério de aceite "não cria duplicatas")
+--------------------------------------------------------------------------------
+  ID          Descrição                                    Resultado
+  -----------------------------------------------------------------------
+  10-IDEM-01  2ª execução de make spark-submit-gold-postgres Mesmas métricas
+                                                              (10000/295/
+                                                              506146/1745)
+  10-IDEM-02  count(*) == count(distinct <chave>) nas 4      OK — 0
+              tabelas após a 2ª execução                     duplicatas em
+                                                              nenhuma tabela
+
+--------------------------------------------------------------------------------
+3.4 Integração com Airflow — critério de aceite "integrar ao pipeline"
+--------------------------------------------------------------------------------
+  ID          Descrição                                    Resultado
+  -----------------------------------------------------------------------
+  10-DAG-01   DAG batch_transformation_pipeline sem import   OK — listada,
+              errors (airflow dags list)                     sem erros
+  10-DAG-02   airflow tasks test batch_transformation_pipeline
+              load_gold_postgres 2026-09-03                  OK — task
+                                                              marcada SUCCESS,
+                                                              mesmas métricas
+                                                              (packages
+                                                              hadoop-aws +
+                                                              aws-java-sdk-
+                                                              bundle +
+                                                              postgresql
+                                                              resolvidos via
+                                                              Ivy dentro do
+                                                              container
+                                                              Airflow)
+  10-IDEM-03  count(*) == count(distinct <chave>) após a      OK — 0
+              3ª execução (via Airflow)                       duplicatas,
+                                                              idempotência
+                                                              confirmada em
+                                                              ambos os
+                                                              caminhos de
+                                                              execução
+                                                              (spark-submit
+                                                              direto e
+                                                              Airflow)
+
+================================================================================
+4. SUÍTE COMPLETA E LINT
+================================================================================
+
+  ID          Descrição                                    Resultado Esperado
+  -----------------------------------------------------------------------
+  10-SUITE-01 pytest tests/unit/                            185/186 PASSED
+                                                              (1 falha local
+                                                              pré-existente,
+                                                              não relacionada
+                                                              — MINIO_ENDPOINT
+                                                              do .env local)
+  10-LIN-01   ruff check src/ tests/ scripts/                All checks
+                                                              passed!
+  10-LIN-02   mypy src/ --ignore-missing-imports             Success: no
+                                                              issues found in
+                                                              32 files
+
+================================================================================
+RESULTADO FINAL — ISSUE #10
+================================================================================
+
+  Testes novos (test_gold_to_postgres.py):     11/11 PASSED
+  Teste novo (dedup em test_silver_to_gold.py): 1/1 PASSED
+  Suíte completa:                               185/186 PASSED (1 falha local
+                                                 pré-existente, não relacionada)
+  Cobertura geral:                              84,66%
+  Lint / mypy:                                  All checks passed! / Success
+  Integração real (Docker + Postgres real):     OK — 3 execuções (1ª carga,
+                                                 reexecução direta,
+                                                 reexecução via Airflow), 0
+                                                 duplicatas em todas
+  Bug real encontrado e corrigido:              dim_customers com
+                                                 customer_key duplicado
+                                                 (SCD2 do CustomerLoader nunca
+                                                 fecha snapshot anterior) —
+                                                 corrigido em
+                                                 silver_to_gold.py
+  Critérios de aceite da issue:                 5/5 atendidos
+    - Loader em src/serving/loaders/            OK
+    - DDL/estratégia de criação                 OK (schema.sql, idempotente)
+    - Carga idempotente, tratamento de erros    OK (truncate+reload, logs +
+                                                 métricas em cada etapa)
+    - Conexão sem credenciais hardcoded         OK (settings.postgres.*)
+    - Integração ao pipeline/Airflow            OK (task load_gold_postgres)
