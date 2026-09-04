@@ -57,6 +57,48 @@ make setup
 make seed-data
 ```
 
+## Quality Gates (Great Expectations)
+
+Suites e checkpoints ficam em `src/governance/great_expectations/` — definidos
+via código Python (`suites.py`), não editados à mão em JSON/YAML. Cobrem
+`bronze_transactions`, `bronze_market_data`, `silver_transactions`,
+`silver_market_data`, `gold_fact_transactions`, `gold_dim_customers`,
+`gold_dim_date`, `gold_agg_daily_fraud_metrics`.
+
+Política: **gate simples** — qualquer expectativa falhando bloqueia a task do
+Airflow (e portanto a DAG inteira, via `trigger_rule` padrão), não há
+quarentena de linhas nem execução parcial. Recuperação = corrigir a causa e
+rerodar a DAG a partir da task que falhou.
+
+### Rodar um gate manualmente
+
+```bash
+docker compose exec airflow-scheduler python -m src.governance.great_expectations.runner bronze_transactions
+docker compose exec airflow-scheduler python -m src.governance.great_expectations.runner --all
+```
+
+### Diagnosticar uma falha
+
+1. **Logs da task no Airflow** (`http://localhost:8082`, ou `docker compose logs airflow-scheduler`) — a task `validate_*` loga, por expectativa falhada, o tipo e os kwargs (ex.: `expect_column_values_to_be_unique` em `customer_key`), e a exceção `QualityGateFailed` traz a contagem total de falhas.
+2. **Data docs** — renderizados em `src/governance/great_expectations/gx/uncommitted/data_docs/local_site/index.html` a cada execução (mesmo quando o gate falha — a task só levanta a exceção *depois* de publicar os docs). Abra o `index.html` localmente para ver o detalhe visual de cada expectativa, incluindo exemplos de valores que violaram a regra.
+3. **Causas comuns**: schema mudou upstream (coluna removida/renomeada — ver `expect_column_to_exist` na suite correspondente), regressão no dedup do `bronze_to_silver.py` (unicidade de `transaction_id` falhando em Silver), bug real nos dados (ex.: o caso da issue #10, `customer_key` duplicado em `dim_customers`).
+
+### Recuperação
+
+Corrija a causa raiz (código do job upstream, ou os dados de origem) e
+rerode a task/DAG no Airflow (`Clear` na task falhada). Não existe um
+"forçar passagem" — o gate é intencionalmente rígido; se uma expectativa
+estiver **errada** (não os dados), corrija a suite em `suites.py` e rode
+`python -m src.governance.great_expectations.runner --all` para revalidar
+antes de reabrir a DAG.
+
+### Adicionar/alterar uma expectativa
+
+Edite a função `_build_*` correspondente em `suites.py` (não os arquivos
+JSON gerados em `gx/expectations/` — esses são saída, sobrescritos a cada
+run) e rode os testes (`pytest tests/unit/test_great_expectations.py`) com
+uma fixture que exercite a mudança.
+
 ## CI (GitHub Actions)
 
 `.github/workflows/ci.yml` roda em todo push/PR para `main`: job `lint` (`ruff check` + `mypy`) e job `test` (`pytest tests/unit/`, Java 17 + Python 3.11, gate de cobertura ≥70%). Reproduza o gate localmente antes de abrir PR:
@@ -76,6 +118,6 @@ Só `tests/unit/` roda no CI — testes de integração (`tests/integration/`) e
 | MinIO 403 | Credenciais erradas | Verificar MINIO_ACCESS_KEY no .env |
 | Spark OOM | Memória insuficiente | Aumentar SPARK_EXECUTOR_MEMORY no .env |
 | Airflow DB error | PostgreSQL não pronto | Aguardar healthcheck, `make logs-postgres` |
-| GX checkpoint falha | Schema incompatível | Atualizar expectations em `src/governance/great_expectations/expectations/` |
+| GX checkpoint falha | Ver seção "Quality Gates" acima | Diagnosticar via logs da task/data docs; corrigir a causa raiz e rerodar a DAG — nunca editar os JSON gerados em `gx/expectations/` diretamente, só `suites.py` |
 | `make test-unit` falha com `JAVA_GATEWAY_EXITED` | JDK ausente no PATH (PySpark local precisa de um JRE) | Instalar Java 17, ex. `brew install openjdk@17` no macOS, e garantir `JAVA_HOME`/`java` no PATH da shell |
 | CI falha no `pip install -e ".[dev]"` do job `test`, no pacote `confluent-kafka` | Runner sem a lib nativa `librdkafka` (a wheel manylinux pode não cobrir a imagem do runner) | Adicionar um step `apt-get install -y librdkafka-dev` antes do `pip install` em `.github/workflows/ci.yml`, job `test` |
