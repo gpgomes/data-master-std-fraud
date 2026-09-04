@@ -1,0 +1,306 @@
+================================================================================
+CHECKLIST DE TESTES — Quality Gates com Great Expectations (issue #13)
+================================================================================
+
+Objetivo: substituir a validação placeholder do Bronze por controles de
+qualidade executáveis (Great Expectations) para Bronze, Silver e Gold,
+integrados às DAGs do Airflow com política de falha explícita.
+
+Decisão de arquitetura (confirmada com o usuário): gate simples — qualquer
+expectativa falhando bloqueia a task do Airflow (e portanto a DAG), sem
+quarentena de linhas nem execução parcial. "Quarentena" fica expressa como
+trilha de auditoria (data docs + logs da task), não como um dataset separado
+de linhas isoladas. Recuperação = corrigir a causa raiz e rerodar a DAG.
+
+Arquivos criados:
+  - src/governance/great_expectations/context.py (FileDataContext,
+    telemetria anônima desabilitada)
+  - src/governance/great_expectations/datasets.py (carrega Bronze/Silver/
+    Gold do MinIO via pandas — não PySpark)
+  - src/governance/great_expectations/suites.py (8 suites, via API Python,
+    não YAML/JSON à mão)
+  - src/governance/great_expectations/checkpoints.py (1 checkpoint por
+    suite, datasource/asset pandas compartilhado)
+  - src/governance/great_expectations/runner.py (CLI + `run_gate()`,
+    `QualityGateFailed`)
+  - src/governance/great_expectations/gx/{expectations,checkpoints}/ +
+    great_expectations.yml (suites/checkpoints VERSIONADOS — gerados pela
+    execução dos módulos acima, não editados à mão)
+  - tests/unit/test_great_expectations.py (17 testes — suites completas,
+    contra GX real)
+  - tests/unit/test_gx_datasets.py (8 testes — `_parse_hive_partitions`/
+    `_resolve`, sem dependência do GX)
+
+Arquivos modificados:
+  - dags/dag_batch_ingestion.py (validate_bronze_data: placeholder -> gate
+    real, bronze_transactions + bronze_market_data)
+  - dags/dag_batch_transformation.py (2 tasks novas: validate_silver_data
+    entre bronze_to_silver e silver_to_gold; validate_gold_data entre
+    silver_to_gold e load_gold_postgres)
+  - docker/airflow/Dockerfile (great-expectations==0.18.13 + s3fs==2024.3.1
+    — primeira vez que algo importa GX de verdade no container)
+  - docs/runbook.md (seção "Quality Gates" nova — diagnóstico e recuperação)
+
+================================================================================
+1. TESTES UNITÁRIOS
+================================================================================
+
+Nota de ambiente: great-expectations==0.18.13 (e também 0.18.22, testado)
+não importa em Python >= 3.13 — a camada de compatibilidade `pydantic.v1`
+interna quebra em runtimes novos (limitação do próprio Pydantic, não da GX).
+`tests/unit/test_great_expectations.py` detecta isso e pula o módulo inteiro
+via `pytest.skip(..., allow_module_level=True)` — não quebra a coleta nem a
+suíte principal (`.venv`, Python 3.14 local). CI usa Python 3.11 e não é
+afetado; validado também via um venv Python 3.10 local dedicado (mesma
+classe de incompatibilidade já documentada para SQLAlchemy/schemas.py em
+issues anteriores) e, de forma mais autoritativa, contra o container real do
+Airflow (Python 3.11) — seção 3.
+
+--------------------------------------------------------------------------------
+1.1 tests/unit/test_great_expectations.py — 17 testes (via venv Python 3.10
+    dedicado, já que Python 3.14 local não importa GX)
+--------------------------------------------------------------------------------
+
+Comando (Python 3.10, fora do diretório tests/ para não coletar o
+conftest.py principal, que usa datetime.UTC — 3.11+):
+  pytest test_great_expectations.py -v --no-cov
+
+Resultado: 17/17 PASSED — para CADA um dos 8 datasets, uma fixture válida
+passa e uma fixture inválida (violando exatamente UMA expectativa conhecida)
+falha de modo determinístico, levantando QualityGateFailed:
+
+  ID              Dataset                    Violação testada
+  -----------------------------------------------------------------------
+  13-BRZ-TX       bronze_transactions        fraud_type nulo com is_fraud=true
+  13-BRZ-MKT      bronze_market_data         high < low
+  13-SLV-TX       silver_transactions        transaction_id duplicado (PK)
+  13-SLV-MKT      silver_market_data         high < low
+  13-GLD-FACT     gold_fact_transactions     amount_brl negativo
+  13-GLD-CUST     gold_dim_customers         customer_key duplicado (PK) —
+                                              exatamente o tipo de bug real
+                                              da issue #10
+  13-GLD-DATE     gold_dim_date              month=13 (fora do range)
+  13-GLD-AGG      gold_agg_daily_fraud_metrics  fraud_count > total_transactions
+                                              E (date_key,transaction_type)
+                                              duplicado (PK composta)
+
+--------------------------------------------------------------------------------
+1.2 tests/unit/test_gx_datasets.py — 8 testes (suíte principal, sem GX)
+--------------------------------------------------------------------------------
+
+Comando:
+  pytest tests/unit/test_gx_datasets.py -v
+
+Resultado: 8/8 PASSED. Regressão direta de um bug real encontrado no teste
+de integração (seção 2): `_parse_hive_partitions` reconstrói colunas de
+partição Hive (`date_key=2024-06-15/...`) a partir do caminho do arquivo —
+sem isso, `gold/fact_transactions`/`gold/agg_daily_fraud_metrics`/
+`silver/market_data` perdiam silenciosamente `date_key`/`date` (ver seção 2).
+
+================================================================================
+2. BUGS REAIS ENCONTRADOS E CORRIGIDOS DURANTE O TESTE DE INTEGRAÇÃO
+================================================================================
+
+A primeira execução real (`runner.py --all` contra o Postgres/MinIO reais)
+revelou TRÊS bugs genuínos, nenhum deles hipotético — todos só apareceram
+porque essa foi a primeira vez que algo leu Bronze/Silver/Gold inteiros via
+pandas (os jobs Spark existentes são mais tolerantes a essas inconsistências,
+mascarando-as).
+
+--------------------------------------------------------------------------------
+2.1 Colisão de schema em bronze/market_data (ArrowTypeError)
+--------------------------------------------------------------------------------
+`pd.read_parquet("s3://bronze/market_data/")` falhava:
+  ArrowTypeError: Unable to merge: Field date has incompatible types:
+  large_string vs dictionary<values=string, indices=int32, ordered=0>
+
+Causa: o único arquivo real (`date=2024-01-02/PETR4.SA.parquet`) tem a
+coluna `date` gravada TANTO como partição Hive (nome do diretório) QUANTO
+dentro do próprio arquivo — o leitor de dataset particionado do pyarrow tenta
+unificar as duas versões (dictionary-encoded da partição vs. string do
+arquivo) e falha.
+
+Correção: `datasets.py::load_dataframe` passou a ler cada arquivo Parquet
+individualmente pelo caminho completo (não mais apontando para o
+diretório), evitando a descoberta de partição Hive do pyarrow por completo,
+e concatenando via pandas (mais tolerante a diferenças reais de schema entre
+arquivos de ingestões distintas do que a unificação estrita do pyarrow).
+
+--------------------------------------------------------------------------------
+2.2 Perda silenciosa de coluna de partição (date_key/date ausentes)
+--------------------------------------------------------------------------------
+A correção acima, sozinha, introduziu uma REGRESSÃO: `gold/fact_transactions`
+e `gold/agg_daily_fraud_metrics` (gravados com `.partitionBy("date_key")`
+pelo Spark) e `silver/market_data` (`.partitionBy("date")`) NÃO duplicam a
+coluna de partição dentro do arquivo (convenção padrão do Spark) — ler
+arquivo a arquivo, sem reconstruir a partição, resultou em `date_key`/`date`
+literalmente ausentes do DataFrame carregado (`expect_column_to_exist`
+falhando para essas 3 tabelas).
+
+Correção: `_parse_hive_partitions()` extrai pares chave=valor de segmentos
+Hive-style no caminho de cada arquivo (`date_key=2024-06-15/` ->
+`{"date_key": "2024-06-15"}`) e a coluna é injetada de volta no DataFrame —
+mas SÓ quando ainda não existe (preserva o comportamento correto de 2.1,
+onde a versão do arquivo é autoritativa quando presente).
+
+--------------------------------------------------------------------------------
+2.3 Comparação timezone-naive vs. timezone-aware na checagem de freshness
+--------------------------------------------------------------------------------
+`silver_transactions` falhava em `expect_column_max_to_be_between` sobre
+`processing_timestamp` mesmo com dado genuinamente fresco (verificado:
+`processing_timestamp` real = mesma hora da execução). Causa: a coluna vem
+como `datetime64[ns]` (sem timezone) do parquet, mas os bounds gerados por
+`_freshness()` eram strings ISO COM offset UTC explícito
+(`+00:00`) — o GX não compara corretamente naive vs. aware, falhando a
+expectativa sem erro explícito (silencioso).
+
+Correção: `_freshness()` gera os bounds sem tzinfo
+(`datetime.now(tz=UTC).replace(tzinfo=None)`), batendo com o dtype real dos
+dados.
+
+--------------------------------------------------------------------------------
+2.4 Telemetria anônima do GX habilitada por padrão
+--------------------------------------------------------------------------------
+Não é um bug funcional, mas um achado de postura de dados: o GX habilita
+`anonymous_usage_statistics.enabled=true` por padrão, enviando dados de uso
+para os servidores da própria Great Expectations. Desabilitado
+explicitamente em `context.py::get_context()`, consistente com a postura já
+estabelecida deste projeto (ex.: issues #8/#9, sem envio de dados
+desnecessário a terceiros).
+
+================================================================================
+3. TESTE DE INTEGRAÇÃO REAL — DOCKER (executado em 2026-09-04)
+================================================================================
+
+Pré-requisito: make up (rebuild da imagem Airflow com GX/s3fs) && make setup
+(Bronze/Silver/Gold já populados de sessões anteriores — 506.146 transações
+em fact_transactions, dados reais de várias issues anteriores).
+
+--------------------------------------------------------------------------------
+3.1 Todos os 8 gates contra dados reais (após as correções da seção 2)
+--------------------------------------------------------------------------------
+  ID              Dataset                        Expectativas  Resultado
+  -----------------------------------------------------------------------
+  13-INT-01       bronze_transactions            26            OK
+  13-INT-02       bronze_market_data             18            OK
+  13-INT-03       silver_transactions            21            OK
+  13-INT-04       silver_market_data             16            OK
+  13-INT-05       gold_fact_transactions         22            OK
+  13-INT-06       gold_dim_customers             17            OK
+  13-INT-07       gold_dim_date                  24            OK
+  13-INT-08       gold_agg_daily_fraud_metrics   20            OK
+
+Total: 164 expectativas, 0 falhas, contra o dataset real completo.
+
+--------------------------------------------------------------------------------
+3.2 Tasks reais do Airflow (airflow tasks test) — critério "integrar aos DAGs"
+--------------------------------------------------------------------------------
+  ID              Descrição                                    Resultado
+  -----------------------------------------------------------------------
+  13-DAG-01       dags list-import-errors                       "No data
+                                                                found"
+  13-DAG-02       batch_ingestion_pipeline / validate_bronze_
+                  data                                           SUCCESS
+  13-DAG-03       batch_transformation_pipeline / validate_
+                  silver_data                                    SUCCESS
+  13-DAG-04       batch_transformation_pipeline / validate_
+                  gold_data (dados originais)                    SUCCESS
+
+--------------------------------------------------------------------------------
+3.3 DAG bloqueia em falha real — critério de aceite literal
+--------------------------------------------------------------------------------
+Procedimento: backup de gold/dim_customers/ (mc mirror para bucket
+temporário), substituição por um arquivo com customer_key deliberadamente
+duplicado, execução da task real, restauração dos dados originais.
+
+  ID              Descrição                                    Resultado
+  -----------------------------------------------------------------------
+  13-BLOCK-01     Backup + injeção de dado ruim em gold/
+                  dim_customers/ (customer_key duplicado)        OK
+  13-BLOCK-02     airflow tasks test batch_transformation_
+                  pipeline validate_gold_data (dado ruim)        FALHOU —
+                                                                QualityGateFailed:
+                                                                "1/17
+                                                                expectativas
+                                                                falharam";
+                                                                Airflow
+                                                                marcou
+                                                                UP_FOR_RETRY
+                                                                (bloqueia
+                                                                load_gold_
+                                                                postgres
+                                                                downstream)
+  13-BLOCK-03     Restauração dos dados originais + nova
+                  execução                                       OK — 17/17
+                                                                expectativas
+                                                                (voltou ao
+                                                                normal)
+
+--------------------------------------------------------------------------------
+3.4 Data docs e suites versionadas — critérios de aceite
+--------------------------------------------------------------------------------
+  ID              Descrição                                    Resultado
+  -----------------------------------------------------------------------
+  13-DOCS-01      gx/uncommitted/data_docs/local_site/index.
+                  html + 8 páginas de expectation suite          OK — gerado
+                                                                a cada
+                                                                execução
+  13-DOCS-02      gx/uncommitted/data_docs/local_site/
+                  validations/<suite>/ (1 por dataset)            OK
+  13-VERS-01      gx/expectations/*.json (8 arquivos) +
+                  gx/checkpoints/*.yml (8 arquivos) versionados
+                  em git (gx/uncommitted/ gitignored pelo
+                  próprio GX)                                    OK
+
+================================================================================
+4. SUÍTE COMPLETA E LINT
+================================================================================
+
+  ID          Descrição                                    Resultado Esperado
+  -----------------------------------------------------------------------
+  13-SUITE-01 pytest tests/unit/ (Python 3.14 local)         242/244 PASSED,
+                                                              1 skipped
+                                                              (test_great_
+                                                              expectations.py
+                                                              — GX indisponível
+                                                              em Python 3.14,
+                                                              ver nota seção 1),
+                                                              1 falha local
+                                                              pré-existente
+                                                              (.env), não
+                                                              relacionada
+  13-LIN-01   ruff check src/ tests/ scripts/                All checks
+                                                              passed!
+  13-LIN-02   mypy src/ --ignore-missing-imports              Success: no
+                                                              issues found in
+                                                              46 files
+
+================================================================================
+RESULTADO FINAL — ISSUE #13
+================================================================================
+
+  Testes novos:                                 25/25 PASSED (17 GX + 8
+                                                 datasets.py)
+  Suíte completa (Python 3.14 local):           242/244 PASSED, 1 skipped
+                                                 (GX indisponível localmente,
+                                                 ver nota), 1 falha
+                                                 pré-existente não relacionada
+  Cobertura geral:                              75,97%
+  Lint / mypy:                                  All checks passed! / Success
+  Integração real (Docker, dados reais):        OK — 164 expectativas contra
+                                                 8 datasets reais, 0 falhas;
+                                                 3 bugs reais encontrados e
+                                                 corrigidos; DAG bloqueou de
+                                                 verdade contra dado corrompido
+                                                 injetado, e voltou ao normal
+                                                 após restauração
+  Critérios de aceite da issue:                 4/4 atendidos
+    - Suites versionadas em src/governance/
+      great_expectations/                       OK
+    - Execução válida passa, fixture inválida
+      falha deterministicamente                 OK (17 testes unitários +
+                                                 164 expectativas reais)
+    - DAG bloqueia quando o gate falha           OK (validado com dado real
+                                                 corrompido)
+    - Runbook descreve diagnóstico/recuperação   OK (docs/runbook.md, seção
+                                                 "Quality Gates")

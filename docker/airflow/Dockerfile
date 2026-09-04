@@ -40,4 +40,6 @@ RUN pip install --no-cache-dir \
     pyarrow==15.0.0 \
     numpy==1.26.4 \
     yfinance==0.2.36 \
-    tenacity==8.2.3
+    tenacity==8.2.3 \
+    s3fs==2024.3.1 \
+    great-expectations==0.18.13

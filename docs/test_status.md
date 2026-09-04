@@ -845,3 +845,102 @@ health/readiness checks.
 | 15-SUITE-01 | `pytest tests/unit/` | Sem regressão | OK (234/235 PASSED — 1 falha local pré-existente de `.env`, não relacionada) |
 | 15-LIN-01 | `ruff check` | All checks passed! | OK |
 | 15-LIN-02 | `mypy` | Success: no issues found | OK |
+
+---
+
+## Issue #13 — Quality Gates com Great Expectations (executado em 2026-09-04)
+
+> Checklist completo: `docs/testes_issue_13.txt`
+
+Objetivo: substituir a validação placeholder do Bronze por controles de
+qualidade executáveis (Great Expectations) para Bronze, Silver e Gold,
+integrados às DAGs com política de falha explícita.
+
+**Decisão de arquitetura** (confirmada com o usuário): **gate simples** —
+qualquer expectativa falhando bloqueia a task do Airflow (e portanto a DAG),
+sem quarentena de linhas nem execução parcial. "Quarentena" fica como trilha
+de auditoria (data docs + logs), não como dataset separado. Recuperação =
+corrigir a causa raiz e rerodar a DAG.
+
+**Arquivos criados**: `src/governance/great_expectations/{context,datasets,
+suites,checkpoints,runner}.py` (suites via API Python, não YAML/JSON à mão),
+`gx/{expectations,checkpoints}/` + `great_expectations.yml` (artefatos
+versionados, gerados pela execução dos módulos — `gx/uncommitted/`
+gitignored pelo próprio GX), `tests/unit/test_great_expectations.py` (17
+testes) e `tests/unit/test_gx_datasets.py` (8 testes, sem dependência do
+GX). 8 suites cobrindo `bronze_transactions`, `bronze_market_data`,
+`silver_transactions`, `silver_market_data`, `gold_fact_transactions`,
+`gold_dim_customers`, `gold_dim_date`, `gold_agg_daily_fraud_metrics`.
+
+**Arquivos modificados**: `dags/dag_batch_ingestion.py` (placeholder →
+gate real), `dags/dag_batch_transformation.py` (2 tasks novas:
+`validate_silver_data` e `validate_gold_data`), `docker/airflow/Dockerfile`
+(`great-expectations==0.18.13` + `s3fs` — primeira vez que algo importa GX
+de fato no container), `docs/runbook.md` (seção "Quality Gates" nova).
+
+### 1. Testes Unitários
+
+Nota de ambiente: great-expectations não importa em Python >= 3.13 (camada
+`pydantic.v1` interna quebra em runtimes novos — limitação do próprio
+Pydantic). `test_great_expectations.py` detecta isso e pula o módulo
+inteiro (`pytest.skip(allow_module_level=True)`) na suíte local (Python
+3.14); CI usa Python 3.11 e não é afetado. Validado via venv Python 3.10
+dedicado e, mais autoritativamente, contra o container real do Airflow
+(Python 3.11) — ver seção 2.
+
+| ID | Classe | Descrição | Status |
+|----|--------|-----------|--------|
+| 13-GX | `test_great_expectations.py` | Para cada um dos 8 datasets, fixture válida passa e fixture inválida (violando 1 expectativa conhecida) falha deterministicamente — inclui duplicidade de PK em `gold_dim_customers` (o mesmo tipo de bug real da issue #10) (17 testes) | OK |
+| 13-DS | `test_gx_datasets.py` | `_parse_hive_partitions`/`_resolve` — regressão direta de um bug real (seção 2) (8 testes) | OK |
+
+**Total: 25/25 testes novos PASSED.**
+
+### 2. Bugs reais encontrados e corrigidos durante o teste de integração
+
+A primeira execução real (`runner.py --all` contra MinIO real) revelou três
+bugs genuínos — nenhum hipotético, todos só surgiram porque essa foi a
+primeira vez que algo leu Bronze/Silver/Gold inteiros via pandas (os jobs
+Spark existentes toleram essas inconsistências, mascarando-as):
+
+1. **Colisão de schema em `bronze/market_data`**: `pd.read_parquet` no
+   diretório falhava (`ArrowTypeError: Unable to merge`) — a coluna `date`
+   existe TANTO como partição Hive (nome do diretório) QUANTO dentro do
+   arquivo, e o leitor de dataset particionado do pyarrow não concilia as
+   duas versões. Corrigido lendo cada arquivo individualmente pelo caminho
+   completo (evita a descoberta de partição do pyarrow) e concatenando via
+   pandas.
+2. **Perda silenciosa de coluna de partição**: a correção acima, sozinha,
+   quebrou `gold_fact_transactions`/`gold_agg_daily_fraud_metrics`/
+   `silver_market_data` — gravados com `.partitionBy(...)` do Spark, que
+   NÃO duplica a coluna de partição dentro do arquivo (convenção padrão),
+   então `date_key`/`date` ficavam ausentes do DataFrame. Corrigido com
+   `_parse_hive_partitions()`, que reconstrói a coluna a partir do caminho
+   do arquivo — só quando ainda não existe (preserva a correção #1).
+3. **Comparação timezone-naive vs. aware na checagem de freshness**:
+   `silver_transactions` falhava mesmo com dado genuinamente fresco — a
+   coluna vem `datetime64[ns]` (sem timezone) do parquet, mas os bounds
+   gerados tinham offset UTC explícito, e o GX falha essa comparação sem
+   erro explícito. Corrigido gerando bounds sem tzinfo.
+
+Achado adicional (não é bug, é postura de dados): GX habilita telemetria
+anônima por padrão — desabilitada explicitamente em `context.py`,
+consistente com a postura já estabelecida do projeto sobre dados (issues
+#8/#9).
+
+### 3. Teste de Integração Real (Docker) e Critério "DAG Bloqueia"
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|-------------------|--------|
+| 13-INT-01/08 | 8 gates contra dados reais (após as 3 correções) — 164 expectativas no total | 0 falhas em todos os 8 datasets | OK |
+| 13-DAG-02/04 | `airflow tasks test` real para `validate_bronze_data`/`validate_silver_data`/`validate_gold_data` | SUCCESS em todos, sem erros de import de DAG | OK |
+| 13-BLOCK-01/03 | Backup de `gold/dim_customers/` → injeção de `customer_key` duplicado → `airflow tasks test validate_gold_data` → restauração | Task **FALHOU** de verdade (`QualityGateFailed`, Airflow marcou `UP_FOR_RETRY`, bloqueando `load_gold_postgres` downstream); após restaurar, voltou a passar (17/17) | OK |
+| 13-DOCS-01/02 | Data docs (`gx/uncommitted/data_docs/local_site/`) publicados a cada execução, com página por suite e por validação | OK | OK |
+| 13-VERS-01 | `gx/expectations/*.json` (8) + `gx/checkpoints/*.yml` (8) versionados em git | OK | OK |
+
+### 4. Suíte Completa e Lint
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|-------------------|--------|
+| 13-SUITE-01 | `pytest tests/unit/` (Python 3.14 local) | Sem regressão | OK (242/244 PASSED, 1 skipped — GX indisponível em Python 3.14, ver nota — 1 falha local pré-existente de `.env`, não relacionada) |
+| 13-LIN-01 | `ruff check` | All checks passed! | OK |
+| 13-LIN-02 | `mypy` | Success: no issues found | OK |
