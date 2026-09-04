@@ -98,6 +98,13 @@ ignore = [
 [tool.ruff.lint.isort]
 known-first-party = ["src"]
 
+[tool.ruff.lint.per-file-ignores]
+# schemas.py precisa continuar importável no Python 3.8 do container Spark
+# (issue #11) — StrEnum tem shim condicional e os campos opcionais usam
+# `Optional[X]` (não `X | None`, que quebra a resolução de tipos do Pydantic
+# em runtimes < 3.10) de propósito, não por desatualização.
+"src/common/schemas.py" = ["UP036", "UP007"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = false

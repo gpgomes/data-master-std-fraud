@@ -695,3 +695,90 @@ pelos jobs.
 | 10-SUITE-01 | `pytest tests/unit/` | Sem regressão | OK (185/186 PASSED — 1 falha local pré-existente de `.env`, não relacionada) |
 | 10-LIN-01 | `ruff check` | All checks passed! | OK |
 | 10-LIN-02 | `mypy` | Success: no issues found | OK |
+
+---
+
+## Issue #11 — Streaming Spark e Detecção de Fraude (executado em 2026-09-03)
+
+> Checklist completo: `docs/testes_issue_11.txt`
+
+Objetivo: implementar a speed layer da arquitetura Lambda — `StreamProcessor`
+consome `raw-transactions` via Spark Structured Streaming, enriquece com
+`dim_customers` (Gold) e detecta anomalias de valor via Z-Score numa janela
+deslizante de 1h por cliente, publicando `enriched-transactions`/
+`fraud-alerts` e persistindo em `s3a://silver/transactions_stream/` (caminho
+separado do batch — evita conflito entre overwrite por partição e append
+contínuo).
+
+**Decisão de arquitetura** (confirmada com o usuário): janela deslizante real
+recalculada a cada micro-batch, não uma baseline estática pré-calculada.
+Como `foreachBatch` só entrega as linhas do micro-batch atual, o histórico de
+amount/timestamp por cliente é persistido em
+`s3a://silver/_stream_state/customer_amount_history/` e recarregado a cada
+trigger (leitura→processa→grava), dando o contexto cross-micro-batch
+necessário — sem isso, um trigger de 10s quase nunca teria 2+ transações do
+mesmo cliente para formar uma baseline.
+
+**Arquivos criados**: `src/transformation/streaming/stream_processor.py`
+(`StreamProcessor`), `tests/unit/test_stream_processor.py` (20 testes). O
+target `make spark-submit-stream` já existia (scaffolding do step 1.2) e não
+precisou de alteração.
+
+### 1. Testes Unitários — `tests/unit/test_stream_processor.py`
+
+| ID | Classe | Descrição | Status |
+|----|--------|-----------|--------|
+| 11-PARSE | `TestParseRawKafkaBatch` | JSON válido parseado; JSON malformado/sem `transaction_id` descartado sem derrubar o batch (3 testes) | OK |
+| 11-SCORE | `TestEnrichAndScore` | Histórico insuficiente → z_score nulo; salto de valor → anomalia + fraud_score=1.0; janela de 1h respeitada; **histórico persistido de micro-batches anteriores detecta anomalia numa transação isolada** (ponto central do design); enriquecimento via `dim_customers` (9 testes) | OK |
+| 11-HIST | `TestPersistHistory` | Poda de histórico fora da janela; leitura com path ausente retorna vazio sem erro (3 testes) | OK |
+| 11-ALERT | `TestBuildFraudAlerts` | Só anomalias incluídas; `fraud_type` reaproveita rótulo de origem ou usa fallback; `alert_reason` menciona Z-Score/limiar; payload valida contra `FraudAlert` (Pydantic, round-trip) (5 testes) | OK |
+
+**Total: 20/20 testes PASSED.**
+
+### 2. Bug real encontrado e corrigido — `schemas.py` incompatível com Python 3.8
+
+A primeira execução real falhou na importação: `ImportError: cannot import
+name 'StrEnum' from 'enum'` — `stream_processor.py` é o **primeiro** job
+PySpark deste projeto a de fato importar `src.common.schemas` (jobs batch
+anteriores usavam DDLs inline). A imagem custom do Spark
+(`apache/spark:3.5.1`) roda Python 3.8, mas `schemas.py` usa `from enum
+import StrEnum` (stdlib só desde 3.11) e sintaxe `X | None` nos campos
+Pydantic (o Pydantic resolve as anotações em runtime para construir
+validators — falha em < 3.10 mesmo com `from __future__ import
+annotations`). Incompatibilidade latente desde a issue #8, nunca detectada
+por falta de um job Spark que importasse o módulo.
+
+**Correção**: shim condicional (`StrEnum` real em 3.11+, subclasse
+`str`+`Enum` equivalente abaixo disso) e todos os campos opcionais trocados
+de `X | None` para `Optional[X]` (typing) — compatível com 3.8, mesmo
+comportamento em runtime (`use_enum_values=True` já armazenava a string, não
+a instância do enum). `pyproject.toml` ganhou um `per-file-ignore` de ruff
+documentado para essas linhas (as regras `pyupgrade` assumem o alvo 3.11+ do
+projeto e sinalizariam o shim como desatualizado). Validado dentro do
+container real (Python 3.8.10): import e validação do `TransactionEvent`
+funcionando.
+
+### 3. Teste de Integração Real (Docker + Kafka + MinIO)
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|-------------------|--------|
+| 11-INT-01/03 | Producer real (10 tps) + stream_processor consumindo backlog e mensagens novas | 0 erros; batch 0 processou 2.407 linhas de backlog; batches seguintes ~10/batch | OK |
+| 11-INT-04/06 | `enriched-transactions` recebendo mensagens reais; `silver/transactions_stream/` e `_stream_state/customer_amount_history/` populados | OK — 153 objetos (2.0MiB) no Silver; histórico persistido e sobrescrito a cada batch | OK |
+| 11-ANOM-01/02 | Rajada determinística injetada (6 transações normais + 1 de R$50.000 para o mesmo cliente) → `fraud-alerts` | OK — alerta real: `z_score=7056.93`, `fraud_score=1.0`, `fraud_type=MONEY_LAUNDERING` (fallback), `alert_reason` com Z-Score/limiar/janela | OK |
+| 11-CKPT-01/04 | `kill -TERM` no job + restart — checkpoint deve resumir sem reprocessar o já commitado | OK — restart retomou do batch 14 (único offset planejado mas não commitado no momento do kill, replay padrão do Spark), `rows=76` — **não** reprocessou as ~5.480 mensagens já commitadas nos batches 0-13 | OK |
+
+Achado sem impacto (não é bug, comportamento esperado dos geradores deste
+projeto): os `customer_id` do producer streaming (pool de 1.000, seed
+não-determinística por execução) não têm interseção com os 10.000
+`customer_id` de `gold/dim_customers` (seed=42 fixo) — o LEFT JOIN de
+enriquecimento funciona corretamente, mas nesta rodada retornou null para
+`customer_segment`/`risk_score`/`city` em todas as linhas (omitidos do JSON
+por padrão pelo `to_json`).
+
+### 4. Suíte Completa e Lint
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|-------------------|--------|
+| 11-SUITE-01 | `pytest tests/unit/` | Sem regressão | OK (205/206 PASSED — 1 falha local pré-existente de `.env`, não relacionada) |
+| 11-LIN-01 | `ruff check` | All checks passed! | OK |
+| 11-LIN-02 | `mypy` | Success: no issues found | OK |
