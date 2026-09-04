@@ -65,7 +65,9 @@ class TestBronzeTransactions:
     }
 
     def _fresh_ingestion(self, n: int) -> list:
-        return [pd.Timestamp.now(tz="UTC")] * n
+        # Naive de propósito: dados reais lidos de Parquet chegam como
+        # datetime64[ns] sem timezone (ver `_freshness()` em suites.py).
+        return [pd.Timestamp.now()] * n
 
     def test_valid_passes(self, context):
         df = pd.DataFrame({**self._BASE, "ingestion_timestamp": self._fresh_ingestion(2)})
@@ -115,7 +117,9 @@ class TestSilverTransactions:
             "channel": ["APP_MOBILE", "INTERNET_BANKING"],
             "is_fraud": [False, False],
             "fraud_type": [None, None],
-            "processing_timestamp": [pd.Timestamp.now(tz="UTC")] * 2,
+            # Naive de propósito: dados reais lidos de Parquet chegam como
+            # datetime64[ns] sem timezone (ver `_freshness()` em suites.py).
+            "processing_timestamp": [pd.Timestamp.now()] * 2,
         }
         base.update(overrides)
         return base
