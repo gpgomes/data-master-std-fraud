@@ -55,7 +55,7 @@ make spark-submit-silver-gold  # Run only Silver→Gold job
 make producer-transactions     # Start Kafka transaction producer
 make producer-market           # Start Kafka market data producer
 make api                       # Start FastAPI dev server at :8000
-make seed-openmetadata         # Populate OpenMetadata catalog
+make catalog                   # Generate docs/data_catalog.md, validate datasets against live infra
 ```
 
 ## Architecture
@@ -91,6 +91,7 @@ Python Simulator → Kafka raw-transactions → Spark Structured Streaming
 | FastAPI app | `src/serving/api/main.py` |
 | Gold→Postgres loader | `src/serving/loaders/` |
 | Great Expectations suites | `src/governance/great_expectations/` |
+| Data catalog (registry, validation, render) | `src/governance/data_catalog/` |
 | Airflow DAGs | `dags/` |
 | Shared test fixtures | `tests/conftest.py` |
 
@@ -134,14 +135,15 @@ Settings are grouped: `KafkaSettings`, `MinIOSettings`, `PostgresSettings`, `Spa
 | Superset | http://localhost:8088 | admin / admin |
 | FastAPI docs | http://localhost:8000/docs | — |
 | Spark UI | http://localhost:8081 | — |
-| OpenMetadata | http://localhost:8585 | admin / admin |
+
+Data catalog is not a web service — it's a generated, versioned document (`docs/data_catalog.md`, via `make catalog`); see issue #14 / `docs/architecture.md`'s "Decisões Arquiteturais" table for why OpenMetadata was descoped from local V1.
 
 ## Implementation Phases
 
 The project is being built in phases (see `CaseFinancialDataLakeHouse.md`):
 - **Phase 1 (Weeks 1–2):** Local infra with Docker Compose (current: `feature/step_1.2`)
 - **Phase 2 (Weeks 3–4):** PySpark batch + streaming transformations
-- **Phase 3 (Weeks 5–6):** Data governance (Great Expectations, OpenMetadata, Delta Lake)
+- **Phase 3 (Weeks 5–6):** Data governance (Great Expectations, lightweight data catalog, Delta Lake — OpenMetadata descoped from local V1, see issue #14)
 - **Phase 4 (Weeks 7–8):** Serving layer (Postgres, FastAPI, dashboards)
 - **Phase 5 (Weeks 9–10):** AWS migration via Terraform
 - **Phase 6 (Weeks 11–12):** CI/CD, QuickSight, documentation (the lint + unit-test slice of CI/CD — `.github/workflows/ci.yml` — was set up early, ahead of this phase; deploy automation is still pending)

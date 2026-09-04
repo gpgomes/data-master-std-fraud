@@ -99,6 +99,44 @@ JSON gerados em `gx/expectations/` — esses são saída, sobrescritos a cada
 run) e rode os testes (`pytest tests/unit/test_great_expectations.py`) com
 uma fixture que exercite a mudança.
 
+## Catálogo de Dados
+
+Registro leve em `src/governance/data_catalog/registry.py` (não OpenMetadata —
+ver decisão em `docs/architecture.md`, tabela "Decisões Arquiteturais").
+Cobre Bronze/Silver/Gold (MinIO), as 4 tabelas da serving layer (Postgres),
+os 4 tópicos Kafka, e um placeholder de dashboard (`status="planejado"`,
+issue #16 ainda não existe).
+
+### Gerar o catálogo
+
+```bash
+make catalog
+# equivalente:
+python -m scripts.build_data_catalog --strict
+```
+
+Requer `make up && make setup` (e dados já processados até Gold, para os
+prefixos MinIO/tabelas Postgres não ficarem vazios) — sem `--strict`, ou com
+`--skip-validation`, o comando só renderiza o registro sem checar a infra.
+Saída: `docs/data_catalog.md` (tabelas por camada + diagrama de linhagem em
+Mermaid).
+
+### Diagnosticar uma falha de validação
+
+`--strict` sai com código 1 se algum asset não existir na infra real
+(prefixo MinIO vazio, tabela Postgres ausente, tópico Kafka inexistente) ou
+se alguma referência de linhagem (`upstream`) apontar para uma key
+inexistente no registro. O log (`data_catalog`) indica a entry e o motivo;
+o próprio `docs/data_catalog.md` gerado também marca cada asset com
+❌ e o detalhe, ou 🗓️ planejado para o que ainda não foi implementado.
+
+### Adicionar/alterar um asset
+
+Edite `CATALOG` em `registry.py` (owner, classificação, termos de
+glossário — devem bater com `docs/data_dictionary.md`, checado por
+`test_glossary_terms_reference_known_business_glossary` — e `upstream` para
+linhagem) e rode `pytest tests/unit/test_data_catalog.py`.
+
 ## CI (GitHub Actions)
 
 `.github/workflows/ci.yml` roda em todo push/PR para `main`: job `lint` (`ruff check` + `mypy`) e job `test` (`pytest tests/unit/`, Java 17 + Python 3.11, gate de cobertura ≥70%). Reproduza o gate localmente antes de abrir PR:
