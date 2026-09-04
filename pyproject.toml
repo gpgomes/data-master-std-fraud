@@ -103,7 +103,7 @@ known-first-party = ["src"]
 # (issue #11) — StrEnum tem shim condicional e os campos opcionais usam
 # `Optional[X]` (não `X | None`, que quebra a resolução de tipos do Pydantic
 # em runtimes < 3.10) de propósito, não por desatualização.
-"src/common/schemas.py" = ["UP036", "UP042", "UP045"]
+"src/common/schemas.py" = ["UP036", "UP007"]
 
 [tool.mypy]
 python_version = "3.11"
