@@ -1,0 +1,311 @@
+================================================================================
+CHECKLIST DE TESTES — Streaming Spark e Detecção de Fraude (issue #11)
+================================================================================
+
+Objetivo: implementar a speed layer da arquitetura Lambda — consumir
+raw-transactions em tempo real, enriquecer, detectar anomalias de valor via
+Z-Score numa janela deslizante por cliente, e publicar enriched-transactions/
+fraud-alerts, com checkpoint e modo de replay.
+
+Decisão de arquitetura (confirmada com o usuário): janela deslizante de
+verdade, recalculada a cada micro-batch, em vez de uma baseline estática
+pré-calculada. Implementação: histórico de amount/timestamp por cliente é
+persistido em `s3a://silver/_stream_state/customer_amount_history/` e
+recarregado a cada micro-batch (leitura-processa-grava), fornecendo o
+contexto cross-micro-batch necessário para o cálculo de Z-Score — sem isso,
+cada trigger de 10s veria só suas próprias poucas linhas por cliente (o
+producer gera para clientes aleatórios), quase nunca o suficiente para uma
+baseline.
+
+Arquivos criados:
+  - src/transformation/streaming/stream_processor.py (StreamProcessor)
+  - tests/unit/test_stream_processor.py (20 testes)
+
+Arquivos modificados:
+  - src/common/schemas.py (bug real encontrado — ver seção 2)
+  - pyproject.toml (per-file-ignore de ruff para o shim de compat)
+
+Makefile: `spark-submit-stream` já existia (scaffolding do step 1.2), sem
+alteração necessária — já apontava para o arquivo certo com o pacote Kafka
+correto.
+
+================================================================================
+1. TESTES UNITÁRIOS — tests/unit/test_stream_processor.py
+================================================================================
+
+Comando:
+  pytest tests/unit/test_stream_processor.py -v
+
+Resultado: 20/20 PASSED.
+
+--------------------------------------------------------------------------------
+1.1 TestParseRawKafkaBatch (3 testes) — critério "falhas de dados"
+--------------------------------------------------------------------------------
+  11-PARSE-01  test_valid_json_parses_correctly
+               JSON válido parseado corretamente contra TRANSACTION_SPARK_SCHEMA
+  11-PARSE-02  test_malformed_json_is_dropped
+               JSON malformado -> transaction_id nulo -> linha descartada,
+               não derruba o micro-batch
+  11-PARSE-03  test_missing_transaction_id_is_dropped
+               JSON válido sem transaction_id -> descartado
+
+--------------------------------------------------------------------------------
+1.2 TestEnrichAndScore (9 testes) — critério "cálculo do score"
+--------------------------------------------------------------------------------
+  11-SCORE-01  test_insufficient_history_yields_null_z_score
+               < 2 transações no histórico -> z_score nulo, sem anomalia
+  11-SCORE-02  test_clear_amount_spike_flagged_as_anomaly
+               Salto de valor claro -> z_score > limiar, fraud_score=1.0 (teto)
+  11-SCORE-03  test_window_excludes_transactions_outside_range
+               Histórico > 1h de distância não conta, mesmo com valor discrepante
+  11-SCORE-04  test_uses_persisted_history_from_previous_micro_batch
+               Ponto central do design: 1 transação isolada no batch atual
+               detecta anomalia usando histórico de micro-batches anteriores
+  11-SCORE-05  test_history_outside_window_is_ignored
+               Histórico persistido fora da janela não conta
+  11-SCORE-06  test_history_rows_are_not_included_in_output
+               Histórico é só contexto — não vaza para a saída
+  11-SCORE-07  test_enriches_with_dim_customers_when_provided
+               Join com dim_customers adiciona segment/risk_score/city
+  11-SCORE-08  test_no_enrichment_columns_without_dim_customers
+               Sem dim_customers -> sem colunas de enriquecimento
+  11-SCORE-09  test_adds_processing_timestamp
+
+--------------------------------------------------------------------------------
+1.3 TestPersistHistory (3 testes)
+--------------------------------------------------------------------------------
+  11-HIST-01   test_prunes_entries_outside_window
+               Poda histórico > 1h do evento mais recente
+  11-HIST-02   test_keeps_entries_inside_window
+               Mantém histórico dentro da janela
+  11-HIST-03   test_load_history_returns_empty_when_path_missing
+               Ausência do path (1ª execução) -> DataFrame vazio, sem erro
+
+  Nota: `_persist_history` é só um wrapper de I/O sobre `_compute_pruned_history`
+  (testada acima sem I/O) — escrita local via Spark no Windows exige
+  winutils.exe/HADOOP_HOME, indisponível neste ambiente de teste. O round-trip
+  real de escrita+leitura foi validado no teste de integração (seção 3).
+
+--------------------------------------------------------------------------------
+1.4 TestBuildFraudAlerts (5 testes) — critério "serialização do alerta"
+--------------------------------------------------------------------------------
+  11-ALERT-01  test_only_anomalies_included
+  11-ALERT-02  test_uses_source_fraud_type_when_present
+               fraud_type do evento de origem (rótulo sintético) reaproveitado
+  11-ALERT-03  test_falls_back_to_default_fraud_type_when_absent
+               Sem fraud_type de origem -> fallback MONEY_LAUNDERING
+  11-ALERT-04  test_alert_reason_mentions_z_score_and_threshold
+  11-ALERT-05  test_alert_row_validates_against_fraud_alert_model
+               Round-trip: o payload que seria publicado em fraud-alerts
+               valida contra o contrato Pydantic FraudAlert (issue #8)
+
+================================================================================
+2. BUG REAL ENCONTRADO E CORRIGIDO — schemas.py incompatível com Python 3.8
+================================================================================
+
+Primeira execução real do job (`spark-submit ... stream_processor.py`) falhou
+na importação:
+
+  ImportError: cannot import name 'StrEnum' from 'enum'
+  (/usr/lib/python3.8/enum.py)
+
+Causa raiz: stream_processor.py é o PRIMEIRO job PySpark deste projeto a de
+fato importar `src.common.schemas` (os jobs batch anteriores usavam DDLs
+inline ou não precisavam de Pydantic em runtime). A imagem custom do Spark
+(`apache/spark:3.5.1`) roda Python 3.8, mas schemas.py usa:
+  - `from enum import StrEnum` (stdlib só a partir do Python 3.11)
+  - sintaxe `X | None` nos campos Pydantic (precisa Python 3.10+; mesmo com
+    `from __future__ import annotations`, o Pydantic resolve as anotações
+    postergadas em runtime para construir os validators, e `X | None` como
+    expressão real falha em < 3.10)
+
+Essa incompatibilidade já existia desde a issue #8 (quando os campos
+`produced_at`/`source_system` opcionais foram adicionados), mas nunca foi
+detectada porque nenhum job Spark chegava a importar o módulo.
+
+Correção em `src/common/schemas.py`:
+  - Shim condicional: `if sys.version_info >= (3, 11): from enum import StrEnum
+    else: class StrEnum(str, Enum): ...` (mesmo comportamento — usado com
+    `model_config = {"use_enum_values": True}`, então o valor armazenado é a
+    string, não a instância do enum, comportamento idêntico)
+  - Todos os campos opcionais (`X | None`) trocados para `Optional[X]`
+    (typing) — sintaticamente compatível com Python 3.8
+
+`pyproject.toml`: adicionado `[tool.ruff.lint.per-file-ignores]` para
+`src/common/schemas.py` (UP036/UP042/UP045) — as regras `pyupgrade` do ruff
+assumem o alvo declarado do projeto (Python 3.11+) e sinalizariam o shim/
+Optional como "desatualizados"; a exceção é documentada inline.
+
+Validado dentro do container real (Python 3.8.10):
+  docker compose exec spark-master python3 -c "from src.common.schemas import
+  TRANSACTION_SPARK_SCHEMA, TransactionEvent, FraudAlert; ..."
+  -> IMPORT OK, TransactionEvent(...) validou corretamente.
+
+Suíte completa revalidada após a correção: sem regressão (ver seção 4).
+
+================================================================================
+3. TESTE DE INTEGRAÇÃO REAL — DOCKER + KAFKA + MINIO (executado em 2026-09-03)
+================================================================================
+
+Pré-requisito: make up && make setup (Gold já populado pela issue #10).
+
+--------------------------------------------------------------------------------
+3.1 Pipeline ponta a ponta
+--------------------------------------------------------------------------------
+  ID           Descrição                                    Resultado
+  -----------------------------------------------------------------------
+  11-INT-01    make producer-transactions (10 tps, real)     OK — 0 erros,
+                                                              lat_media ~22ms
+  11-INT-02    spark-submit stream_processor.py
+               (--starting-offsets earliest, backlog ~2400)  OK — batch 0:
+                                                              rows=2407,
+                                                              anomalies=0
+  11-INT-03    Micro-batches subsequentes (~10s cada)         OK — 14 batches
+                                                              processados,
+                                                              caiu para
+                                                              ~10 TPS/batch
+                                                              após consumir
+                                                              o backlog
+  11-INT-04    enriched-transactions recebendo mensagens      OK — payload
+               reais (kafka-console-consumer)                 completo,
+                                                              is_anomaly e
+                                                              processing_
+                                                              timestamp
+                                                              presentes
+  11-INT-05    silver/transactions_stream/ populado           OK — 153
+                                                              objetos, 2.0MiB
+                                                              (caminho
+                                                              separado de
+                                                              silver/
+                                                              transactions/,
+                                                              sem conflito
+                                                              com o batch)
+  11-INT-06    silver/_stream_state/customer_amount_history/
+               persistido e sobrescrito a cada micro-batch    OK — 3 objetos,
+                                                              2.6KiB
+
+  Observação: os customer_id do producer (pool de 1.000 gerado com seed
+  não-determinística a cada execução) não têm interseção com os 10.000
+  customer_id de gold/dim_customers (seed=42 fixo) — o join de enriquecimento
+  funciona corretamente (LEFT JOIN), mas nesta rodada específica retornou
+  null para customer_segment/risk_score/city em todas as linhas (omitidos do
+  JSON por `to_json` por padrão). Não é um bug — é uma consequência de como
+  os geradores de dados batch/streaming deste projeto usam pools de clientes
+  independentes; fora do escopo desta issue corrigir.
+
+--------------------------------------------------------------------------------
+3.2 Caminho de anomalia — critério "eventos normais e anômalos verificáveis"
+--------------------------------------------------------------------------------
+Rajada determinística injetada (script ad-hoc, 1 cliente novo): 6 transações
+normais (~R$90-110) seguidas de 1 transação de R$50.000.
+
+  ID           Descrição                                    Resultado
+  -----------------------------------------------------------------------
+  11-ANOM-01   Micro-batch que consumiu a rajada              batch 11:
+                                                              rows=84,
+                                                              anomalies=1
+  11-ANOM-02   Mensagem em fraud-alerts (kafka-console-
+               consumer)                                      OK — payload:
+                                                              amount=50000.0,
+                                                              z_score=
+                                                              7056.93,
+                                                              fraud_score=1.0,
+                                                              fraud_type=
+                                                              MONEY_LAUNDERING
+                                                              (fallback, sem
+                                                              rótulo de
+                                                              origem),
+                                                              alert_reason
+                                                              menciona
+                                                              Z-Score/limiar/
+                                                              janela
+
+--------------------------------------------------------------------------------
+3.3 Checkpoint e restart — critério "reinício sem reprocessamento indevido"
+--------------------------------------------------------------------------------
+  ID           Descrição                                    Resultado
+  -----------------------------------------------------------------------
+  11-CKPT-01   Checkpoint em s3a://checkpoints/stream_
+               processor/ (offsets/ + commits/)               OK — offsets
+                                                              0-14, commits
+                                                              0-13 (batch 14
+                                                              tinha offset
+                                                              planejado mas
+                                                              não commitado
+                                                              no momento do
+                                                              kill)
+  11-CKPT-02   kill -TERM no processo (SIGTERM gracioso)       OK — job
+                                                              encerrado,
+                                                              exit 143
+  11-CKPT-03   Reinício (spark-submit, sem --starting-
+               offsets earliest)                              OK — NÃO
+                                                              relogou
+                                                              "Nenhum
+                                                              histórico
+                                                              anterior" —
+                                                              histórico
+                                                              persistido
+                                                              recarregado
+                                                              corretamente
+  11-CKPT-04   Primeiro batch pós-restart                      batch 14
+                                                              (mesmo id —
+                                                              replay do
+                                                              único batch
+                                                              não commitado,
+                                                              semântica
+                                                              padrão do
+                                                              Spark),
+                                                              rows=76 — NÃO
+                                                              reprocessou as
+                                                              ~5.480
+                                                              mensagens já
+                                                              commitadas nos
+                                                              batches 0-13
+
+================================================================================
+4. SUÍTE COMPLETA E LINT
+================================================================================
+
+  ID          Descrição                                    Resultado Esperado
+  -----------------------------------------------------------------------
+  11-SUITE-01 pytest tests/unit/                            205/206 PASSED
+                                                              (1 falha local
+                                                              pré-existente,
+                                                              não relacionada
+                                                              — MINIO_ENDPOINT
+                                                              do .env local)
+  11-LIN-01   ruff check src/ tests/ scripts/                All checks
+                                                              passed!
+  11-LIN-02   mypy src/ --ignore-missing-imports              Success: no
+                                                              issues found in
+                                                              33 files
+
+================================================================================
+RESULTADO FINAL — ISSUE #11
+================================================================================
+
+  Testes novos (test_stream_processor.py):     20/20 PASSED
+  Suíte completa:                               205/206 PASSED (1 falha local
+                                                 pré-existente, não relacionada)
+  Cobertura geral:                              82,66%
+  Lint / mypy:                                  All checks passed! / Success
+  Integração real (Kafka + Spark + MinIO):      OK — pipeline completo,
+                                                 caminho de anomalia
+                                                 verificado (alerta real
+                                                 gerado e consumido),
+                                                 checkpoint/restart validado
+                                                 sem reprocessamento indevido
+  Bug real encontrado e corrigido:              schemas.py incompatível com
+                                                 Python 3.8 (StrEnum + X|None)
+                                                 — corrigido com shim
+                                                 condicional + Optional[X]
+  Critérios de aceite da issue:                 4/4 atendidos
+    - Job inicia por comando documentado,
+      consome mensagens reais                   OK (make spark-submit-stream)
+    - Eventos normais/anômalos verificáveis      OK (enriched-transactions +
+                                                 fraud-alerts, rajada real)
+    - Checkpoint permite reinício sem
+      reprocessamento indevido                   OK (validado: batch 14
+                                                 replay, não os 14 anteriores)
+    - Testes cobrem score/limiar/serialização/
+      falhas de dados                            OK (20 testes unitários)

@@ -1,10 +1,24 @@
 """Schemas Pydantic e PySpark para toda a plataforma."""
 
 import re
+import sys
 from datetime import datetime
-from enum import StrEnum
+from enum import Enum
+from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
+
+# `enum.StrEnum` só existe a partir do Python 3.11. Os DDLs Spark deste módulo
+# (TRANSACTION_SPARK_SCHEMA etc.) são importados por jobs rodando dentro do
+# container Spark, cuja imagem base (apache/spark:3.5.1) traz Python 3.8 —
+# shim necessário para o módulo continuar importável lá.
+if sys.version_info >= (3, 11):
+    from enum import StrEnum
+else:
+
+    class StrEnum(str, Enum):
+        def __str__(self) -> str:
+            return str(self.value)
 
 # CPF mascarado: apenas os 2 últimos dígitos visíveis, sem espaços.
 CPF_MASKED_PATTERN = re.compile(r"^\*\*\*\.\*\*\*\.\*\*\*-\d{2}$")
@@ -76,15 +90,15 @@ class TransactionEvent(BaseModel):
     origin_bank: str
     destination_bank: str
     channel: Channel
-    device_id: str | None = None
-    ip_address: str | None = None
-    latitude: float | None = None
-    longitude: float | None = None
+    device_id: Optional[str] = None
+    ip_address: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
     is_fraud: bool = Field(
         default=False, description="Label de fraude (ground truth), conhecida na origem/geração"
     )
-    fraud_type: FraudType | None = None
-    fraud_score: float | None = Field(
+    fraud_type: Optional[FraudType] = None
+    fraud_score: Optional[float] = Field(
         default=None,
         ge=0.0,
         le=1.0,
@@ -94,21 +108,21 @@ class TransactionEvent(BaseModel):
             "populado downstream, nunca usado como input da geração ou do rótulo is_fraud."
         ),
     )
-    produced_at: datetime | None = Field(
+    produced_at: Optional[datetime] = Field(
         default=None,
         description=(
             "Timestamp de produção no Kafka (issue #8). None para eventos vindos do "
             "batch (CSV/Bronze), que não passam pelo producer streaming."
         ),
     )
-    source_system: str | None = Field(
+    source_system: Optional[str] = Field(
         default=None,
         description="Sistema/producer de origem (issue #8). None para eventos de batch.",
     )
 
     @field_validator("fraud_type")
     @classmethod
-    def validate_fraud_type(cls, v: FraudType | None, info) -> FraudType | None:
+    def validate_fraud_type(cls, v: Optional[FraudType], info) -> Optional[FraudType]:
         if info.data.get("is_fraud") and v is None:
             raise ValueError("fraud_type deve ser informado quando is_fraud=True")
         return v
@@ -127,10 +141,10 @@ class MarketTradeEvent(BaseModel):
     bid: float = Field(gt=0, description="Melhor oferta de compra")
     ask: float = Field(gt=0, description="Melhor oferta de venda")
     spread: float = Field(ge=0, description="Diferença entre ask e bid")
-    produced_at: datetime | None = Field(
+    produced_at: Optional[datetime] = Field(
         default=None, description="Timestamp de produção no Kafka (issue #8)"
     )
-    source_system: str | None = Field(
+    source_system: Optional[str] = Field(
         default=None,
         description=(
             "Sistema/producer de origem (issue #8) — renomeado de `source` pra bater "
@@ -194,7 +208,7 @@ class FraudAlert(BaseModel):
     amount: float
     fraud_type: FraudType
     fraud_score: float = Field(ge=0.0, le=1.0)
-    z_score: float | None = None
+    z_score: Optional[float] = None
     alert_reason: str
     processed_at: datetime = Field(default_factory=datetime.utcnow)
 
