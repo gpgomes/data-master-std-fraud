@@ -1,0 +1,244 @@
+================================================================================
+CHECKLIST DE TESTES — API FastAPI para Consultas e Alertas (issue #15)
+================================================================================
+
+Objetivo: implementar a serving API referenciada no README/Makefile —
+consultas de transações, KPIs de fraude e alertas recentes sobre o Postgres
+carregado pela issue #10, com paginação, filtros, validação de entrada e
+health/readiness checks.
+
+Decisões de arquitetura (confirmadas com o usuário):
+
+  1. Fonte de "alertas recentes": `fact_transactions` filtrado por
+     `is_fraud=true` (o rótulo de fraude já carregado no Postgres pela issue
+     #10, batch). O detector de streaming (issue #11) publica alertas de
+     Z-Score no tópico Kafka `fraud-alerts`, mas não os persiste em nenhuma
+     tabela consultável hoje — ligar essa fonte real exigiria escrever e
+     manter um consumidor Kafka novo, rodando em paralelo à API, fora do
+     escopo desta issue (que pede "criar rotas", não um pipeline novo).
+     Documentado inline em `src/serving/api/routes/alerts.py` e
+     `repository.py`.
+
+  2. Containerização: além de `make api` (host, com --reload, já cobre o
+     critério de aceite "make api inicia e /docs está disponível"), foi
+     adicionado `docker/api/Dockerfile` + serviço `api` no
+     `docker-compose.yml`, atrás de um profile dedicado (`--profile api`) —
+     não sobe com `make up` por padrão, mesmo padrão já usado pelos serviços
+     `producer-transactions`/`producer-market`. Resolve o Postgres via
+     `POSTGRES_HOST=postgres` (override de ambiente no serviço), enquanto o
+     host usa `POSTGRES_HOST=localhost` do `.env` — sem duplicar lógica de
+     conexão.
+
+Arquivos criados:
+  - src/serving/api/db.py (engine SQLAlchemy + dependency get_db)
+  - src/serving/api/models/schemas.py (Page[T], PaginationParams,
+    TransactionOut, DailyFraudMetricOut)
+  - src/serving/api/repository.py (SQL parametrizado — sem interpolação de
+    string — contra fact_transactions/agg_daily_fraud_metrics)
+  - src/serving/api/routes/{health,transactions,alerts,kpis}.py
+  - src/serving/api/main.py
+  - docker/api/Dockerfile
+  - tests/unit/test_api.py (29 testes)
+
+Arquivos modificados:
+  - docker-compose.yml (serviço `api`, profile dedicado)
+  - .env.example (API_EXTERNAL_PORT=8000, mesmo padrão de
+    MINIO_EXTERNAL_PORT/POSTGRES_EXTERNAL_PORT)
+
+================================================================================
+1. TESTES UNITÁRIOS — tests/unit/test_api.py
+================================================================================
+
+Comando:
+  pytest tests/unit/test_api.py -v
+
+Resultado: 29/29 PASSED.
+
+Estratégia: `repository.py` é testado contra SQLite in-memory (SQL real
+executado, não mocks — mesmo espírito dos testes com PySpark local do resto
+do projeto). As rotas são testadas via `TestClient` do FastAPI +
+`dependency_overrides` trocando `get_db` pela sessão SQLite; a falha de banco
+é simulada com uma sessão fake cujo `.execute()` levanta `OperationalError`
+(não fazendo a PRÓPRIA dependência falhar — isso simularia um cenário
+diferente do que o código realmente trata, já que uma Session do SQLAlchemy
+não abre conexão de fato até a primeira query).
+
+--------------------------------------------------------------------------------
+1.1 TestRepositoryTransactions / TestRepositoryAlerts / TestRepositoryDailyFraudMetrics
+    (12 testes) — critério "filtros por data/cliente/status"
+--------------------------------------------------------------------------------
+  15-REPO-01   test_list_transactions_returns_inserted_rows
+  15-REPO-02   test_count_transactions_matches_list
+  15-REPO-03   test_filter_by_customer_id
+  15-REPO-04   test_filter_by_date_range
+  15-REPO-05   test_filter_by_is_fraud
+  15-REPO-06   test_pagination_limit_offset — páginas sem sobreposição
+  15-REPO-07   test_get_transaction_found / test_get_transaction_not_found
+  15-REPO-08   test_list_alerts_only_fraudulent / test_count_alerts_matches_list
+  15-REPO-09   test_list_and_count / test_filter_by_transaction_type (KPIs)
+
+--------------------------------------------------------------------------------
+1.2 TestHealthRoutes (3 testes) — critério "health distingue processo de dependências"
+--------------------------------------------------------------------------------
+  15-HEALTH-01 test_live_always_ok — /health/live nunca toca o banco
+  15-HEALTH-02 test_ready_ok_when_db_responds
+  15-HEALTH-03 test_ready_503_when_db_unavailable
+
+--------------------------------------------------------------------------------
+1.3 TestTransactionRoutes (9 testes) — critério "paginação, filtros, falhas do banco"
+--------------------------------------------------------------------------------
+  15-TX-01     test_list_returns_paginated_envelope — items/total/page/page_size
+  15-TX-02     test_list_respects_page_size
+  15-TX-03     test_list_page_beyond_data_is_empty — página além do fim: vazio, sem erro
+  15-TX-04     test_page_size_over_max_is_rejected — 422 (limite 100)
+  15-TX-05     test_filter_by_customer_id
+  15-TX-06     test_get_by_id_found / test_get_by_id_not_found — 404
+  15-TX-07     test_list_returns_503_on_db_failure
+  15-TX-08     test_get_by_id_returns_503_on_db_failure
+
+--------------------------------------------------------------------------------
+1.4 TestAlertRoutes (2 testes) / TestKpiRoutes (3 testes)
+--------------------------------------------------------------------------------
+  15-ALERT-01  test_list_only_fraudulent_transactions
+  15-ALERT-02  test_returns_503_on_db_failure
+  15-KPI-01    test_list_daily_fraud_metrics
+  15-KPI-02    test_filter_by_transaction_type
+  15-KPI-03    test_returns_503_on_db_failure
+
+================================================================================
+2. TESTE DE INTEGRAÇÃO REAL — DOCKER + POSTGRES (executado em 2026-09-04)
+================================================================================
+
+Pré-requisito: make up && make setup (Postgres já populado pela issue #10 —
+506.146 transações, 1.745 linhas de agg_daily_fraud_metrics, dados
+persistidos de sessão anterior).
+
+--------------------------------------------------------------------------------
+2.1 API local (make api) — critério "make api inicia e /docs disponível"
+--------------------------------------------------------------------------------
+  ID          Descrição                                    Resultado
+  -----------------------------------------------------------------------
+  15-INT-01   uvicorn src.serving.api.main:app --host 0.0.0.0 --port 8000
+              contra Postgres real                          OK — sobe sem
+                                                              erro
+  15-INT-02   GET /docs                                      HTTP 200
+  15-INT-03   GET /health/live                                {"status":"ok"}
+  15-INT-04   GET /health/ready (Postgres de pé)              {"status":
+                                                              "ready"},
+                                                              HTTP 200
+  15-INT-05   GET /transactions (sem filtro)                  Payload real,
+                                                              total=506146
+  15-INT-06   GET /transactions?is_fraud=true&page_size=2      2 itens, todos
+                                                              is_fraud=true
+  15-INT-07   GET /transactions?start_date=...&end_date=...    Filtro de data
+                                                              aplicado
+                                                              corretamente
+                                                              (total=2740
+                                                              para 1 dia)
+  15-INT-08   GET /transactions/does-not-exist                 HTTP 404
+  15-INT-09   GET /transactions?page_size=999                  HTTP 422
+                                                              (le=100)
+  15-INT-10   GET /alerts?page_size=2                          total=12697,
+                                                              só is_fraud=true
+  15-INT-11   GET /kpis/fraud-daily?page_size=2                total=1745,
+                                                              linhas reais de
+                                                              agg_daily_
+                                                              fraud_metrics
+
+--------------------------------------------------------------------------------
+2.2 Falha real de banco — critério "health distingue processo de dependências"
+--------------------------------------------------------------------------------
+  ID          Descrição                                    Resultado
+  -----------------------------------------------------------------------
+  15-FAIL-01  docker compose stop postgres (com API rodando)  Container
+                                                              parado
+  15-FAIL-02  GET /health/ready com Postgres parado            HTTP 503,
+                                                              {"detail":
+                                                              "database
+                                                              unavailable"}
+  15-FAIL-03  GET /transactions com Postgres parado            HTTP 503
+                                                              (mesmo
+                                                              tratamento —
+                                                              não expõe
+                                                              stack trace)
+  15-FAIL-04  docker compose start postgres + nova consulta     Recuperou
+                                                              sozinho
+                                                              (pool_pre_
+                                                              ping=True),
+                                                              HTTP 200 sem
+                                                              reiniciar a
+                                                              API
+
+--------------------------------------------------------------------------------
+2.3 Versão containerizada — docker/api/Dockerfile + serviço api
+--------------------------------------------------------------------------------
+  ID          Descrição                                    Resultado
+  -----------------------------------------------------------------------
+  15-DOCKER-01 docker compose --profile api up -d --build api  Build OK
+                                                              (~103s, imagem
+                                                              lean sem
+                                                              pyspark/
+                                                              great-
+                                                              expectations),
+                                                              container
+                                                              Healthy
+  15-DOCKER-02 Confirma que NÃO sobe com `make up` puro         OK — só
+                                                              iniciado
+                                                              explicitamente
+                                                              via
+                                                              --profile api
+  15-DOCKER-03 GET /docs, /health/ready, /transactions          via porta
+              (porta externa 8000, POSTGRES_HOST=postgres)      8000 mapeada
+                                                              — mesmos
+                                                              resultados
+                                                              que a versão
+                                                              local,
+                                                              total=506146
+                                                              (dataset
+                                                              completo,
+                                                              resolveu o
+                                                              Postgres
+                                                              interno
+                                                              corretamente)
+
+================================================================================
+3. SUÍTE COMPLETA E LINT
+================================================================================
+
+  ID          Descrição                                    Resultado Esperado
+  -----------------------------------------------------------------------
+  15-SUITE-01 pytest tests/unit/                            234/235 PASSED
+                                                              (1 falha local
+                                                              pré-existente,
+                                                              não relacionada
+                                                              — MINIO_ENDPOINT
+                                                              do .env local)
+  15-LIN-01   ruff check src/ tests/ scripts/                All checks
+                                                              passed!
+  15-LIN-02   mypy src/ --ignore-missing-imports              Success: no
+                                                              issues found in
+                                                              41 files
+
+================================================================================
+RESULTADO FINAL — ISSUE #15
+================================================================================
+
+  Testes novos (test_api.py):                   29/29 PASSED
+  Suíte completa:                               234/235 PASSED (1 falha local
+                                                 pré-existente, não relacionada)
+  Cobertura geral:                              84,38%
+  Lint / mypy:                                  All checks passed! / Success
+  Integração real (Postgres real, local +
+  containerizada):                              OK — endpoints com dados
+                                                 reais, filtros, paginação,
+                                                 404/422, falha de banco real
+                                                 (Postgres parado/religado)
+                                                 tratada com 503 sem stack
+                                                 trace exposto
+  Critérios de aceite da issue:                 4/4 atendidos
+    - make api inicia, /docs disponível         OK
+    - Modelos estáveis, erros HTTP coerentes     OK (404/422/503)
+    - Health distingue processo de dependências  OK (/health/live vs
+                                                 /health/ready)
+    - Testes cobrem rotas/filtros/paginação/
+      falhas do banco                            OK (29 testes unitários)

@@ -782,3 +782,66 @@ por padrão pelo `to_json`).
 | 11-SUITE-01 | `pytest tests/unit/` | Sem regressão | OK (205/206 PASSED — 1 falha local pré-existente de `.env`, não relacionada) |
 | 11-LIN-01 | `ruff check` | All checks passed! | OK |
 | 11-LIN-02 | `mypy` | Success: no issues found | OK |
+
+---
+
+## Issue #15 — API FastAPI para Consultas e Alertas (executado em 2026-09-04)
+
+> Checklist completo: `docs/testes_issue_15.txt`
+
+Objetivo: implementar a serving API referenciada no README/Makefile —
+consultas de transações, KPIs de fraude e alertas recentes sobre o Postgres
+carregado pela issue #10, com paginação, filtros, validação de entrada e
+health/readiness checks.
+
+**Decisões de arquitetura** (confirmadas com o usuário):
+
+1. **Fonte de "alertas recentes"**: `fact_transactions` filtrado por
+   `is_fraud=true` (rótulo já carregado pela issue #10), não uma tabela nova
+   alimentada pelo tópico Kafka `fraud-alerts` do detector de streaming
+   (issue #11) — esse último exigiria escrever e manter um consumidor Kafka
+   novo, fora do escopo de "criar rotas" desta issue. Documentado no
+   docstring de `routes/alerts.py`.
+2. **Containerização**: `make api` (host, `--reload`) já cobre o critério de
+   aceite; `docker/api/Dockerfile` + serviço `api` no `docker-compose.yml`
+   foram adicionados como alternativa containerizada, atrás de um profile
+   dedicado (`docker compose --profile api up -d api`) — não sobe com
+   `make up` por padrão, mesmo padrão dos serviços `producer-*`. Resolve o
+   Postgres via `POSTGRES_HOST=postgres` (override de ambiente no serviço),
+   sem duplicar lógica de conexão com o host (`POSTGRES_HOST=localhost`
+   do `.env`).
+
+**Arquivos criados**: `src/serving/api/{db.py, main.py}`,
+`src/serving/api/models/schemas.py` (`Page[T]`, `PaginationParams`,
+`TransactionOut`, `DailyFraudMetricOut`), `src/serving/api/repository.py`
+(SQL parametrizado via `sqlalchemy.text`, sem interpolação de string),
+`src/serving/api/routes/{health,transactions,alerts,kpis}.py`,
+`docker/api/Dockerfile`, `tests/unit/test_api.py` (29 testes).
+
+### 1. Testes Unitários — `tests/unit/test_api.py`
+
+| ID | Classe | Descrição | Status |
+|----|--------|-----------|--------|
+| 15-REPO | `TestRepository*` | Filtros por cliente/data/status, paginação sem sobreposição, contagem consistente com listagem — contra SQLite in-memory (SQL real, não mocks) (12 testes) | OK |
+| 15-HEALTH | `TestHealthRoutes` | `/health/live` nunca toca o banco; `/health/ready` distingue banco disponível (200) de indisponível (503) (3 testes) | OK |
+| 15-TX | `TestTransactionRoutes` | Envelope paginado (items/total/page/page_size); página além dos dados retorna vazio sem erro; `page_size` acima do teto → 422; 404 para id inexistente; 503 em falha real de query (9 testes) | OK |
+| 15-ALERT / 15-KPI | `TestAlertRoutes` / `TestKpiRoutes` | Só transações fraudulentas; filtro por tipo; 503 em falha de banco (5 testes) | OK |
+
+**Total: 29/29 testes PASSED.**
+
+### 2. Teste de Integração Real (Docker + Postgres real)
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|-------------------|--------|
+| 15-INT-01/09 | `make api` local contra Postgres real (506.146 transações, 1.745 métricas diárias) — `/docs`, `/health/*`, `/transactions` (sem filtro, `is_fraud`, intervalo de data), 404, 422 | Payloads reais corretos em todos os casos | OK |
+| 15-INT-10/11 | `/alerts` e `/kpis/fraud-daily` | `total=12697` (alertas) e `total=1745` (KPIs), dados reais | OK |
+| 15-FAIL-01/04 | `docker compose stop postgres` com API rodando → `/health/ready` e `/transactions` → `start postgres` de novo | 503 em ambos durante a queda (sem stack trace exposto); recuperou sozinho ao religar (`pool_pre_ping=True`), sem reiniciar a API | OK |
+| 15-DOCKER-01/03 | `docker compose --profile api up -d --build api` (não sobe com `make up` puro); endpoints via porta externa 8000 | Build ~103s (imagem lean, sem pyspark/great-expectations); container Healthy; mesmos resultados da versão local, resolveu `POSTGRES_HOST=postgres` corretamente | OK |
+
+### 3. Suíte Completa e Lint
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|-------------------|--------|
+| 15-SUITE-01 | `pytest tests/unit/` | Sem regressão | OK (234/235 PASSED — 1 falha local pré-existente de `.env`, não relacionada) |
+| 15-LIN-01 | `ruff check` | All checks passed! | OK |
+| 15-LIN-02 | `mypy` | Success: no issues found | OK |

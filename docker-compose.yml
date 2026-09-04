@@ -495,3 +495,32 @@ services:
       - data-master-network
     profiles:
       - producers
+
+  # ── API — Serving layer (FastAPI) ───────────────────────────────────────────────
+  # Opcional: `make api` (host, com --reload) já cobre o critério de aceite da
+  # issue #15. Este serviço é a alternativa containerizada — não sobe com
+  # `make up` por padrão (profile dedicado), suba com:
+  #   docker compose --profile api up -d api
+  api:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    image: data-master-api:latest
+    pull_policy: build
+    container_name: api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      TZ: America/Sao_Paulo
+    ports:
+      - "${API_EXTERNAL_PORT:-8000}:8000"
+    volumes:
+      - ./src/common:/app/src/common
+      - ./src/serving/api:/app/src/serving/api
+    networks:
+      - data-master-network
+    profiles:
+      - api
