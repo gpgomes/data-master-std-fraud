@@ -1,0 +1,205 @@
+================================================================================
+CHECKLIST DE TESTES — Catálogo de Dados Leve (issue #14)
+================================================================================
+
+Objetivo: implementar o catálogo e a linhagem anunciados no README/
+architecture.md para os datasets da plataforma (Bronze, Silver, Gold,
+PostgreSQL, Kafka, dashboards).
+
+Decisão de arquitetura (confirmada com o usuário): DESCOPAR o OpenMetadata
+completo da V1 local. O stack oficial dele (server + MySQL/Postgres próprio
++ Elasticsearch + ingestion-Airflow) soma mais 3-4 serviços pesados aos 19
+que já rodam em docker-compose.yml (Kafka, Zookeeper, Spark x3, Airflow x3,
+Superset, Postgres x2, MinIO x2, producers, API), competindo pelos ~8GB
+alocados ao Docker neste ambiente. No lugar: um registro declarativo em
+Python, validado contra a infra real (MinIO/Postgres/Kafka, não um
+documento estático) e renderizado em docs/data_catalog.md (tabelas +
+diagrama de linhagem Mermaid). Nenhum container novo. Um catálogo
+gerenciado real (OpenMetadata ou AWS Glue Data Catalog, já previsto na V2)
+fica para a fase cloud.
+
+Arquivos criados:
+  - src/governance/data_catalog/registry.py (17 CatalogEntry: 2 Bronze,
+    2 Silver, 4 Gold/MinIO, 4 Serving/Postgres, 4 Streaming/Kafka,
+    1 Dashboard "planejado")
+  - src/governance/data_catalog/validator.py (validate_references —
+    integridade da linhagem, sem infra; validate_live — existência real
+    contra MinIO/Postgres/Kafka)
+  - src/governance/data_catalog/render.py (render_markdown — tabelas por
+    camada + diagrama Mermaid de linhagem)
+  - scripts/build_data_catalog.py (CLI: `make catalog` /
+    `python -m scripts.build_data_catalog --strict`)
+  - tests/unit/test_data_catalog.py (16 testes — lógica pura, sem infra)
+  - docs/data_catalog.md (artefato gerado e versionado)
+
+Arquivos modificados:
+  - Makefile (`seed-openmetadata` — apontava para um script que nunca
+    existiu — substituído por `catalog`)
+  - README.md, docs/architecture.md, CLAUDE.md, docs/runbook.md (decisão
+    de descope documentada; diagrama/tabelas/comandos atualizados)
+  - .env.example (removidos OPENMETADATA_HOST/OPENMETADATA_API_TOKEN —
+    nunca estiveram ligados a nenhuma classe de Settings)
+
+================================================================================
+1. TESTES UNITÁRIOS — tests/unit/test_data_catalog.py (16 testes)
+================================================================================
+
+Só lógica pura (registro, integridade de linhagem, renderização Markdown/
+Mermaid) — roda na suíte principal (Python 3.14 local), sem depender de
+MinIO/Postgres/Kafka reais.
+
+  ID              Classe                  Descrição
+  -----------------------------------------------------------------------
+  14-REG-01..05   TestRegistry            Sem keys duplicadas; CATALOG_BY_KEY
+                                           consistente; todo upstream resolve
+                                           para uma key existente; entries de
+                                           dashboard são kind=DASHBOARD e
+                                           status="planejado"; entries não-
+                                           dashboard têm location; prefixos
+                                           MinIO usam os buckets configurados
+  14-VAL-01/02    TestValidateReferences  Catálogo real não tem referência
+                                           quebrada; referência quebrada
+                                           sintética é detectada
+  14-REN-01..07   TestRenderMarkdown      Nomes de todos os datasets aparecem
+                                           no doc; headers de todas as 6
+                                           camadas; bloco ```mermaid`` com
+                                           edge bronze->silver; dashboard
+                                           marcado "planejado"; sem resultados
+                                           de validação mostra "não validado";
+                                           com validação passando mostra
+                                           "✅ ok"; com validação falhando
+                                           mostra "❌" + detalhe; termos de
+                                           glossário usados são subconjunto do
+                                           Glossário de Negócio já documentado
+                                           em docs/data_dictionary.md
+
+Resultado: 16/16 PASSED.
+
+================================================================================
+2. TESTE DE INTEGRAÇÃO REAL — DOCKER (executado em 2026-09-04)
+================================================================================
+
+Pré-requisito: make up && make setup. Bronze/Silver/Gold e as 4 tabelas
+Postgres já populados de sessões anteriores (dados reais de issues
+anteriores); tópicos Kafka criados pelo make setup.
+
+--------------------------------------------------------------------------------
+2.1 Achado real: MINIO_ENDPOINT do .env local aponta para porta errada
+--------------------------------------------------------------------------------
+Primeira execução de `python -m scripts.build_data_catalog --strict` contra
+a infra real falhou nos 6 assets MINIO_PREFIX com
+`EndpointConnectionError: ... http://localhost:9002/...` — connection
+refused. Investigação (`docker port minio`, `docker compose ps minio`,
+`Get-NetTCPConnection -LocalPort 9002`) confirmou que o container só expõe
+9000-9001 e nada escuta em 9002 neste ambiente. Causa: `.env` local do
+usuário tem `MINIO_ENDPOINT=http://localhost:9002`, divergente do default
+documentado em `.env.example` (9000) e do mapeamento real do
+docker-compose.yml. Perguntado ao usuário se deveria corrigir — resposta:
+"não, é proposital" (config pessoal do ambiente, fora do escopo desta
+issue). Não alterado.
+
+Nota: esse mesmo desalinhamento já é responsável pela falha pré-existente,
+não relacionada, documentada na seção 4 abaixo (e também na issue #13) —
+`test_environment_consistency.py::test_minio_endpoint_default_matches_env_example`
+lê o `.env` real via `MinIOSettings()` e o compara ao `.env.example`.
+
+O validador em si se comportou corretamente: capturou a exceção por asset
+(sem derrubar a execução inteira), reportou `False` com o detalhe do erro,
+e `--strict` saiu com código 1 — prova de que a checagem de infra real
+funciona tanto no caminho de falha quanto no de sucesso (ver 2.2).
+
+--------------------------------------------------------------------------------
+2.2 Validação completa com endpoint correto (override de processo, sem
+    tocar no .env do usuário: `MINIO_ENDPOINT=http://localhost:9000 ...`)
+--------------------------------------------------------------------------------
+  ID              Descrição                                    Resultado
+  -----------------------------------------------------------------------
+  14-INT-01       MinIO: 8 prefixos (bronze x2, silver x2,
+                  gold x4)                                      ✅ ok (todos)
+  14-INT-02       Postgres: 4 tabelas (information_schema.
+                  tables)                                       ✅ ok (todos)
+  14-INT-03       Kafka: 4 tópicos (KafkaAdminClient.
+                  list_topics)                                  ✅ ok (todos)
+  14-INT-04       `--strict` exit code                          0
+  14-INT-05       docs/data_catalog.md gerado: 17 datasets,
+                  referencias_invalidas=0, assets_nao_
+                  encontrados=0                                 OK
+
+docs/data_catalog.md final: 16x "✅ ok" (todos os assets não-dashboard),
+1x "🗓️ planejado" (dashboard, issue #16 pendente), 0x "❌", 0x "não
+validado".
+
+================================================================================
+3. NOTA DE AMBIENTE — encoding do console Windows (não é bug de código)
+================================================================================
+`loguru` falha ao escrever no stdout do console PowerShell/Git Bash local
+(codec cp1252 não suporta os acentos das mensagens de log, ex. "Catálogo
+gerado") — `UnicodeEncodeError` não-fatal, sempre depois do arquivo já ter
+sido escrito com sucesso (`.write_text(..., encoding="utf-8")`); exit code
+sempre 0 quando só isso ocorre. Mesmo padrão de mensagens acentuadas já
+usado em todo o resto do código (`runner.py`, `bronze_to_silver.py`, etc.);
+não ocorre em Docker/Linux (UTF-8) nem no CI.
+
+================================================================================
+4. SUÍTE COMPLETA E LINT
+================================================================================
+
+  ID          Descrição                                    Resultado Esperado
+  -----------------------------------------------------------------------
+  14-SUITE-01 pytest tests/unit/ --cov=src (Python 3.14      258 PASSED, 1
+              local)                                        skipped (GX
+                                                              indisponível em
+                                                              Python 3.14,
+                                                              issue #13), 1
+                                                              falha local
+                                                              pré-existente
+                                                              (.env, ver
+                                                              seção 2.1),
+                                                              não relacionada
+  14-COV-01   Cobertura total                                75,87% (gate:
+                                                              >=70%)
+  14-LIN-01   ruff check .                                   All checks
+                                                              passed!
+  14-LIN-02   mypy src/ scripts/                              Success: no
+                                                              issues found in
+                                                              52 source files
+
+================================================================================
+RESULTADO FINAL — ISSUE #14
+================================================================================
+
+  Testes novos:                                 16/16 PASSED
+  Suíte completa (Python 3.14 local):           258/259 PASSED (+16 vs.
+                                                 issue #13), 1 skipped (GX
+                                                 indisponível localmente), 1
+                                                 falha pré-existente não
+                                                 relacionada (.env local)
+  Cobertura geral:                              75,87%
+  Lint / mypy:                                  All checks passed! / Success
+  Integração real (Docker, dados/infra reais):  OK — 8 prefixos MinIO + 4
+                                                 tabelas Postgres + 4 tópicos
+                                                 Kafka validados contra a
+                                                 infra real rodando; achado
+                                                 real de desalinhamento de
+                                                 porta no .env do usuário
+                                                 (não corrigido a pedido
+                                                 dele); --strict provado nos
+                                                 dois sentidos (falha real
+                                                 com porta errada, exit 1;
+                                                 sucesso real com porta
+                                                 certa, exit 0)
+  Critérios de aceite da issue:                 4/4 atendidos (com escopo
+                                                 renegociado — ver decisão)
+    - Catálogo inicializável por comando
+      reproduzível                              OK (`make catalog`)
+    - Assets e relações de linhagem aparecem
+      no ambiente local                         OK (docs/data_catalog.md:
+                                                 tabelas + diagrama Mermaid,
+                                                 sem servidor novo)
+    - Segredos fornecidos por ambiente, não
+      hardcoded                                 OK (settings.* de
+                                                 src/common/config.py;
+                                                 nenhum segredo novo
+                                                 introduzido)
+    - Processo coberto por smoke test ou
+      validação documentada                     OK (`--strict`, seção 2)

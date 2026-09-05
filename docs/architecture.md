@@ -65,7 +65,7 @@ Simulador Python → Kafka (raw-transactions)
 
 ### Governança
 - **Great Expectations** — Quality gates integrados ao Airflow
-- **OpenMetadata** — Catálogo, linhagem e glossário
+- **Catálogo de dados leve** (`src/governance/data_catalog/`) — registro versionado, linhagem e classificação, validado contra a infra real; ver decisão abaixo
 
 ### Disponibilização
 - **PostgreSQL** — Tabelas Gold para SQL analítico
@@ -82,6 +82,7 @@ Simulador Python → Kafka (raw-transactions)
 | Detecção de fraude | Z-Score em janelas deslizantes | Baseline simples e interpretável; extensível com ML |
 | Serving layer | PostgreSQL + DuckDB | PostgreSQL para OLTP/API; DuckDB para queries analíticas ad-hoc |
 | Escopo do CI (GitHub Actions) | Só lint + testes unitários, sem os testes de integração | `tests/unit/` roda 100% local (SparkSession `local[*]`, storage mockado); o stack completo (Kafka, Zookeeper, Airflow, Superset, Postgres, MinIO, cluster Spark) é pesado/lento demais para rodar em todo PR — ver `.github/workflows/ci.yml` |
+| Catálogo/linhagem (issue #14) | Registro leve versionado (não OpenMetadata) | O stack oficial do OpenMetadata (server + MySQL/Postgres próprio + Elasticsearch + ingestion-Airflow) soma mais 3-4 serviços pesados aos 19 que já rodam neste `docker-compose.yml`, disputando os ~8GB alocados ao Docker no ambiente local. `src/governance/data_catalog/` cobre o mesmo objetivo (owners, tags PII, glossário, linhagem) sem subir nenhum container novo, validando cada asset contra MinIO/Postgres/Kafka reais. Um catálogo gerenciado real (OpenMetadata ou AWS Glue Data Catalog, já previsto na V2) fica para a fase cloud |
 
 ## CI/CD
 

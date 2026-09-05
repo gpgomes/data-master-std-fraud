@@ -103,9 +103,9 @@ producer-market: ## Iniciar producer de dados de mercado
 api: ## Iniciar API FastAPI em modo desenvolvimento
 	$(PYTHON) -m uvicorn src.serving.api.main:app --reload --host 0.0.0.0 --port 8000
 
-# ── OpenMetadata ───────────────────────────────────────────────────────────────
-seed-openmetadata: ## Popular catálogo OpenMetadata com metadados dos datasets
-	$(PYTHON) -m scripts.seed_openmetadata
+# ── Catálogo de Dados ────────────────────────────────────────────────────────────
+catalog: ## Gera docs/data_catalog.md e valida os datasets contra a infra real (requer make up)
+	$(PYTHON) -m scripts.build_data_catalog --strict
 
 # ── Limpeza ────────────────────────────────────────────────────────────────────
 clean: ## Limpar volumes Docker, dados temporários e artefatos de build

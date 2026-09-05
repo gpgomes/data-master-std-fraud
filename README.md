@@ -49,9 +49,9 @@ Plataforma de dados end-to-end para ingestão, transformação, governança e vi
 ├────────────────────────────────────────────────────────────────────────────┤
 │                  CAMADA DE GOVERNANÇA                                     │
 │  ┌─────────────────────┐  ┌──────────────┐  ┌───────────────────────┐     │
-│  │ Great Expectations  │  │ OpenMetadata │  │ Delta Lake            │     │
-│  │ (Data Quality)      │  │ (Catálogo +  │  │ (Versionamento)       │     │
-│  │                     │  │  Linhagem)   │  │                       │     │
+│  │ Great Expectations  │  │ Catálogo de  │  │ Delta Lake            │     │
+│  │ (Data Quality)      │  │ Dados (leve, │  │ (Versionamento)       │     │
+│  │                     │  │  versionado) │  │                       │     │
 │  └─────────────────────┘  └──────────────┘  └───────────────────────┘     │
 ├────────────────────────────────────────────────────────────────────────────┤
 │                  CAMADA DE DISPONIBILIZAÇÃO                               │
@@ -78,7 +78,7 @@ Plataforma de dados end-to-end para ingestão, transformação, governança e vi
 | Armazenamento | MinIO (Docker) | Object storage compatível com S3 |
 | Serving Layer | PostgreSQL + DuckDB | Consulta analítica das camadas Gold |
 | Qualidade de Dados | Great Expectations | Validações e expectativas nos dados |
-| Catálogo/Linhagem | OpenMetadata (Docker) | Data catalog e data lineage |
+| Catálogo/Linhagem | Catálogo de dados leve (`docs/data_catalog.md`) | Registro versionado + linhagem, validado contra a infra real (issue #14) |
 | Visualização | Apache Superset / Grafana | Dashboards analíticos |
 | Containerização | Docker + Docker Compose | Toda a infra local containerizada |
 | Linguagem | Python 3.11+ | Toda a lógica de negócio |
@@ -122,7 +122,7 @@ data-master-std-fraud/
 │   │   └── loaders/                # Carregadores Gold→PostgreSQL
 │   ├── governance/
 │   │   ├── great_expectations/     # Suites de qualidade de dados
-│   │   └── data_catalog/           # Configuração OpenMetadata
+│   │   └── data_catalog/           # Catálogo leve: registro, validação, render (issue #14)
 │   └── common/                     # Utilitários compartilhados
 │       ├── config.py               # Configurações centralizadas
 │       ├── logger.py               # Logger estruturado
@@ -188,7 +188,8 @@ make spark-submit-stream
 | Superset | http://localhost:8088 | admin / admin |
 | API (Swagger) | http://localhost:8000/docs | — |
 | Spark UI | http://localhost:8081 | — |
-| OpenMetadata | http://localhost:8585 | admin / admin |
+
+O catálogo de dados não é um serviço web — é gerado como documento versionado, ver [`docs/data_catalog.md`](docs/data_catalog.md) e a seção [Governança de Dados](#governança-de-dados) abaixo.
 
 ### Comandos Make Disponíveis
 
@@ -202,6 +203,7 @@ make lint                # Verificar código (ruff + mypy)
 make spark-submit-batch  # Submeter job batch PySpark
 make spark-submit-stream # Submeter job streaming PySpark
 make seed-data           # Gerar dados sintéticos de exemplo
+make catalog             # Gerar docs/data_catalog.md e validar datasets contra a infra real
 make clean               # Limpar volumes e dados temporários
 ```
 
@@ -265,12 +267,24 @@ make test-unit
 - **Silver:** Unicidade de chaves, ranges de valores, consistência referencial
 - **Gold:** Integridade de agregações, SLAs de atualização
 
-### OpenMetadata — Catálogo e Linhagem
+### Catálogo de Dados — issue #14
 
-- Catálogo centralizado de todos os datasets (Bronze, Silver, Gold)
-- Linhagem automática: fonte → Bronze → Silver → Gold → Dashboard
-- Business Glossary: VWAP, Volatilidade, Fraud Score, etc.
-- Tags de classificação: PII, Confidencial, Público
+O case original previa OpenMetadata (server + MySQL/Postgres próprio +
+Elasticsearch + ingestion-Airflow) para catálogo e linhagem. Descoped da V1
+local: esse stack soma mais 3-4 serviços pesados aos 19 que já rodam no
+`docker-compose.yml` (Kafka, Zookeeper, Spark x3, Airflow x3, Superset,
+Postgres x2, MinIO x2, producers, API), competindo pelos ~8GB alocados ao
+Docker neste ambiente. Um catálogo real (OpenMetadata ou um equivalente
+gerenciado, ex. AWS Glue Data Catalog) fica para V2/cloud.
+
+No lugar, `src/governance/data_catalog/` mantém um registro declarativo dos
+datasets, validado contra a infra real (MinIO/Postgres/Kafka) e renderizado
+em [`docs/data_catalog.md`](docs/data_catalog.md) via `make catalog`:
+
+- Catálogo de todos os datasets (Bronze, Silver, Gold, Postgres, Kafka) com owner e tags de classificação (PII, Confidencial, Público)
+- Linhagem: fonte → Bronze → Silver → Gold → Serving → Dashboard, como diagrama Mermaid
+- Business Glossary: já documentado em [`docs/data_dictionary.md`](docs/data_dictionary.md) (VWAP, Volatilidade, Fraud Score, Z-Score, etc.) — o catálogo referencia esses termos por dataset, sem duplicar as definições
+- Validação real: cada asset é checado contra o MinIO/Postgres/Kafka rodando (`make catalog`, ou `--strict` para falhar caso algo não bata) — não é um documento estático
 
 ---
 

@@ -944,3 +944,73 @@ consistente com a postura já estabelecida do projeto sobre dados (issues
 | 13-SUITE-01 | `pytest tests/unit/` (Python 3.14 local) | Sem regressão | OK (242/244 PASSED, 1 skipped — GX indisponível em Python 3.14, ver nota — 1 falha local pré-existente de `.env`, não relacionada) |
 | 13-LIN-01 | `ruff check` | All checks passed! | OK |
 | 13-LIN-02 | `mypy` | Success: no issues found | OK |
+
+## Issue #14 — Catálogo de Dados Leve (executado em 2026-09-04)
+
+> Checklist completo: `docs/testes_issue_14.txt`
+
+Objetivo: implementar o catálogo e a linhagem anunciados no README/
+architecture.md para os datasets da plataforma.
+
+**Decisão de arquitetura** (confirmada com o usuário): **descopar o
+OpenMetadata completo da V1 local**. O stack oficial dele (server + MySQL/
+Postgres próprio + Elasticsearch + ingestion-Airflow) soma mais 3-4
+serviços pesados aos 19 que já rodam em `docker-compose.yml`, competindo
+pelos ~8GB alocados ao Docker neste ambiente. No lugar: um registro
+declarativo em Python (`src/governance/data_catalog/`), validado contra a
+infra real (MinIO/Postgres/Kafka — não um documento estático) e renderizado
+em `docs/data_catalog.md` (tabelas por camada + diagrama de linhagem
+Mermaid). Nenhum container novo. Um catálogo gerenciado real (OpenMetadata
+ou AWS Glue Data Catalog, já previsto na V2) fica para a fase cloud.
+
+**Arquivos criados**: `src/governance/data_catalog/{registry,validator,
+render}.py` (17 `CatalogEntry`: Bronze/Silver/Gold no MinIO, 4 tabelas
+Postgres da serving layer, 4 tópicos Kafka, 1 dashboard `status="planejado"`
+— issue #16 ainda não existe), `scripts/build_data_catalog.py` (CLI —
+`make catalog`), `tests/unit/test_data_catalog.py` (16 testes),
+`docs/data_catalog.md` (artefato gerado e versionado).
+
+**Arquivos modificados**: `Makefile` (`seed-openmetadata`, que apontava
+para um script inexistente, virou `catalog`), `README.md`/
+`docs/architecture.md`/`CLAUDE.md`/`docs/runbook.md` (decisão documentada),
+`.env.example` (removidos `OPENMETADATA_*`, nunca ligados a nenhuma classe
+de `Settings`).
+
+### 1. Testes Unitários
+
+Só lógica pura (registro, integridade de linhagem, renderização) — sem
+depender de MinIO/Postgres/Kafka reais.
+
+| ID | Classe | Descrição | Status |
+|----|--------|-----------|--------|
+| 14-REG | `TestRegistry` | Sem keys duplicadas, toda referência `upstream` resolve, entries de dashboard corretamente marcadas `planejado` (5 testes) | OK |
+| 14-VAL | `TestValidateReferences` | Catálogo real sem referência quebrada; referência quebrada sintética é detectada (2 testes) | OK |
+| 14-REN | `TestRenderMarkdown` | Tabelas por camada, diagrama Mermaid, status ✅/❌/planejado/não-validado, termos de glossário são subconjunto do já documentado em `docs/data_dictionary.md` (7 testes) | OK |
+
+**Total: 16/16 testes novos PASSED.**
+
+### 2. Teste de Integração Real (Docker)
+
+Achado real durante a validação: `.env` local do usuário tem
+`MINIO_ENDPOINT=http://localhost:9002`, divergente do mapeamento real do
+container (`docker port minio` confirmou só 9000-9001 expostos, nada
+escutando em 9002) e do default em `.env.example`. Perguntado ao usuário —
+confirmou que é proposital, não corrigido (fora do escopo da issue). O
+validador tratou isso corretamente: capturou a exceção por asset, reportou
+`False` com o detalhe, e `--strict` saiu com código 1 — mesmo
+desalinhamento que já explica a falha pré-existente e não relacionada em
+`test_environment_consistency.py` (ver issue #13 e seção 4 abaixo).
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|-------------------|--------|
+| 14-INT-01/03 | MinIO (8 prefixos) + Postgres (4 tabelas) + Kafka (4 tópicos), com o endpoint MinIO correto (override de processo, sem tocar no `.env` do usuário) | Todos os 16 assets não-dashboard existem na infra real | OK — `docs/data_catalog.md`: 16x "✅ ok", 1x "🗓️ planejado", 0x "❌" |
+| 14-INT-04 | `--strict` com endpoint MinIO errado (achado real) vs. correto | Falha real (exit 1) com porta errada; sucesso real (exit 0) com porta certa | OK — provado nos dois sentidos |
+
+### 3. Suíte Completa e Lint
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|-------------------|--------|
+| 14-SUITE-01 | `pytest tests/unit/ --cov=src` (Python 3.14 local) | Sem regressão | OK (258/259 PASSED, 1 skipped — GX indisponível em Python 3.14, issue #13 — 1 falha local pré-existente de `.env`, não relacionada, ver seção 2) |
+| 14-COV-01 | Cobertura total | ≥70% | OK (75,87%) |
+| 14-LIN-01 | `ruff check .` | All checks passed! | OK |
+| 14-LIN-02 | `mypy src/ scripts/` | Success: no issues found | OK |
