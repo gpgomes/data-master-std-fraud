@@ -1,0 +1,18 @@
+slice_name: KPI - Alertas de Fraude
+description: null
+certified_by: null
+certification_details: null
+viz_type: big_number_total
+params:
+  datasource: 1__table
+  viz_type: big_number_total
+  metric: count
+  adhoc_filters:
+  - clause: WHERE
+    expressionType: SQL
+    sqlExpression: is_fraud = true
+query_context: null
+cache_timeout: null
+uuid: a7fcadae-1d1d-4ecc-8860-c27fdb818471
+version: 1.0.0
+dataset_uuid: 757c673c-b3b0-4173-8af3-329210970486

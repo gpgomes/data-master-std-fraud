@@ -1014,3 +1014,98 @@ desalinhamento que já explica a falha pré-existente e não relacionada em
 | 14-COV-01 | Cobertura total | ≥70% | OK (75,87%) |
 | 14-LIN-01 | `ruff check .` | All checks passed! | OK |
 | 14-LIN-02 | `mypy src/ scripts/` | Success: no issues found | OK |
+
+## Issue #16 — Dashboards Operacionais/Analíticos com Superset (executado em 2026-09-05)
+
+> Checklist completo: `docs/testes_issue_16.txt`
+
+Objetivo: disponibilizar visualizações úteis sobre transações e fraude a
+partir da camada Gold/serving layer (Postgres).
+
+**Decisão de arquitetura** (confirmada com o usuário): **só Superset**,
+Grafana descoped da V1 local — já roda no `docker-compose.yml`, conectado
+ao mesmo Postgres da serving layer (issue #10), cobre 100% dos KPIs
+pedidos sem novo container/datasource, e não há store de séries temporais
+(Prometheus etc.) que justifique Grafana para métricas real-time neste
+ambiente. `dashboards/grafana/` fica como scaffold não usado.
+
+**Bug real encontrado e corrigido**: o serviço `superset` do
+`docker-compose.yml` nunca subiu corretamente desde o commit inicial —
+indentação mais funda que a linha-mãe no bloco `command: >` quebra o
+folding do YAML, inserindo uma quebra de linha literal no meio do
+`create-admin` (rodava sem nenhuma flag, caindo num prompt interativo
+travado) e do `gunicorn` (rodava sem o módulo da app —
+`Error: No application module specified.`, healthcheck perpetuamente
+`starting`). Confirmado via `docker compose config --format json` +
+`docker compose logs`; corrigido colocando cada comando numa única linha
+lógica, sem mudar nenhuma flag/valor.
+
+**Achado real de dados**: `fraud_score` está sempre `NULL` nas 506.146
+linhas de `fact_transactions` — só é populado pelo detector de streaming
+(issue #11), que não escreve na camada Gold batch/Postgres. Mesma causa
+raiz do gap já documentado em `alerts.py` (issue #15). Por isso: sem chart
+de distribuição de `fraud_score`, e o KPI de "latência" pedido na issue
+também documentado como fora do escopo pela mesma razão — os KPIs de
+fraude realmente disponíveis (`is_fraud`, `fraud_type`,
+`fraud_count`/`fraud_rate`) são os usados no dashboard.
+
+**Arquivos criados**: `src/serving/dashboards/{client,charts,
+provision}.py` (cliente REST + registro declarativo de 7 charts +
+orquestração idempotente), `scripts/provision_superset_dashboards.py`
+(`make dashboards`), `tests/unit/test_dashboards.py` (14 testes),
+`dashboards/superset/dashboard_configs/` (snapshot exportado do Superset
+real via `make dashboards-export`).
+
+**Arquivos modificados**: `docker-compose.yml` (fix do bug acima),
+`src/common/config.py` (`SupersetSettings`), `Makefile` (`dashboards`,
+`dashboards-export`), README.md/`docs/architecture.md`/`docs/runbook.md`/
+`CLAUDE.md`/`.env.example` (decisão documentada, comandos, credenciais via
+env).
+
+### 1. Testes Unitários
+
+Só lógica pura (registro de charts, construção de position_json/native
+filters, paginação do client) — sem depender de um Superset real rodando.
+
+| ID | Classe | Descrição | Status |
+|----|--------|-----------|--------|
+| 16-CHT | `TestChartsRegistry` | Sem `slice_name` duplicado, todo `dataset_table` conhecido, todo chart tem metric(s), `DATASETS` bate com o schema real (4 testes) | OK |
+| 16-POS | `TestBuildPositionJson` | Layout em linhas (4+2+1 para 7 charts), `CHART-{id}` referencia o id correto, `ROOT_ID`/`GRID_ID` presentes (4 testes) | OK |
+| 16-FLT | `TestBuildNativeFilters` | 2 filtros nativos (Período em `date_key`, Tipo de Transação), miram os datasets corretos (3 testes) | OK |
+| 16-CLI | `TestSupersetClientFindOne` | Paginação de busca por nome (achar na 1ª página, não achar, paginar até achar), `session.get` mockado (3 testes) | OK |
+
+**Total: 14/14 testes novos PASSED.**
+
+### 2. Teste de Integração Real (Docker)
+
+Antes de codificar `charts.py`, cada query foi validada via
+`/api/v1/chart/data` do Superset e cruzada contra `psql` direto: contagem
+total (506.146 = 506.146), taxa de fraude ponderada (2,5085...% idêntico
+nos dois), contagem de alertas (`is_fraud=true`: 12.697 = 12.697),
+distribuição por `fraud_type` (soma das 5 categorias = 12.697), volume por
+`transaction_type` (soma das 6 categorias = 506.146), série temporal
+diária (295 dias, `granularity=date_key`).
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|-------------------|--------|
+| 16-PROV-01/06 | `make dashboards --verify --strict`: 1 database + 2 datasets + 1 dashboard + 7 charts provisionados via API REST, `--verify` refazendo cada query real | Todos os 7 charts retornam dado real (rowcount ≥ 1), exit 0 | OK |
+| 16-IDEM-01/02 | 2ª execução do mesmo comando | 0 objetos criados (tudo achado e atualizado), contagem final sem duplicatas (1/2/1/7) | OK |
+| 16-EXP-01/03 | `make dashboards-export`: export nativo do Superset copiado para `dashboards/superset/dashboard_configs/` | Bundle YAML gerado, senha do Postgres mascarada (`XXXXXXXXXX`), diretório temporário limpo | OK |
+
+### 3. Validação Visual (Checklist Manual)
+
+Critério de aceite "smoke test ou checklist reproduzível de validação
+visual" — a parte de renderização/interação de filtros não é automatizável
+via `curl`; checklist em `docs/testes_issue_16.txt` seção 4 (abrir
+`http://localhost:8088/superset/dashboard/fraude-transacoes-visao-geral/`,
+confirmar os 7 gráficos renderizando e os filtros nativos atualizando o
+dashboard).
+
+### 4. Suíte Completa e Lint
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|-------------------|--------|
+| 16-SUITE-01 | `pytest tests/unit/ --cov=src` (Python 3.14 local) | Sem regressão | OK (272/273 PASSED, 1 skipped — GX indisponível em Python 3.14, issue #13 — 1 falha local pré-existente de `.env`, não relacionada, ver issues #13/#14) |
+| 16-COV-01 | Cobertura total | ≥70% | OK (73,26%) |
+| 16-LIN-01 | `ruff check .` | All checks passed! | OK |
+| 16-LIN-02 | `mypy src/ scripts/` | Success: no issues found | OK |

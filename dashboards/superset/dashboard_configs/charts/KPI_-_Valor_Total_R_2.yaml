@@ -1,0 +1,19 @@
+slice_name: KPI - Valor Total (R$)
+description: null
+certified_by: null
+certification_details: null
+viz_type: big_number_total
+params:
+  datasource: 2__table
+  viz_type: big_number_total
+  metric:
+    expressionType: SIMPLE
+    column:
+      column_name: total_amount_brl
+    aggregate: SUM
+    label: Valor Total (R$)
+query_context: null
+cache_timeout: null
+uuid: 9cffc26b-53d8-45ad-9656-30773b2338ce
+version: 1.0.0
+dataset_uuid: f6c41fbd-663b-4d96-9f5d-17497ec716d9

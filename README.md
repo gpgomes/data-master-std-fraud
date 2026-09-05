@@ -56,7 +56,7 @@ Plataforma de dados end-to-end para ingestão, transformação, governança e vi
 ├────────────────────────────────────────────────────────────────────────────┤
 │                  CAMADA DE DISPONIBILIZAÇÃO                               │
 │  ┌──────────────────────┐  ┌──────────────┐  ┌──────────────────────┐     │
-│  │ PostgreSQL / DuckDB  │  │  FastAPI     │  │ Grafana / Superset   │     │
+│  │ PostgreSQL / DuckDB  │  │  FastAPI     │  │ Apache Superset      │     │
 │  │ (Serving Layer)      │  │  (REST API)  │  │ (Dashboards)         │     │
 │  └──────────────────────┘  └──────────────┘  └──────────────────────┘     │
 └────────────────────────────────────────────────────────────────────────────┘
@@ -79,7 +79,7 @@ Plataforma de dados end-to-end para ingestão, transformação, governança e vi
 | Serving Layer | PostgreSQL + DuckDB | Consulta analítica das camadas Gold |
 | Qualidade de Dados | Great Expectations | Validações e expectativas nos dados |
 | Catálogo/Linhagem | Catálogo de dados leve (`docs/data_catalog.md`) | Registro versionado + linhagem, validado contra a infra real (issue #14) |
-| Visualização | Apache Superset / Grafana | Dashboards analíticos |
+| Visualização | Apache Superset | Dashboards analíticos (Grafana descoped da V1 local — issue #16) |
 | Containerização | Docker + Docker Compose | Toda a infra local containerizada |
 | Linguagem | Python 3.11+ | Toda a lógica de negócio |
 
@@ -119,7 +119,8 @@ data-master-std-fraud/
 │   │   └── streaming/              # Spark Structured Streaming + detecção de fraude
 │   ├── serving/
 │   │   ├── api/                    # FastAPI REST API
-│   │   └── loaders/                # Carregadores Gold→PostgreSQL
+│   │   ├── loaders/                # Carregadores Gold→PostgreSQL
+│   │   └── dashboards/             # Provisionamento do dashboard Superset (issue #16)
 │   ├── governance/
 │   │   ├── great_expectations/     # Suites de qualidade de dados
 │   │   └── data_catalog/           # Catálogo leve: registro, validação, render (issue #14)
@@ -129,7 +130,7 @@ data-master-std-fraud/
 │       └── schemas.py              # Schemas Pydantic / PySpark
 │
 ├── dags/                           # Airflow DAGs
-├── dashboards/                     # Configurações Superset e Grafana
+├── dashboards/                     # Dashboard Superset versionado (issue #16) — grafana/ não usado na V1
 ├── docker/                         # Dockerfiles customizados
 ├── terraform/                      # IaC para AWS (V2)
 ├── tests/
@@ -285,6 +286,26 @@ em [`docs/data_catalog.md`](docs/data_catalog.md) via `make catalog`:
 - Linhagem: fonte → Bronze → Silver → Gold → Serving → Dashboard, como diagrama Mermaid
 - Business Glossary: já documentado em [`docs/data_dictionary.md`](docs/data_dictionary.md) (VWAP, Volatilidade, Fraud Score, Z-Score, etc.) — o catálogo referencia esses termos por dataset, sem duplicar as definições
 - Validação real: cada asset é checado contra o MinIO/Postgres/Kafka rodando (`make catalog`, ou `--strict` para falhar caso algo não bata) — não é um documento estático
+
+---
+
+## Dashboards (Superset) — issue #16
+
+**Só Superset na V1** (Grafana descoped): o Superset já roda no `docker-compose.yml`, conectado ao mesmo PostgreSQL da serving layer (issue #10), e cobre 100% dos KPIs pedidos sem precisar de outro container ou datasource — não há nenhum store de séries temporais (Prometheus etc.) que justifique Grafana para métricas real-time. `dashboards/grafana/` permanece como scaffold não usado.
+
+`src/serving/dashboards/` provisiona, de forma idempotente (via API REST do Superset), a conexão com o Postgres, os datasets (`fact_transactions`, `agg_daily_fraud_metrics`) e o dashboard **"Fraude e Transações - Visão Geral"**:
+
+- KPIs: Volume de Transações, Valor Total (R$), Taxa de Fraude (%), Alertas de Fraude
+- Séries temporais: Volume diário por tipo de transação, Taxa de fraude diária (%)
+- Distribuição de fraude por `fraud_type`
+- Filtros nativos de período (`date_key`) e tipo de transação (`transaction_type`)
+
+```bash
+make dashboards          # provisiona + roda o smoke test contra cada chart
+make dashboards-export   # snapshot versionado em dashboards/superset/dashboard_configs/
+```
+
+**KPI de "score" fora do escopo**: `fraud_score` está sempre `NULL` nas 506k linhas carregadas em `fact_transactions` — só é populado pelo detector de streaming (issue #11), que nunca escreve na camada Gold batch/Postgres. Mesma causa raiz do gap de "latência" (ver `alerts.py`, issue #15, e `docs/architecture.md`).
 
 ---
 

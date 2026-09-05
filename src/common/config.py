@@ -74,6 +74,14 @@ class APISettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
+class SupersetSettings(BaseSettings):
+    url: str = Field(default="http://localhost:8088", alias="SUPERSET_URL")
+    admin_user: str = Field(default="admin", alias="SUPERSET_ADMIN_USER")
+    admin_password: str = Field(default="admin", alias="SUPERSET_ADMIN_PASSWORD")
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
 class MarketDataSettings(BaseSettings):
     finnhub_api_key: str = Field(default="", alias="FINNHUB_API_KEY")
     alpha_vantage_api_key: str = Field(default="", alias="ALPHA_VANTAGE_API_KEY")
@@ -100,6 +108,7 @@ class Settings(BaseSettings):
     postgres: PostgresSettings = PostgresSettings()
     spark: SparkSettings = SparkSettings()
     api: APISettings = APISettings()
+    superset: SupersetSettings = SupersetSettings()
     market: MarketDataSettings = MarketDataSettings()
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

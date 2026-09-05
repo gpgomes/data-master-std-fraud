@@ -426,15 +426,9 @@ services:
       bash -c "
         pip install psycopg2-binary --quiet &&
         superset db upgrade &&
-        superset fab create-admin
-          --username admin
-          --firstname Admin
-          --lastname User
-          --email admin@superset.local
-          --password admin 2>/dev/null || true &&
+        superset fab create-admin --username admin --firstname Admin --lastname User --email admin@superset.local --password admin 2>/dev/null || true &&
         superset init &&
-        gunicorn --bind 0.0.0.0:8088 --workers 2 --timeout 120 --keep-alive 5
-          --log-level info 'superset.app:create_app()'
+        gunicorn --bind 0.0.0.0:8088 --workers 2 --timeout 120 --keep-alive 5 --log-level info 'superset.app:create_app()'
       "
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8088/health"]
