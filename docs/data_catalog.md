@@ -1,6 +1,6 @@
 # Catálogo de Dados
 
-_Gerado em 2026-09-04T23:35:20.289766+00:00 por `python -m scripts.build_data_catalog`._
+_Gerado em 2026-09-06T14:25:37.772852+00:00 por `python -m scripts.build_data_catalog`._
 
 Substitui o OpenMetadata completo na V1 local (decisão documentada em `docs/architecture.md`) — ver definições de campo e o glossário de negócio completo em [`docs/data_dictionary.md`](data_dictionary.md).
 
@@ -49,7 +49,7 @@ Substitui o OpenMetadata completo na V1 local (decisão documentada em `docs/arc
 
 | Dataset | Localização | Owner | Classificação | Glossário | Status |
 |---------|-------------|-------|---------------|-----------|--------|
-| **Dashboard — Visão Geral de Fraude**<br>KPIs de volume, valor, taxa de fraude e alertas (Superset/Grafana). | `—` | Fraud Analytics | Confidencial | Fraud Score | 🗓️ planejado |
+| **Dashboard — Visão Geral de Fraude**<br>KPIs de volume, valor, taxa de fraude e alertas (Superset — Grafana descoped, issue #16). | `http://localhost:8088/superset/dashboard/fraude-transacoes-visao-geral/` | Fraud Analytics | Confidencial | Fraud Score | — não validado |
 
 ## Linhagem
 

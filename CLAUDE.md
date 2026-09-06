@@ -49,9 +49,10 @@ make logs-kafka  # Tail specific service logs
 
 ### Pipeline Execution
 ```bash
-make spark-submit-batch        # Run Bronze→Silver→Gold PySpark batch job
+make spark-submit-batch        # Run Bronze→Silver PySpark batch job (Gold is a separate step below)
 make spark-submit-stream       # Start Spark Structured Streaming (Kafka consumer)
-make spark-submit-silver-gold  # Run only Silver→Gold job
+make spark-submit-silver-gold  # Run Silver→Gold job
+make spark-submit-gold-postgres # Load Gold (MinIO) into the Postgres serving layer
 make producer-transactions     # Start Kafka transaction producer
 make producer-market           # Start Kafka market data producer
 make api                       # Start FastAPI dev server at :8000
@@ -77,7 +78,10 @@ yfinance / CSV → Python Collector → MinIO bronze/ (JSON/CSV)
 ```
 Python Simulator → Kafka raw-transactions → Spark Structured Streaming
                                                     ↓ Z-Score anomaly detection
-                                           MinIO silver/ + Kafka fraud-alerts
+                          MinIO silver/transactions_stream/ (Parquet, distinct
+                          from batch's silver/transactions/) + Kafka
+                          enriched-transactions (all scored rows) + Kafka
+                          fraud-alerts (rows flagged anomalous)
 ```
 
 ### Key Source Locations
@@ -143,13 +147,14 @@ Data catalog is not a web service — it's a generated, versioned document (`doc
 
 ## Implementation Phases
 
-The project is being built in phases (see `CaseFinancialDataLakeHouse.md`):
-- **Phase 1 (Weeks 1–2):** Local infra with Docker Compose (current: `feature/step_1.2`)
-- **Phase 2 (Weeks 3–4):** PySpark batch + streaming transformations
-- **Phase 3 (Weeks 5–6):** Data governance (Great Expectations, lightweight data catalog, Delta Lake — OpenMetadata descoped from local V1, see issue #14)
-- **Phase 4 (Weeks 7–8):** Serving layer (Postgres, FastAPI, dashboards)
-- **Phase 5 (Weeks 9–10):** AWS migration via Terraform
-- **Phase 6 (Weeks 11–12):** CI/CD, QuickSight, documentation (the lint + unit-test slice of CI/CD — `.github/workflows/ci.yml` — was set up early, ahead of this phase; deploy automation is still pending)
+The project is being built in phases (see `CaseFinancialDataLakeHouse.md`). Status below reflects what's actually implemented and merged into `main`, not the original weekly schedule:
+
+- **Phase 1 — Local infra with Docker Compose:** ✅ Done
+- **Phase 2 — PySpark batch + streaming transformations:** ✅ Done (batch: `bronze_to_silver.py`/`silver_to_gold.py`; streaming: `stream_processor.py`, Z-Score anomaly detection, issue #11)
+- **Phase 3 — Data governance:** ✅ Done, with two scope changes from the original plan: Great Expectations quality gates (issue #13); a lightweight, code-based data catalog (issue #14) instead of OpenMetadata — see `docs/architecture.md`'s "Decisões Arquiteturais" table; Delta Lake was evaluated and explicitly **not** adopted (issue #9) — the platform uses Parquet only, no time-travel/versioning layer exists
+- **Phase 4 — Serving layer:** ✅ Done — PostgreSQL loader (issue #10), FastAPI (issue #15), Superset dashboards (issue #16, Grafana descoped — see `docs/architecture.md`)
+- **Phase 5 — AWS migration via Terraform:** ⬜ Not started (issue #17, open)
+- **Phase 6 — CI/CD, QuickSight, documentation:** 🚧 Partial — the lint + unit-test slice of CI/CD (`.github/workflows/ci.yml`) is done; deploy automation and QuickSight are not started; this documentation pass is issue #18
 
 ## Code Style
 
