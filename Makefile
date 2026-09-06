@@ -70,7 +70,7 @@ test-cov: ## Executar testes com relatório de cobertura HTML
 seed-data: ## Gerar dados sintéticos de transações e mercado
 	$(PYTHON) -m scripts.generate_sample_data --transactions 500000 --customers 10000 --months 6
 
-spark-submit-batch: ## Submeter job PySpark batch (Bronze → Silver → Gold)
+spark-submit-batch: ## Submeter job PySpark batch (Bronze → Silver) — Gold é um job separado, ver spark-submit-silver-gold
 	$(COMPOSE) exec spark-master spark-submit \
 		--master $(SPARK_MASTER) \
 		--packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1 \

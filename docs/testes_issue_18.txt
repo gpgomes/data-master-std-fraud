@@ -1,0 +1,263 @@
+================================================================================
+CHECKLIST DE TESTES — Atualizar Documentação para Refletir o Estado
+Implementado (issue #18)
+================================================================================
+
+Objetivo: alinhar README.md, docs/architecture.md, docs/runbook.md,
+docs/test_status.md e CLAUDE.md com o que existe de verdade, separando
+planejado/implementado/validado, sem comandos quebrados.
+
+Diferente das issues anteriores, esta não introduz um pipeline/serviço
+novo — o "teste" é uma auditoria mecânica: cruzar cada comando/caminho/
+porta citado nos 5 arquivos contra o estado real do repositório
+(Makefile, docker-compose.yml, DAGs, código-fonte), corrigir o que
+divergir, e confirmar que a suíte inteira continua passando depois.
+
+================================================================================
+1. AUDITORIA — COMANDOS `make X` CITADOS vs. MAKEFILE REAL
+================================================================================
+
+  Comando: `grep -oE "^[a-zA-Z_-]+:" Makefile` vs. `grep -ohE "make
+  [a-zA-Z_-]+" README.md docs/architecture.md docs/runbook.md CLAUDE.md`
+
+  ID          Resultado
+  -----------------------------------------------------------------------
+  18-CMD-01   Todo `make X` citado nos 4 docs corresponde a um target real
+              do Makefile (25 targets reais, incluindo o wildcard
+              `logs-%`) — nenhum comando quebrado                    OK
+  18-CMD-02   `make spark-submit-gold-postgres` (loader Gold→Postgres,
+              issue #10) estava ausente da lista consolidada do README
+              e do CLAUDE.md, embora já existisse no Makefile e fosse
+              citado em docs/runbook.md — corrigido                  OK (achado
+                                                                       real)
+  18-CMD-03   README "Comandos Make Disponíveis" listava 12 dos 25
+              targets reais — corrigido para listar todos os 25       OK (achado
+                                                                       real)
+
+================================================================================
+2. AUDITORIA — CAMINHOS DE ARQUIVO CITADOS EM BACKTICKS
+================================================================================
+
+  Comando: extrair todo `` `caminho.ext` `` com extensão de código/config
+  dos 4 docs e checar existência real no repositório.
+
+  ID          Resultado
+  -----------------------------------------------------------------------
+  18-PATH-01  20 caminhos únicos extraídos; todos existem (6 citados
+              como nome de arquivo solto sem diretório completo, ex.
+              `alerts.py` — confirmado via `find` que apontam pro
+              arquivo real, `src/serving/api/routes/alerts.py`)        OK
+
+================================================================================
+3. AUDITORIA — PORTAS/URLs CITADAS vs. docker-compose.yml REAL
+================================================================================
+
+  Comando: `awk` extraindo serviço+porta de cada `ports:` do
+  docker-compose.yml, comparado com as tabelas "Acessos Locais"/"Local
+  Service URLs" do README/CLAUDE.md.
+
+  ID          Resultado
+  -----------------------------------------------------------------------
+  18-PORT-01  Kafka UI 8080, MinIO Console 9001, Airflow 8082,
+              Superset 8088, API 8000, Spark UI 8081 — todos batem
+              exatamente com o docker-compose.yml real                OK
+  18-PORT-02  MinIO API (9000) e Postgres (5432) intencionalmente
+              omitidos das tabelas — não são serviços "abertos no
+              navegador", omissão correta                             OK
+
+================================================================================
+4. ACHADOS REAIS — CONTEÚDO DESATUALIZADO OU INCORRETO
+================================================================================
+
+--------------------------------------------------------------------------------
+4.1 docs/architecture.md — loader Gold→Postgres marcado como inexistente
+--------------------------------------------------------------------------------
+Linha 39 dizia "O loader Gold→PostgreSQL ainda não existe (issue #10)" —
+issue #10 foi mergeada há várias issues. Corrigido para descrever o fluxo
+real (Bronze → Silver → gate → Gold → gate → PostgreSQL, via DAG
+`batch_transformation_pipeline`, loader como penúltima task).
+
+--------------------------------------------------------------------------------
+4.2 docs/runbook.md — catálogo referenciando dashboard inexistente
+--------------------------------------------------------------------------------
+Seção "Catálogo de Dados" dizia "issue #16 ainda não existe" (escrito
+durante a issue #14, antes do dashboard existir). Corrigido.
+
+--------------------------------------------------------------------------------
+4.3 CLAUDE.md — roadmap sem status e branch morta
+--------------------------------------------------------------------------------
+"Implementation Phases" apontava `current: feature/step_1.2` (branch de
+semanas atrás, o projeto já passou por ~15 issues desde então) e nenhuma
+fase tinha indicação de status — impossível pra um novo colaborador saber
+que as Fases 1-4 já estão prontas. Corrigido: branch morta removida,
+status ✅/🚧/⬜ adicionado a cada fase com base no que está de fato
+mergeado em `main`.
+
+Achado correlato: Fase 3 ainda listava "Delta Lake" como entregável, mas
+`docs/architecture.md`'s "Decisões Arquiteturais" já documenta que Delta
+foi avaliado e explicitamente REMOVIDO (issue #9) — nunca usado de
+verdade (`spark_session.py`/jobs sempre escreveram `.format("parquet")`).
+Corrigido pra refletir que a plataforma usa só Parquet.
+
+--------------------------------------------------------------------------------
+4.4 README.md / CLAUDE.md — diagrama de streaming incompleto
+--------------------------------------------------------------------------------
+Os diagramas de fluxo streaming (CLAUDE.md, docs/architecture.md)
+mostravam só "MinIO Silver + Kafka fraud-alerts" — conferido contra
+`stream_processor.py::_process_batch` (linhas 265-296): o processo real
+grava em TRÊS lugares — `silver/transactions_stream/` (Parquet, prefixo
+distinto do `silver/transactions/` do batch), tópico Kafka
+`enriched-transactions` (todas as linhas com score) e só então, se houver
+anomalia, `fraud-alerts`. Os 3 diagramas corrigidos.
+
+--------------------------------------------------------------------------------
+4.5 README.md — Kafka topics table citando arquivo inexistente
+--------------------------------------------------------------------------------
+Tabela "Tópicos Kafka" listava `anomaly_detector.py` como producer de
+`fraud-alerts` — confirmado via `find . -name anomaly_detector.py` que
+esse arquivo NUNCA existiu no repositório; a lógica real está em
+`stream_processor.py` (mesmo arquivo que produz `enriched-transactions`).
+Corrigido.
+
+--------------------------------------------------------------------------------
+4.6 README.md — DuckDB listado como parte da serving layer, nunca usado
+--------------------------------------------------------------------------------
+Stack table e diagrama ASCII diziam "PostgreSQL + DuckDB" para a serving
+layer. Confirmado via `grep -ri duckdb src/` (Grep tool): zero
+ocorrências em código — só existe como dependência solta em
+`pyproject.toml`, nunca importado. Corrigido para descrever a realidade
+(só PostgreSQL, DuckDB anotado como dependência não usada, não removido
+do pyproject.toml — decisão de manter/remover a dependência é separada
+desta issue de documentação).
+
+--------------------------------------------------------------------------------
+4.7 README.md — Quickstart nunca chega no caminho funcional completo
+--------------------------------------------------------------------------------
+"Início Rápido" parava no passo 7 (streaming) — nunca carregava o Gold no
+Postgres, nunca subia a API, nunca provisionava os dashboards, embora
+todos os 3 sejam caminhos totalmente funcionais hoje (issues #10/#15/#16).
+Estendido para 10 passos: batch completo (Bronze→Silver→Gold) → loader
+Postgres → streaming → catálogo → dashboards → API.
+
+--------------------------------------------------------------------------------
+4.8 Makefile — comentário de ajuda enganoso (achado durante a auditoria)
+--------------------------------------------------------------------------------
+`spark-submit-batch: ## Submeter job PySpark batch (Bronze → Silver →
+Gold)` — mas `BATCH_JOB := src/transformation/batch/bronze_to_silver.py`
+(confirmado: `bronze_to_silver.py` não chama `silver_to_gold` em nenhum
+lugar). O comando só faz Bronze→Silver; Gold é OBRIGATORIAMENTE um
+comando separado (`spark-submit-silver-gold`). Esse mesmo erro está
+espalhado pelo README/CLAUDE.md (corrigidos na seção 4.7/CLAUDE acima) —
+raiz do problema era o próprio comentário `## ` do Makefile, que `make
+help` exibe. Corrigido na fonte.
+
+--------------------------------------------------------------------------------
+4.9 src/governance/data_catalog/registry.py — dashboard ainda "planejado"
+--------------------------------------------------------------------------------
+Achado correlato (fora dos 5 arquivos nomeados na issue, mesma causa
+raiz): a entry `dashboard_fraud_overview` tinha `status="planejado"` e
+`location=""`, escritos durante a issue #14 antes do dashboard existir.
+Corrigido: `status` removido (default `"ativo"`), `location` aponta pra
+URL real do Superset, descrição não cita mais "Grafana" (descoped na
+issue #16). `docs/data_catalog.md` regenerado (`make catalog`) contra a
+infra real — resultado: 16x "✅ ok", 0x "🗓️ planejado" (antes: 1x).
+
+================================================================================
+5. TESTES UNITÁRIOS AFETADOS — tests/unit/test_data_catalog.py
+================================================================================
+
+A mudança de status do dashboard (seção 4.9) quebrou 2 testes que
+assumiam `status="planejado"` como fato permanente do catálogo real.
+Corrigidos para testar a via de renderização "planejado" com uma entry
+SINTÉTICA (`dataclasses.replace`, mesmo padrão já usado por
+`test_detects_broken_upstream_reference`), em vez de depender de uma
+entry real ficar planejada pra sempre.
+
+  ID                              Antes                    Depois
+  -----------------------------------------------------------------------
+  test_dashboard_entries_have_    assert status ==         assert kind is
+  dashboard_kind_and_no_location  "planejado" (falhava)    DASHBOARD (renomeado
+                                                            p/ ..._dashboard_kind)
+  test_non_dashboard_entries_     só non-dashboard          todas as entries
+  have_location (renomeado)       têm location              têm location agora
+  test_dashboard_entry_marked_    render(CATALOG) real       entry sintética
+  as_planned (renomeado p/         (falhava — nenhuma        via replace()
+  test_planned_entry_marked_      entry real é mais
+  as_planned)                     "planejado")
+  test_with_passing_validation_   assert "não validado"      assert contagem de
+  shows_ok                        not in content (falhava    "✅ ok" ==
+                                   — dashboard sem check      nº de entries
+                                   de infra sempre mostra     não-dashboard
+                                   "não validado", by design)
+
+Resultado: 16/16 PASSED (era 16/16 antes também — mesma contagem, 4
+testes reescritos pra continuar corretos).
+
+================================================================================
+6. SUÍTE COMPLETA E LINT
+================================================================================
+
+  ID          Descrição                                    Resultado Esperado
+  -----------------------------------------------------------------------
+  18-SUITE-01 pytest tests/unit/ --cov=src (Python 3.14      272 PASSED, 1
+              local)                                        skipped (GX,
+                                                              issue #13), 1
+                                                              falha local
+                                                              pré-existente
+                                                              (.env, issues
+                                                              #13/#14/#16),
+                                                              não relacionada
+  18-COV-01   Cobertura total                                73,21% (gate:
+                                                              >=70%)
+  18-LIN-01   ruff check .                                   All checks
+                                                              passed!
+  18-LIN-02   mypy src/ scripts/                              Success: no
+                                                              issues found in
+                                                              57 source files
+
+================================================================================
+RESULTADO FINAL — ISSUE #18
+================================================================================
+
+  Achados reais corrigidos:                     9 (6 desatualizados, 3
+                                                 lacunas de comando/seção)
+                                                 + 1 achado correlato fora
+                                                 do escopo nomeado
+                                                 (registry.py) + 1 achado
+                                                 no Makefile durante a
+                                                 auditoria
+  Testes afetados e corrigidos:                 4/16 reescritos em
+                                                 test_data_catalog.py
+                                                 (mesma contagem total)
+  Suíte completa (Python 3.14 local):           272/273 PASSED, 1 skipped
+                                                 (GX indisponível
+                                                 localmente), 1 falha
+                                                 pré-existente não
+                                                 relacionada (.env local)
+  Cobertura geral:                               73,21%
+  Lint / mypy:                                   All checks passed! / Success
+  Artefato regenerado:                           docs/data_catalog.md
+                                                 (make catalog, contra
+                                                 infra real: 16x "✅ ok",
+                                                 0x "planejado")
+  Critérios de aceite da issue:                  4/4 atendidos
+    - Novo colaborador identifica o caminho
+      funcional atual                            OK (roadmap com status,
+                                                  Quickstart completo)
+    - Comandos apontam pra artefatos existentes
+      ou têm status explícito                    OK (25/25 comandos
+                                                  auditados, 0 quebrados;
+                                                  3 lacunas preenchidas)
+    - URLs/portas/schemas/nomes de datasets
+      consistentes                               OK (auditado contra
+                                                  docker-compose.yml e
+                                                  código real; 2 achados
+                                                  corrigidos —
+                                                  anomaly_detector.py,
+                                                  DuckDB)
+    - Status de testes distingue execução
+      histórica de reproduzida                   OK (cada seção já tinha
+                                                  data; índice novo em
+                                                  test_status.md linka
+                                                  cada seção ao seu
+                                                  checklist .txt completo)

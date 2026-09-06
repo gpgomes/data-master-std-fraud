@@ -30,16 +30,14 @@ class TestRegistry:
             for upstream_key in entry.upstream:
                 assert upstream_key in keys, f"{entry.key} referencia {upstream_key} inexistente"
 
-    def test_dashboard_entries_have_dashboard_kind_and_no_location(self):
+    def test_dashboard_entries_have_dashboard_kind(self):
         for entry in CATALOG:
             if entry.layer is DatasetLayer.DASHBOARD:
                 assert entry.kind is DatasetKind.DASHBOARD
-                assert entry.status == "planejado"
 
-    def test_non_dashboard_entries_have_location(self):
+    def test_all_entries_have_location(self):
         for entry in CATALOG:
-            if entry.layer is not DatasetLayer.DASHBOARD:
-                assert entry.location
+            assert entry.location
 
     def test_minio_locations_use_configured_buckets(self):
         minio_entries = [e for e in CATALOG if e.kind is DatasetKind.MINIO_PREFIX]
@@ -85,8 +83,14 @@ class TestRenderMarkdown:
         assert "graph LR" in content
         assert "bronze_transactions --> silver_transactions" in content
 
-    def test_dashboard_entry_marked_as_planned(self):
-        content = render_markdown(CATALOG)
+    def test_planned_entry_marked_as_planned(self):
+        # Nenhuma entry real está "planejado" hoje (issue #16 entregou o
+        # dashboard) — testa a via de renderização diretamente com uma
+        # entry sintética, mesmo padrão de test_detects_broken_upstream_reference.
+        from dataclasses import replace
+
+        planned = (replace(CATALOG[0], status="planejado"),) + CATALOG[1:]
+        content = render_markdown(planned)
         assert "planejado" in content
 
     def test_without_validation_results_shows_not_validated(self):
@@ -100,8 +104,11 @@ class TestRenderMarkdown:
             if entry.kind is not DatasetKind.DASHBOARD
         ]
         content = render_markdown(CATALOG, validation_results=results)
-        assert "✅ ok" in content
-        assert "não validado" not in content
+        # DatasetKind.DASHBOARD não tem checagem de infra implementada (ver
+        # registry.py) — mesmo com todo o resto validado, essas entries
+        # continuam "não validado", por design, não é um bug.
+        non_dashboard_count = sum(1 for e in CATALOG if e.kind is not DatasetKind.DASHBOARD)
+        assert content.count("✅ ok") == non_dashboard_count
 
     def test_with_failing_validation_shows_detail(self):
         entry = next(e for e in CATALOG if e.kind is DatasetKind.MINIO_PREFIX)

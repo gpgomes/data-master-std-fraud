@@ -99,13 +99,52 @@ JSON gerados em `gx/expectations/` — esses são saída, sobrescritos a cada
 run) e rode os testes (`pytest tests/unit/test_great_expectations.py`) com
 uma fixture que exercite a mudança.
 
+## Serving Layer (PostgreSQL + FastAPI)
+
+`src/serving/loaders/gold_to_postgres.py` (issue #10) carrega as 4 tabelas
+Gold (`fact_transactions`, `dim_customers`, `dim_date`,
+`agg_daily_fraud_metrics`) do MinIO para o Postgres via truncate+reload por
+tabela — sem foreign keys entre fato e dimensões de propósito (ver
+`src/serving/loaders/schema.sql`). Roda como task da DAG
+`batch_transformation_pipeline`, depois do gate de qualidade do Gold.
+
+`src/serving/api/` (issue #15, FastAPI + SQLAlchemy Core) expõe:
+
+| Endpoint | Descrição |
+|----------|-----------|
+| `GET /health/live`, `GET /health/ready` | Liveness/readiness (readiness checa a conexão com o Postgres) |
+| `GET /transactions`, `GET /transactions/{id}` | Transações (paginado) |
+| `GET /alerts` | `fact_transactions` filtrado por `is_fraud=true` — ver nota em `alerts.py` sobre a fonte de dados |
+| `GET /kpis/fraud-daily` | `agg_daily_fraud_metrics` (paginado) |
+
+### Rodar manualmente
+
+```bash
+make spark-submit-gold-postgres  # carrega o Gold no Postgres
+make api                         # sobe a API em http://localhost:8000/docs
+```
+
+### Diagnosticar
+
+1. **API sobe mas endpoints retornam vazio**: confirme que
+   `make spark-submit-gold-postgres` já rodou — a API só lê o que está no
+   Postgres, não recalcula nada.
+2. **`503 database unavailable`**: Postgres não está pronto ou
+   `POSTGRES_*` no `.env` não bate com o container — ver
+   `make logs-postgres`.
+3. **`/alerts` não reflete os alertas do streaming (Z-Score)**: esperado —
+   `fraud-alerts` (Kafka, issue #11) não é persistido em nenhuma tabela
+   consultável hoje; `/alerts` usa o rótulo `is_fraud` já carregado pelo
+   batch. Ligar essa fonte exigiria um consumidor Kafka novo (mesmo gap
+   documentado para `fraud_score`, issue #16).
+
 ## Catálogo de Dados
 
 Registro leve em `src/governance/data_catalog/registry.py` (não OpenMetadata —
 ver decisão em `docs/architecture.md`, tabela "Decisões Arquiteturais").
 Cobre Bronze/Silver/Gold (MinIO), as 4 tabelas da serving layer (Postgres),
-os 4 tópicos Kafka, e um placeholder de dashboard (`status="planejado"`,
-issue #16 ainda não existe).
+os 4 tópicos Kafka, e o dashboard Superset (issue #16 — ver seção
+"Dashboards (Superset)" abaixo).
 
 ### Gerar o catálogo
 

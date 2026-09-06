@@ -34,9 +34,13 @@ yfinance / CSV → Python Collector → MinIO (Bronze/Parquet)
 ```
 
 Orquestrado por duas DAGs Airflow em sequência: `batch_ingestion_pipeline`
-(06:00 UTC, fontes → Bronze) e `batch_transformation_pipeline` (07:00 UTC,
-Bronze → Silver → Gold, via `SparkSubmitOperator`). O loader Gold→PostgreSQL
-ainda não existe (issue #10).
+(06:00 UTC, fontes → Bronze → gate de qualidade) e
+`batch_transformation_pipeline` (07:00 UTC, Bronze → Silver → gate → Gold →
+gate → PostgreSQL, via `SparkSubmitOperator` intercalado com os quality
+gates do Great Expectations, issue #13 — ver seção "Quality Gates" em
+`docs/runbook.md`). O loader Gold→PostgreSQL
+(`src/serving/loaders/gold_to_postgres.py`, issue #10) roda como a
+penúltima task da segunda DAG, truncate+reload por tabela.
 
 ### Streaming
 ```
@@ -46,7 +50,9 @@ Simulador Python → Kafka (raw-transactions)
                         ↓
               Anomaly Detection (Z-Score)
                         ↓
-         MinIO Silver + Kafka (fraud-alerts)
+    MinIO Silver (silver/transactions_stream/, distinto do
+    silver/transactions/ do batch) + Kafka (enriched-transactions,
+    todas as linhas scored) + Kafka (fraud-alerts, só as anômalas)
 ```
 
 ## Componentes
@@ -56,7 +62,7 @@ Simulador Python → Kafka (raw-transactions)
 - **Python Batch** — Coleta dados via yfinance e CSV, salva no Bronze
 
 ### Armazenamento
-- **MinIO** — Object storage S3-compatible com três buckets: bronze, silver, gold
+- **MinIO** — Object storage S3-compatible com quatro buckets: bronze, silver, gold, checkpoints (`checkpointLocation` do Spark Structured Streaming — o estado de histórico entre micro-batches fica em `silver/_stream_state/`, não em `checkpoints/`)
 - **Parquet** — Formato único de Silver e Gold (issue #9); ver "Decisões Arquiteturais" abaixo
 
 ### Transformação

@@ -36,7 +36,7 @@ class DatasetKind(str, Enum):
     MINIO_PREFIX = "minio_prefix"
     POSTGRES_TABLE = "postgres_table"
     KAFKA_TOPIC = "kafka_topic"
-    DASHBOARD = "dashboard"  # sem checagem de infra — issue #16 ainda não existe
+    DASHBOARD = "dashboard"  # sem checagem de infra — validar contra a API do Superset ainda não implementado
 
 
 @dataclass(frozen=True)
@@ -248,19 +248,18 @@ CATALOG: tuple[CatalogEntry, ...] = (
         description="Alertas de fraude confirmados pelo detector Z-Score (issue #11).",
         upstream=("kafka_enriched_transactions",),
     ),
-    # ── Dashboard (planejado — issue #16 ainda não implementada) ─────────
+    # ── Dashboard (issue #16) ─────────────────────────────────────────────
     CatalogEntry(
         key="dashboard_fraud_overview",
         name="Dashboard — Visão Geral de Fraude",
         layer=DatasetLayer.DASHBOARD,
         kind=DatasetKind.DASHBOARD,
-        location="",
+        location="http://localhost:8088/superset/dashboard/fraude-transacoes-visao-geral/",
         owner="Fraud Analytics",
         classification=("Confidencial",),
         glossary_terms=("Fraud Score",),
-        description="KPIs de volume, valor, taxa de fraude e alertas (Superset/Grafana).",
+        description="KPIs de volume, valor, taxa de fraude e alertas (Superset — Grafana descoped, issue #16).",
         upstream=("serving_fact_transactions", "serving_agg_daily_fraud_metrics"),
-        status="planejado",
     ),
 )
 

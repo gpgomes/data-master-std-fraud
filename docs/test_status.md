@@ -10,6 +10,29 @@
 | OK | Passou |
 | N/A | Não aplicável |
 
+## Índice
+
+Ordem cronológica de execução (não de número de issue). Cada seção tem um
+checklist completo correspondente em `docs/`.
+
+| Seção | IDs | Checklist completo |
+|-------|-----|---------------------|
+| Step 1.3 — Data Generator | `1.3-*` | `docs/testes_step_1.3.txt` |
+| Step 1.4 — Kafka Producers | `1.4-*` | `docs/testes_step_1.4.txt` |
+| Step 1.5 — Ingestão Batch + Airflow DAGs | `1.5-*` | `docs/testes_step_1.5.txt` |
+| Step 1.6 — Transformação Bronze → Silver | `1.6-*` | `docs/testes_step_1.6.txt` |
+| Step 1.7 — Transformação Silver → Gold | `1.7-*` | `docs/testes_step_1.7.txt` |
+| Issue #7 — Reprodutibilidade do Ambiente Local | `7-*` | `docs/testes_issue_7.txt` |
+| Step 1.8 — Privacidade, Qualidade e Semântica dos Dados | `1.8-*` | `docs/testes_step_1.8.txt` |
+| Issue #8 — Contrato de Dados Ingestion ↔ Transformação | `8-*` | `docs/testes_issue_8.txt` |
+| Issue #10 — Loader Gold para PostgreSQL | `10-*` | `docs/testes_issue_10.txt` |
+| Issue #11 — Streaming Spark e Detecção de Fraude | `11-*` | `docs/testes_issue_11.txt` |
+| Issue #15 — API FastAPI para Consultas e Alertas | `15-*` | `docs/testes_issue_15.txt` |
+| Issue #13 — Quality Gates com Great Expectations | `13-*` | `docs/testes_issue_13.txt` |
+| Issue #14 — Catálogo de Dados Leve | `14-*` | `docs/testes_issue_14.txt` |
+| Issue #16 — Dashboards Operacionais/Analíticos com Superset | `16-*` | `docs/testes_issue_16.txt` |
+| Issue #18 — Atualização de Documentação | `18-*` | `docs/testes_issue_18.txt` |
+
 ---
 
 ## Step 1.3 — Data Generator
@@ -1109,3 +1132,76 @@ dashboard).
 | 16-COV-01 | Cobertura total | ≥70% | OK (73,26%) |
 | 16-LIN-01 | `ruff check .` | All checks passed! | OK |
 | 16-LIN-02 | `mypy src/ scripts/` | Success: no issues found | OK |
+
+## Issue #18 — Atualizar Documentação para Refletir o Estado Implementado (executado em 2026-09-07)
+
+> Checklist completo: `docs/testes_issue_18.txt`
+
+Objetivo: alinhar README.md, `docs/architecture.md`, `docs/runbook.md`,
+`docs/test_status.md` e `CLAUDE.md` com o que existe de verdade, separando
+planejado/implementado/validado. Diferente das issues anteriores, sem
+pipeline/serviço novo — o "teste" é uma auditoria mecânica: cruzar cada
+`make X`/caminho/porta citado contra o Makefile, `docker-compose.yml`, as
+DAGs e o código-fonte reais.
+
+**Auditoria mecânica**: todo `make X` citado nos 4 docs corresponde a um
+target real (25 targets, incluindo o wildcard `logs-%`); todo caminho de
+arquivo citado em backticks existe; toda porta/URL bate com
+`docker-compose.yml`.
+
+**9 achados reais corrigidos** (+ 1 achado correlato fora dos 5 arquivos
+nomeados, mesma causa raiz; + 1 achado no próprio Makefile durante a
+auditoria):
+
+1. `docs/architecture.md` dizia que o loader Gold→PostgreSQL "ainda não
+   existe (issue #10)" — issue #10 está mergeada há várias issues.
+2. `docs/runbook.md` dizia "issue #16 ainda não existe" na seção do
+   catálogo (escrito durante a issue #14, antes do dashboard existir).
+3. `CLAUDE.md` "Implementation Phases" apontava `current: feature/step_1.2`
+   (branch de semanas atrás) e nenhuma fase tinha status — adicionado
+   ✅/🚧/⬜ por fase; Fase 3 ainda listava "Delta Lake" como entregável,
+   mas foi explicitamente removido/nunca usado (issue #9) — corrigido.
+4. Diagramas de streaming (README, CLAUDE.md, architecture.md) mostravam
+   só "MinIO Silver + Kafka fraud-alerts" — conferido contra
+   `stream_processor.py::_process_batch`: grava em **três** lugares
+   (`silver/transactions_stream/`, `enriched-transactions`,
+   `fraud-alerts`) — os 3 diagramas corrigidos.
+5. README citava `anomaly_detector.py` como producer de `fraud-alerts` —
+   esse arquivo nunca existiu; a lógica real está em `stream_processor.py`.
+6. README listava "PostgreSQL + DuckDB" na serving layer — `duckdb` é
+   dependência solta em `pyproject.toml`, nunca importada em `src/`
+   (confirmado via grep) — corrigido para descrever a realidade.
+7. README "Comandos Make Disponíveis" listava 12 dos 25 targets reais do
+   Makefile (faltavam `install`, `format`, `test-cov`,
+   `test-integration`, `spark-submit-silver-gold`,
+   `spark-submit-gold-postgres`, `producer-transactions`,
+   `producer-market`, `api`, `dashboards`, `dashboards-export`, `ps`,
+   `logs`, `clean-data`) — regenerada com todos os 25.
+8. README "Início Rápido" parava no streaming (passo 7) — nunca chegava
+   no loader Postgres, na API ou nos dashboards, apesar de todos serem
+   caminhos funcionais hoje — estendido para 10 passos.
+9. Achado correlato: `src/governance/data_catalog/registry.py` ainda
+   marcava o dashboard como `status="planejado"`/`location=""` — issue
+   #16 já o implementou; corrigido, e `docs/data_catalog.md` regenerado
+   contra a infra real (16x "✅ ok", 0x "planejado", era 1x antes).
+10. Achado no Makefile (não um dos 5 arquivos, mas causa raiz do erro no
+    README/CLAUDE.md): `spark-submit-batch`'s comentário de ajuda dizia
+    "Bronze → Silver → Gold", mas `BATCH_JOB` aponta só para
+    `bronze_to_silver.py` — Gold é sempre um comando separado
+    (`spark-submit-silver-gold`). Corrigido na fonte.
+
+**Testes afetados**: a correção do item 9 quebrou 2 dos 16 testes de
+`test_data_catalog.py`, que assumiam `status="planejado"` como fato
+permanente do catálogo real — reescritos para testar a via de
+renderização "planejado" com uma entry sintética (`dataclasses.replace`),
+mesmo padrão já usado por `test_detects_broken_upstream_reference`.
+Resultado: 16/16 PASSED (4 testes reescritos, mesma contagem total).
+
+### Suíte Completa e Lint
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|-------------------|--------|
+| 18-SUITE-01 | `pytest tests/unit/ --cov=src` (Python 3.14 local) | Sem regressão | OK (272/273 PASSED, 1 skipped — GX indisponível em Python 3.14, issue #13 — 1 falha local pré-existente de `.env`, não relacionada) |
+| 18-COV-01 | Cobertura total | ≥70% | OK (73,21%) |
+| 18-LIN-01 | `ruff check .` | All checks passed! | OK |
+| 18-LIN-02 | `mypy src/ scripts/` | Success: no issues found | OK |

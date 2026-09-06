@@ -56,7 +56,7 @@ Plataforma de dados end-to-end para ingestão, transformação, governança e vi
 ├────────────────────────────────────────────────────────────────────────────┤
 │                  CAMADA DE DISPONIBILIZAÇÃO                               │
 │  ┌──────────────────────┐  ┌──────────────┐  ┌──────────────────────┐     │
-│  │ PostgreSQL / DuckDB  │  │  FastAPI     │  │ Apache Superset      │     │
+│  │ PostgreSQL           │  │  FastAPI     │  │ Apache Superset      │     │
 │  │ (Serving Layer)      │  │  (REST API)  │  │ (Dashboards)         │     │
 │  └──────────────────────┘  └──────────────┘  └──────────────────────┘     │
 └────────────────────────────────────────────────────────────────────────────┘
@@ -76,7 +76,7 @@ Plataforma de dados end-to-end para ingestão, transformação, governança e vi
 | Processamento Batch | PySpark (local mode) | Transformações Bronze → Silver → Gold |
 | Processamento Streaming | Spark Structured Streaming | Consumo do Kafka e detecção de fraudes |
 | Armazenamento | MinIO (Docker) | Object storage compatível com S3 |
-| Serving Layer | PostgreSQL + DuckDB | Consulta analítica das camadas Gold |
+| Serving Layer | PostgreSQL | Consulta analítica das camadas Gold (issue #10). `duckdb` está listado em `pyproject.toml` mas não é usado em nenhum código hoje |
 | Qualidade de Dados | Great Expectations | Validações e expectativas nos dados |
 | Catálogo/Linhagem | Catálogo de dados leve (`docs/data_catalog.md`) | Registro versionado + linhagem, validado contra a infra real (issue #14) |
 | Visualização | Apache Superset | Dashboards analíticos (Grafana descoped da V1 local — issue #16) |
@@ -172,12 +172,25 @@ make setup
 # 5. Gerar dados de exemplo
 make seed-data
 
-# 6. Executar pipeline batch
+# 6. Executar pipeline batch (Bronze → Silver, depois Silver → Gold)
 make spark-submit-batch
+make spark-submit-silver-gold
 
-# 7. Iniciar streaming (em outro terminal)
+# 7. Carregar o Gold no Postgres (serving layer)
+make spark-submit-gold-postgres
+
+# 8. Iniciar streaming (em outro terminal)
 make spark-submit-stream
+
+# 9. Gerar o catálogo de dados e provisionar os dashboards
+make catalog
+make dashboards
+
+# 10. Subir a API REST (em outro terminal)
+make api
 ```
+
+Depois desses passos: Superset em http://localhost:8088 (dashboard "Fraude e Transações - Visão Geral"), API em http://localhost:8000/docs, catálogo gerado em `docs/data_catalog.md`.
 
 ### Acessos Locais
 
@@ -195,17 +208,42 @@ O catálogo de dados não é um serviço web — é gerado como documento versio
 ### Comandos Make Disponíveis
 
 ```bash
-make up                  # Subir todos os containers
-make down                # Derrubar todos os containers
-make setup               # Inicializar buckets MinIO e tópicos Kafka
-make test                # Executar todos os testes (pytest, requer infra)
-make test-unit           # Executar só os testes unitários (sem infra Docker)
-make lint                # Verificar código (ruff + mypy)
-make spark-submit-batch  # Submeter job batch PySpark
-make spark-submit-stream # Submeter job streaming PySpark
-make seed-data           # Gerar dados sintéticos de exemplo
-make catalog             # Gerar docs/data_catalog.md e validar datasets contra a infra real
-make clean               # Limpar volumes e dados temporários
+# Infraestrutura
+make up                        # Subir toda a infraestrutura local
+make down                      # Derrubar todos os containers
+make setup                     # Inicializar buckets MinIO e tópicos Kafka
+make ps                        # Listar containers em execução
+make logs                      # Logs de todos os serviços (make logs-kafka, logs-postgres, ... para um serviço específico)
+
+# Desenvolvimento
+make install                   # Instalar dependências de desenvolvimento
+make lint                      # Verificar código com ruff e mypy
+make format                    # Formatar código com black e ruff
+
+# Testes
+make test                      # Executar todos os testes (requer infra)
+make test-unit                 # Só os testes unitários (sem infra Docker)
+make test-integration          # Só os testes de integração (requer infra)
+make test-cov                  # Testes com relatório de cobertura HTML (htmlcov/)
+
+# Pipeline
+make seed-data                  # Gerar dados sintéticos de transações e mercado
+make spark-submit-batch         # Job PySpark Bronze → Silver (Gold é um job separado)
+make spark-submit-silver-gold   # Job PySpark Silver → Gold
+make spark-submit-gold-postgres # Carregar Gold no Postgres (serving layer)
+make spark-submit-stream        # Job PySpark streaming (Kafka → Silver + detecção de fraude)
+make producer-transactions      # Iniciar producer de transações financeiras
+make producer-market            # Iniciar producer de dados de mercado
+
+# Serving, governança e dashboards
+make api                       # Iniciar a API FastAPI em modo desenvolvimento
+make catalog                   # Gerar docs/data_catalog.md e validar os datasets contra a infra real
+make dashboards                # Provisionar o dashboard Superset de KPIs (+ smoke test)
+make dashboards-export         # Exportar o dashboard provisionado para dashboards/superset/dashboard_configs/
+
+# Limpeza
+make clean                     # Limpar volumes Docker, dados temporários e artefatos de build
+make clean-data                # Limpar só os dados gerados (mantém os containers)
 ```
 
 ---
@@ -240,7 +278,7 @@ make test-unit
 | `raw-transactions` | Transações financeiras em tempo real | kafka_producer_transactions.py |
 | `raw-market-data` | Cotações e trades de mercado | kafka_producer_market.py |
 | `enriched-transactions` | Transações enriquecidas com score | stream_processor.py |
-| `fraud-alerts` | Alertas de transações fraudulentas | anomaly_detector.py |
+| `fraud-alerts` | Alertas de transações fraudulentas (Z-Score) | stream_processor.py |
 
 ### Camadas do Data Lake
 
