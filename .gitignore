@@ -51,6 +51,9 @@ coverage.xml
 .pytest_cache/
 cover/
 
+# Export temporário do Superset (make dashboards-export)
+.tmp_dashboard_export/
+
 # Translations
 *.mo
 *.pot

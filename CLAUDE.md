@@ -56,6 +56,8 @@ make producer-transactions     # Start Kafka transaction producer
 make producer-market           # Start Kafka market data producer
 make api                       # Start FastAPI dev server at :8000
 make catalog                   # Generate docs/data_catalog.md, validate datasets against live infra
+make dashboards                # Provision Superset dashboard (KPIs), smoke-test against live infra
+make dashboards-export         # Snapshot the provisioned dashboard to dashboards/superset/dashboard_configs/
 ```
 
 ## Architecture
@@ -90,6 +92,7 @@ Python Simulator → Kafka raw-transactions → Spark Structured Streaming
 | Batch data collectors | `src/ingestion/batch/` |
 | FastAPI app | `src/serving/api/main.py` |
 | Gold→Postgres loader | `src/serving/loaders/` |
+| Superset dashboard provisioning | `src/serving/dashboards/` |
 | Great Expectations suites | `src/governance/great_expectations/` |
 | Data catalog (registry, validation, render) | `src/governance/data_catalog/` |
 | Airflow DAGs | `dags/` |

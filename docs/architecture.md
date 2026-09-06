@@ -70,7 +70,7 @@ Simulador Python → Kafka (raw-transactions)
 ### Disponibilização
 - **PostgreSQL** — Tabelas Gold para SQL analítico
 - **FastAPI** — REST API para consultas e alertas
-- **Superset / Grafana** — Dashboards
+- **Apache Superset** — Dashboards (provisionado via API REST, `src/serving/dashboards/`; Grafana descoped da V1 — ver decisão abaixo)
 
 ## Decisões Arquiteturais
 
@@ -83,6 +83,7 @@ Simulador Python → Kafka (raw-transactions)
 | Serving layer | PostgreSQL + DuckDB | PostgreSQL para OLTP/API; DuckDB para queries analíticas ad-hoc |
 | Escopo do CI (GitHub Actions) | Só lint + testes unitários, sem os testes de integração | `tests/unit/` roda 100% local (SparkSession `local[*]`, storage mockado); o stack completo (Kafka, Zookeeper, Airflow, Superset, Postgres, MinIO, cluster Spark) é pesado/lento demais para rodar em todo PR — ver `.github/workflows/ci.yml` |
 | Catálogo/linhagem (issue #14) | Registro leve versionado (não OpenMetadata) | O stack oficial do OpenMetadata (server + MySQL/Postgres próprio + Elasticsearch + ingestion-Airflow) soma mais 3-4 serviços pesados aos 19 que já rodam neste `docker-compose.yml`, disputando os ~8GB alocados ao Docker no ambiente local. `src/governance/data_catalog/` cobre o mesmo objetivo (owners, tags PII, glossário, linhagem) sem subir nenhum container novo, validando cada asset contra MinIO/Postgres/Kafka reais. Um catálogo gerenciado real (OpenMetadata ou AWS Glue Data Catalog, já previsto na V2) fica para a fase cloud |
+| Dashboards (issue #16) | Só Superset (Grafana descoped) | Superset já roda no `docker-compose.yml`, conectado ao mesmo Postgres da serving layer (issue #10) — cobre 100% dos KPIs pedidos sem novo container/datasource. Não há store de séries temporais (Prometheus etc.) que justifique Grafana para métricas real-time nesta V1; `dashboards/grafana/` fica como scaffold não usado. `src/serving/dashboards/` provisiona tudo via API REST do Superset (idempotente), com smoke test comparando cada chart contra uma query direta no Postgres. KPI de "score" (`fraud_score`) fora do escopo: sempre `NULL` no Postgres, só populado pelo detector de streaming (issue #11), que não escreve na camada Gold batch — mesma causa raiz do gap de "latência" já documentado em `alerts.py` (issue #15) |
 
 ## CI/CD
 

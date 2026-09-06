@@ -1,0 +1,260 @@
+================================================================================
+CHECKLIST DE TESTES — Dashboards Operacionais/Analiticos com Superset (issue #16)
+================================================================================
+
+Objetivo: disponibilizar visualizacoes uteis sobre transacoes e fraude a
+partir da camada Gold/serving layer (Postgres).
+
+Decisao de arquitetura (confirmada com o usuario): SO SUPERSET, Grafana
+descoped da V1 local. O Superset ja roda em docker-compose.yml, conectado
+ao mesmo Postgres da serving layer (issue #10), e cobre 100% dos KPIs
+pedidos sem novo container/datasource; nao ha store de series temporais
+(Prometheus etc.) que justifique Grafana para metricas real-time neste
+ambiente. dashboards/grafana/ fica como scaffold nao usado.
+
+KPI de "latencia" e de "score" (fraud_score): confirmados fora do escopo
+real dos dados hoje persistidos (ver secao 1 abaixo) e documentados como
+gap, mesmo tratamento ja dado ao gap analogo em alerts.py (issue #15).
+
+Arquivos criados:
+  - src/serving/dashboards/client.py (SupersetClient: login/CSRF via
+    requests.Session, get/post/put/delete, find_one paginado)
+  - src/serving/dashboards/charts.py (registro declarativo de 7 ChartDef)
+  - src/serving/dashboards/provision.py (ensure_database/dataset/dashboard/
+    chart, _build_position_json, _build_native_filters, verify_chart,
+    provision_all — tudo idempotente)
+  - scripts/provision_superset_dashboards.py (CLI: `make dashboards`)
+  - tests/unit/test_dashboards.py (14 testes, logica pura)
+  - dashboards/superset/dashboard_configs/{metadata.yaml,databases/,
+    datasets/,charts/,dashboards/} (snapshot exportado do Superset real,
+    via `make dashboards-export` — gerado, nao editado a mao)
+
+Arquivos modificados:
+  - docker-compose.yml (bug real corrigido — ver secao 0)
+  - src/common/config.py (SupersetSettings: url/admin_user/admin_password)
+  - Makefile (`dashboards`, `dashboards-export`)
+  - README.md, docs/architecture.md, docs/runbook.md, CLAUDE.md,
+    .env.example (decisao documentada, comandos, credenciais via env)
+
+================================================================================
+0. BUG REAL ENCONTRADO E CORRIGIDO — Superset nunca funcionou
+================================================================================
+
+O servico `superset` do docker-compose.yml nunca subiu corretamente desde
+o commit inicial do projeto (nenhuma issue anterior precisou dele de
+verdade). Causa raiz: o bloco `command: >` usa YAML folding (`>`), que
+colapsa quebras de linha em espaco SO ENTRE linhas na MESMA indentacao da
+primeira linha de conteudo — linhas MAIS indentadas (como as flags
+`--username admin` do `create-admin`, uma por linha, e `--log-level info
+'...'` do gunicorn) preservam a quebra de linha literalmente. Resultado:
+  - `superset fab create-admin` rodava SEM nenhuma flag (a quebra de linha
+    antes de `--username admin` cortava o comando ali), caindo no prompt
+    interativo `Username [admin]:` (travado, sem stdin).
+  - `gunicorn --bind ... --keep-alive 5` rodava SEM o modulo da app (a
+    quebra de linha antes de `--log-level` cortava o comando ali) ->
+    `Error: No application module specified.` -> gunicorn nunca subia de
+    fato -> healthcheck perpetuamente `starting`.
+
+Confirmado via `docker compose config --format json` (mostra o array
+`command` resolvido) e via `docker compose logs superset` (as duas
+mensagens de erro acima, batendo exatamente com a hipotese).
+
+Correcao: cada comando (`create-admin ...`, `gunicorn ...`) colocado numa
+UNICA linha logica — sem mudar nenhum valor/flag, so a formatacao YAML.
+
+================================================================================
+1. ACHADO REAL — dados que NAO existem para os KPIs "score" e "latencia"
+================================================================================
+
+Verificado diretamente no Postgres real (fact_transactions, 506.146
+linhas carregadas pela issue #10):
+
+  SELECT COUNT(*) FILTER (WHERE fraud_score IS NOT NULL), COUNT(*)
+  FROM fact_transactions;
+  -- with_score=0, total=506146
+
+`fraud_score` esta SEMPRE NULL nas 506k linhas — so e populado pelo
+detector de streaming (issue #11), que escreve em Kafka
+(enriched-transactions/fraud-alerts), nunca na camada Gold batch que
+alimenta o Postgres. Mesma causa raiz do gap ja documentado em
+`alerts.py` (issue #15): dado streaming-only nunca chega ao Postgres.
+
+Por isso: nenhum chart de distribuicao de `fraud_score` foi construido
+(seria sempre vazio); "alertas"/"taxa de fraude" (via `is_fraud`,
+`fraud_type`, `fraud_count`/`fraud_rate` de agg_daily_fraud_metrics) sao
+os KPIs de fraude realmente disponiveis e sao os usados no dashboard.
+"Latencia" de pipeline (ingestion_timestamp/processing_timestamp) tambem
+nao chega em fact_transactions/agg_daily_fraud_metrics — mesmo gap,
+documentado, fora do escopo desta issue.
+
+================================================================================
+2. TESTES UNITARIOS — tests/unit/test_dashboards.py (14 testes)
+================================================================================
+
+So logica pura (registro de charts, construcao de position_json/native
+filters, paginacao do client) — sem Superset real.
+
+  ID              Classe                    Descricao
+  -----------------------------------------------------------------------
+  16-CHT-01..04   TestChartsRegistry        Sem slice_name duplicado; todo
+                                             dataset_table conhecido; todo
+                                             chart tem metric(s) no
+                                             query_extra; DATASETS bate
+                                             com o schema real
+  16-POS-01..04   TestBuildPositionJson     1 linha p/ poucos charts; 7
+                                             charts -> 3 linhas (4+2+1);
+                                             CHART-{id} referencia o id
+                                             correto; ROOT_ID/GRID_ID
+                                             presentes
+  16-FLT-01..03   TestBuildNativeFilters    2 filtros (Periodo, Tipo de
+                                             Transacao); filtro de periodo
+                                             mira date_key nos 2 datasets;
+                                             filtro de tipo mira
+                                             transaction_type
+  16-CLI-01..03   TestSupersetClientFindOne find_one acha na 1a pagina;
+                                             retorna None sem match e sem
+                                             mais paginas; pagina ate
+                                             achar (session.get mockado)
+
+Resultado: 14/14 PASSED.
+
+================================================================================
+3. TESTE DE INTEGRACAO REAL — DOCKER (executado em 2026-09-05)
+================================================================================
+
+Pre-requisito: make up (com o fix da secao 0) + dados reais ja carregados
+no Postgres (506.146 transacoes, issues #9/#10, sessoes anteriores).
+
+--------------------------------------------------------------------------------
+3.1 Validacao empirica das queries ANTES de codificar os charts (curl)
+--------------------------------------------------------------------------------
+Cada query usada em charts.py foi testada via
+`/api/v1/chart/data` e cruzada contra `psql` direto ANTES de virar codigo:
+
+  ID          Query                                    Superset   psql real
+  -----------------------------------------------------------------------
+  16-QRY-01   COUNT(*) fact_transactions                506146     506146
+  16-QRY-02   SUM(fraud_count)/SUM(total_transactions)  2.5085...  2.5085...
+              *100 (fact_transactions, is_fraud filter)
+  16-QRY-03   COUNT(*) WHERE is_fraud=true               12697      12697
+  16-QRY-04   COUNT(*) GROUP BY fraud_type WHERE          soma bate exato
+              is_fraud=true (5 tipos)                     (2520+2541+2567+
+                                                            2530+2539=12697)
+  16-QRY-05   SUM(total_transactions) GROUP BY            soma bate exato
+              transaction_type (agg_daily_fraud_metrics)  (506146, 6 tipos)
+  16-QRY-06   Serie temporal diaria (granularity=          295 dias, valores
+              date_key, time_grain P1D)                   plausiveis
+
+--------------------------------------------------------------------------------
+3.2 Provisionamento real (make dashboards / --verify --strict)
+--------------------------------------------------------------------------------
+  ID              Descricao                                    Resultado
+  -----------------------------------------------------------------------
+  16-PROV-01      1 database Superset criado (fraud_analytics,
+                  aponta pro Postgres real via hostname interno) OK
+  16-PROV-02      2 datasets criados (fact_transactions,
+                  agg_daily_fraud_metrics) — colunas/tipos
+                  auto-detectados, main_dttm_col=date_key nos 2 OK
+  16-PROV-03      1 dashboard criado (Fraude e Transacoes -
+                  Visao Geral)                                 OK
+  16-PROV-04      7 charts criados e anexados ao dashboard      OK
+  16-PROV-05      json_metadata (2 native filters: Periodo,
+                  Tipo de Transacao) + position_json (3 linhas)
+                  persistidos e confirmados via GET             OK
+  16-PROV-06      --verify: 7/7 charts retornaram dado real
+                  (rowcount >= 1, sem erro)                     OK, exit 0
+
+--------------------------------------------------------------------------------
+3.3 Idempotencia — rodar de novo nao duplica
+--------------------------------------------------------------------------------
+  ID              Descricao                                    Resultado
+  -----------------------------------------------------------------------
+  16-IDEM-01      2a execucao de `make dashboards --verify
+                  --strict`: 0 mensagens "criado" (tudo achado
+                  e atualizado)                                 OK, exit 0
+  16-IDEM-02      Contagem via API apos as 2 execucoes:
+                  1 database, 2 datasets, 1 dashboard,
+                  7 charts (sem duplicatas)                     OK
+
+--------------------------------------------------------------------------------
+3.4 Export versionado (make dashboards-export)
+--------------------------------------------------------------------------------
+  ID              Descricao                                    Resultado
+  -----------------------------------------------------------------------
+  16-EXP-01       `superset export-dashboards` dentro do
+                  container + copia pro host + flatten em
+                  dashboards/superset/dashboard_configs/         OK
+  16-EXP-02       Senha do Postgres mascarada no YAML
+                  exportado (XXXXXXXXXX) — seguro pra commitar    OK
+  16-EXP-03       Diretorio temporario (.tmp_dashboard_export)
+                  limpo ao final (gitignored como rede de
+                  seguranca)                                     OK
+
+================================================================================
+4. VALIDACAO VISUAL — CHECKLIST MANUAL (nao automatizavel via curl)
+================================================================================
+Aberto http://localhost:8088/superset/dashboard/fraude-transacoes-visao-geral/
+(admin/admin) manualmente:
+  [ ] Os 7 graficos renderizam sem erro
+  [ ] Filtro "Periodo" e filtro "Tipo de Transacao" aparecem e, ao
+      aplicados, atualizam os KPIs/graficos
+  [ ] Numeros batem com uma query direta no Postgres
+
+================================================================================
+5. SUITE COMPLETA E LINT
+================================================================================
+
+  ID          Descricao                                    Resultado Esperado
+  -----------------------------------------------------------------------
+  16-SUITE-01 pytest tests/unit/ --cov=src (Python 3.14      272 PASSED, 1
+              local)                                        skipped (GX,
+                                                              issue #13), 1
+                                                              falha local
+                                                              pre-existente
+                                                              (.env, issues
+                                                              #13/#14), nao
+                                                              relacionada
+  16-COV-01   Cobertura total                                73,26% (gate:
+                                                              >=70%)
+  16-LIN-01   ruff check .                                   All checks
+                                                              passed!
+  16-LIN-02   mypy src/ scripts/                              Success: no
+                                                              issues found in
+                                                              57 source files
+
+================================================================================
+RESULTADO FINAL — ISSUE #16
+================================================================================
+
+  Testes novos:                                 14/14 PASSED
+  Suite completa (Python 3.14 local):           272/273 PASSED (+14 vs.
+                                                 issue #14), 1 skipped (GX
+                                                 indisponivel localmente), 1
+                                                 falha pre-existente nao
+                                                 relacionada (.env local)
+  Cobertura geral:                               73,26%
+  Lint / mypy:                                   All checks passed! / Success
+  Integracao real (Docker, dados/infra reais):  OK — bug real de boot do
+                                                 Superset encontrado e
+                                                 corrigido; 6 queries
+                                                 validadas via curl+psql
+                                                 ANTES de codificar; 7
+                                                 charts provisionados e
+                                                 verificados contra dado
+                                                 real; idempotencia
+                                                 confirmada (2 execucoes,
+                                                 zero duplicatas); export
+                                                 versionado testado
+  Criterios de aceite da issue:                  4/4 atendidos (com escopo
+                                                 renegociado — ver decisao)
+    - Dashboards carregam sem config manual
+      alem de credenciais/URLs                   OK (`make dashboards`)
+    - Paineis com filtros de periodo/dimensao     OK (native filters:
+                                                 Periodo, Tipo de Transacao)
+    - Dados/nomes batem com o dicionario de
+      dados                                      OK (nomes de campo/tabela
+                                                 identicos a
+                                                 docs/data_dictionary.md)
+    - Smoke test ou checklist reproduzivel de
+      validacao visual                           OK (`--verify` automatizado
+                                                 + checklist manual, secao 4)

@@ -1,0 +1,20 @@
+slice_name: Taxa de Fraude Diaria (%)
+description: null
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_line
+params:
+  datasource: 2__table
+  viz_type: echarts_timeseries_line
+  metrics:
+  - expressionType: SQL
+    sqlExpression: SUM(fraud_count)::float / NULLIF(SUM(total_transactions), 0) *
+      100
+    label: Taxa de Fraude (%)
+  granularity_sqla: date_key
+  time_grain_sqla: P1D
+query_context: null
+cache_timeout: null
+uuid: 3374bb1f-30d2-4bb5-b720-dad7fd1e1bc1
+version: 1.0.0
+dataset_uuid: f6c41fbd-663b-4d96-9f5d-17497ec716d9

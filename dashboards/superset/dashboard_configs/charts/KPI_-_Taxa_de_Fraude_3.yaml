@@ -1,0 +1,18 @@
+slice_name: KPI - Taxa de Fraude (%)
+description: null
+certified_by: null
+certification_details: null
+viz_type: big_number_total
+params:
+  datasource: 2__table
+  viz_type: big_number_total
+  metric:
+    expressionType: SQL
+    sqlExpression: SUM(fraud_count)::float / NULLIF(SUM(total_transactions), 0) *
+      100
+    label: Taxa de Fraude (%)
+query_context: null
+cache_timeout: null
+uuid: ea3e0278-915f-4791-a47e-1a9b5c859f1e
+version: 1.0.0
+dataset_uuid: f6c41fbd-663b-4d96-9f5d-17497ec716d9

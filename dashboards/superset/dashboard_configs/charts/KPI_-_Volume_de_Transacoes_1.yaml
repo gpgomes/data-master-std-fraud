@@ -1,0 +1,19 @@
+slice_name: KPI - Volume de Transacoes
+description: null
+certified_by: null
+certification_details: null
+viz_type: big_number_total
+params:
+  datasource: 2__table
+  viz_type: big_number_total
+  metric:
+    expressionType: SIMPLE
+    column:
+      column_name: total_transactions
+    aggregate: SUM
+    label: Volume
+query_context: null
+cache_timeout: null
+uuid: 8f8eace7-79f7-4c7e-b2a0-0a9905f21e07
+version: 1.0.0
+dataset_uuid: f6c41fbd-663b-4d96-9f5d-17497ec716d9

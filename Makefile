@@ -107,6 +107,21 @@ api: ## Iniciar API FastAPI em modo desenvolvimento
 catalog: ## Gera docs/data_catalog.md e valida os datasets contra a infra real (requer make up)
 	$(PYTHON) -m scripts.build_data_catalog --strict
 
+# ── Dashboards ─────────────────────────────────────────────────────────────────
+dashboards: ## Provisiona o dashboard Superset de KPIs de fraude/transações (requer make up + dados no Postgres)
+	$(PYTHON) -m scripts.provision_superset_dashboards --verify --strict
+
+dashboards-export: ## Exporta o dashboard Superset provisionado para dashboards/superset/dashboard_configs/
+	rm -rf .tmp_dashboard_export
+	mkdir -p .tmp_dashboard_export
+	MSYS_NO_PATHCONV=1 $(COMPOSE) exec -T superset superset export-dashboards -f /tmp/dashboard_export.zip
+	$(COMPOSE) cp superset:/tmp/dashboard_export.zip .tmp_dashboard_export/export.zip
+	cd .tmp_dashboard_export && unzip -o -q export.zip
+	rm -rf dashboards/superset/dashboard_configs/charts dashboards/superset/dashboard_configs/dashboards dashboards/superset/dashboard_configs/databases dashboards/superset/dashboard_configs/datasets dashboards/superset/dashboard_configs/metadata.yaml
+	cp -r .tmp_dashboard_export/dashboard_export_*/* dashboards/superset/dashboard_configs/
+	rm -rf .tmp_dashboard_export
+	@echo "Export atualizado em dashboards/superset/dashboard_configs/"
+
 # ── Limpeza ────────────────────────────────────────────────────────────────────
 clean: ## Limpar volumes Docker, dados temporários e artefatos de build
 	$(COMPOSE) down -v --remove-orphans

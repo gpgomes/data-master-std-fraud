@@ -1,0 +1,20 @@
+slice_name: Distribuicao de Fraude por Tipo
+description: null
+certified_by: null
+certification_details: null
+viz_type: pie
+params:
+  datasource: 1__table
+  viz_type: pie
+  metric: count
+  groupby:
+  - fraud_type
+  adhoc_filters:
+  - clause: WHERE
+    expressionType: SQL
+    sqlExpression: is_fraud = true
+query_context: null
+cache_timeout: null
+uuid: d3445ef0-9e99-42c3-b9f4-0e9ccf840409
+version: 1.0.0
+dataset_uuid: 757c673c-b3b0-4173-8af3-329210970486
