@@ -135,7 +135,10 @@ services:
     networks:
       - data-master-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      # A imagem minio/minio não tem curl (nem wget) — mc vem embutido e
+      # `mc ready local` resolve a instância local sem precisar de alias
+      # configurado antes.
+      test: ["CMD", "mc", "ready", "local"]
       interval: 10s
       timeout: 5s
       retries: 5

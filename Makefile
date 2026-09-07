@@ -1,4 +1,7 @@
-.PHONY: up down setup test lint format spark-submit-batch spark-submit-stream seed-data clean logs ps help
+.PHONY: up down setup test test-unit test-integration test-cov lint format install \
+        spark-submit-batch spark-submit-stream spark-submit-silver-gold spark-submit-gold-postgres \
+        seed-data producer-transactions producer-market api catalog dashboards dashboards-export \
+        clean clean-data logs ps help
 
 # ── Variáveis ──────────────────────────────────────────────────────────────────
 COMPOSE          := docker compose
