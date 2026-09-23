@@ -18,49 +18,11 @@ Plataforma de dados end-to-end para ingestão, transformação, governança e vi
 
 ### Arquitetura
 
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                        FONTES DE DADOS                                   │
-│  ┌──────────────┐  ┌──────────────────┐  ┌─────────────────┐             │
-│  │ Yahoo Finance│  │ Simulador Python  │  │ Datasets CSV    │             │
-│  │ (yfinance)   │  │ (Transações/PIX) │  │ (Históricos)    │             │
-│  └──────┬───────┘  └────────┬─────────┘  └────────┬────────┘             │
-│         │                   │                     │                      │
-├─────────▼───────────────────▼──────────────────────▼─────────────────────┤
-│                      CAMADA DE INGESTÃO                                  │
-│  ┌────────────────────┐      ┌────────────────────────────┐               │
-│  │  Apache Kafka      │      │  Python Batch Ingestion    │               │
-│  │  (Streaming)       │      │  (Airflow DAGs)            │               │
-│  └────────┬───────────┘      └──────────┬─────────────────┘               │
-│           │                             │                                 │
-├───────────▼─────────────────────────────▼─────────────────────────────────┤
-│                    DATA LAKE — MinIO (S3-compatible)                      │
-│  ┌──────────────┐       ┌──────────────┐       ┌──────────────┐           │
-│  │   BRONZE     │──────▶│   SILVER     │──────▶│    GOLD      │           │
-│  │  (Raw)       │       │  (Cleaned)   │       │  (Business)  │           │
-│  │  JSON/CSV    │       │  Parquet     │       │  Parquet     │           │
-│  └──────────────┘       └──────────────┘       └──────────────┘           │
-├────────────────────────────────────────────────────────────────────────────┤
-│                  CAMADA DE TRANSFORMAÇÃO (PySpark)                        │
-│  ┌───────────────────────┐    ┌──────────────────────────────┐             │
-│  │  Batch (PySpark)      │    │  Spark Structured Streaming  │             │
-│  │  Bronze→Silver→Gold   │    │  Detecção de Anomalias       │             │
-│  └───────────────────────┘    └──────────────────────────────┘             │
-├────────────────────────────────────────────────────────────────────────────┤
-│                  CAMADA DE GOVERNANÇA                                     │
-│  ┌─────────────────────┐  ┌──────────────┐  ┌───────────────────────┐     │
-│  │ Great Expectations  │  │ Catálogo de  │  │ Delta Lake            │     │
-│  │ (Data Quality)      │  │ Dados (leve, │  │ (Versionamento)       │     │
-│  │                     │  │  versionado) │  │                       │     │
-│  └─────────────────────┘  └──────────────┘  └───────────────────────┘     │
-├────────────────────────────────────────────────────────────────────────────┤
-│                  CAMADA DE DISPONIBILIZAÇÃO                               │
-│  ┌──────────────────────┐  ┌──────────────┐  ┌──────────────────────┐     │
-│  │ PostgreSQL           │  │  FastAPI     │  │ Apache Superset      │     │
-│  │ (Serving Layer)      │  │  (REST API)  │  │ (Dashboards)         │     │
-│  └──────────────────────┘  └──────────────┘  └──────────────────────┘     │
-└────────────────────────────────────────────────────────────────────────────┘
-```
+<p align="center">
+  <img src="docs/images/architecture.svg" alt="Diagrama de arquitetura V1 (local) do Data Master: fontes de dados → Kafka/Airflow → MinIO Bronze/Silver/Gold → PySpark batch e Spark Structured Streaming em paralelo → Great Expectations e catálogo de dados → PostgreSQL, FastAPI e Superset" width="900">
+</p>
+
+Reflete o estado real implementado (não o plano original) — ver a tabela "Decisões Arquiteturais" em [`docs/architecture.md`](docs/architecture.md) para o porquê de cada desvio (ex.: Delta Lake avaliado e descartado na issue #9, OpenMetadata descoped para catálogo leve na issue #14, Grafana descoped na issue #16).
 
 ---
 
