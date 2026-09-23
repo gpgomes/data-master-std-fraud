@@ -198,8 +198,8 @@
       "expectation_type": "expect_column_max_to_be_between",
       "kwargs": {
         "column": "ingestion_timestamp",
-        "max_value": "2026-09-10T12:19:37.750662",
-        "min_value": "2026-06-11T12:19:37.750662"
+        "max_value": "2026-09-24T18:59:09.013532",
+        "min_value": "2026-06-25T18:59:09.013532"
       },
       "meta": {}
     }

@@ -230,6 +230,10 @@ class TestProducerRun:
         assert mock_producer.send.called
         assert mock_producer.flush.called
 
+        sent = json.loads(mock_producer.send.call_args.kwargs["value"])
+        event_time = datetime.fromisoformat(sent["timestamp"].replace("Z", "+00:00"))
+        assert abs((datetime.now(tz=UTC) - event_time).total_seconds()) < 60
+
     def test_market_producer_sends_and_stops(self) -> None:
         """Market producer deve enviar ao menos um tick e parar."""
         import threading

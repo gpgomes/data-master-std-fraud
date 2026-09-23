@@ -97,19 +97,24 @@ def _ingest_customers(**context) -> None:
 def _validate_bronze_data(**context) -> None:
     """Task: quality gate real via Great Expectations (issue #13).
 
-    Gate simples: qualquer expectativa falhando bloqueia a task (e portanto a
-    DAG) — não depende de novos registros nesta execução especificamente
-    (valida o estado atual do Bronze, que é cumulativo e idempotente).
+    bronze_transactions é o dado core do caso de fraude — falha bloqueia a
+    task (e portanto a DAG). bronze_market_data é enriquecimento coletado de
+    uma API gratuita de terceiros (yfinance/Yahoo Finance), sujeita a rate
+    limiting fora do nosso controle (ex.: HTTP 429) mesmo com dados locais
+    disponíveis — falha aqui não deve derrubar o pipeline principal, só fica
+    registrada como warning. Nenhum dos dois depende de novos registros
+    nesta execução especificamente (valida o estado atual do Bronze, que é
+    cumulativo e idempotente).
     Diagnóstico e recuperação: docs/runbook.md, seção "Quality Gates".
     """
     import sys
 
     sys.path.insert(0, "/opt/airflow")
 
-    from src.governance.great_expectations.runner import run_gate
+    from src.governance.great_expectations.runner import run_gate, run_gate_optional
 
     run_gate("bronze_transactions")
-    run_gate("bronze_market_data")
+    run_gate_optional("bronze_market_data")
 
 
 def _notify_completion(**context) -> None:

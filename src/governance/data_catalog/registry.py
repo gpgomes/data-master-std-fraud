@@ -52,6 +52,9 @@ class CatalogEntry:
     description: str
     upstream: tuple[str, ...] = field(default_factory=tuple)
     status: str = "ativo"
+    # Asset de enriquecimento que pode legitimamente não existir (ex.: mercado, vindo do
+    # yfinance com rate limit): ausência é warning no catálogo, não derruba `--strict`.
+    optional: bool = False
 
 
 CATALOG: tuple[CatalogEntry, ...] = (
@@ -77,6 +80,7 @@ CATALOG: tuple[CatalogEntry, ...] = (
         classification=("Público",),
         glossary_terms=("VWAP", "Volatilidade"),
         description="Cotações OHLCV coletadas via yfinance.",
+        optional=True,
     ),
     # ── Silver ───────────────────────────────────────────────────────────
     CatalogEntry(
@@ -102,6 +106,7 @@ CATALOG: tuple[CatalogEntry, ...] = (
         glossary_terms=("VWAP", "Volatilidade"),
         description="Cotações enriquecidas com retorno diário e price range.",
         upstream=("bronze_market_data",),
+        optional=True,
     ),
     # ── Gold (MinIO) ─────────────────────────────────────────────────────
     CatalogEntry(

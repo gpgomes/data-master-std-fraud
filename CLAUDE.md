@@ -143,11 +143,13 @@ Settings are grouped: `KafkaSettings`, `MinIOSettings`, `PostgresSettings`, `Spa
 | FastAPI docs | http://localhost:8000/docs | — |
 | Spark UI | http://localhost:8081 | — |
 
+> **Local dev only:** these credentials (and the fixed keys in `docker-compose.yml`, e.g. Airflow's Fernet key) must never be used in production/AWS — generate your own.
+
 Data catalog is not a web service — it's a generated, versioned document (`docs/data_catalog.md`, via `make catalog`); see issue #14 / `docs/architecture.md`'s "Decisões Arquiteturais" table for why OpenMetadata was descoped from local V1.
 
 ## Implementation Phases
 
-The project is being built in phases (see `CaseFinancialDataLakeHouse.md`). Status below reflects what's actually implemented and merged into `main`, not the original weekly schedule:
+The project is being built in phases (see `CaseFinancialDataLakeHouse.md` — the original, frozen brief; it does not reflect current status). Status below reflects what's actually implemented and merged into `main`, not the original weekly schedule:
 
 - **Phase 1 — Local infra with Docker Compose:** ✅ Done
 - **Phase 2 — PySpark batch + streaming transformations:** ✅ Done (batch: `bronze_to_silver.py`/`silver_to_gold.py`; streaming: `stream_processor.py`, Z-Score anomaly detection, issue #11)

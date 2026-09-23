@@ -7,6 +7,7 @@ Uso:
     python -m scripts.build_data_catalog                # gera docs/data_catalog.md
     python -m scripts.build_data_catalog --skip-validation  # sem checar infra real
     python -m scripts.build_data_catalog --strict        # falha (exit 1) se algo não bater
+                                                         # (assets `optional` ausentes só avisam)
 
 `--strict` requer a infra local rodando (`make up && make setup`) e dados
 já processados até a camada Gold (`make spark-submit-batch`) — funciona como
@@ -61,8 +62,15 @@ def main(argv: list[str] | None = None) -> None:
 
     live_results = [] if args.skip_validation else validate_live(CATALOG)
     failed_live = [r for r in live_results if not r.ok]
+    optional_keys = {e.key for e in CATALOG if e.optional}
     for r in failed_live:
-        logger.warning("Asset do catálogo não encontrado na infra real", entry=r.entry_key, detail=r.detail)
+        logger.warning(
+            "Asset do catálogo não encontrado na infra real",
+            entry=r.entry_key,
+            detail=r.detail,
+            optional=r.entry_key in optional_keys,
+        )
+    blocking_live = [r for r in failed_live if r.entry_key not in optional_keys]
 
     # Só `live_results` alimenta a coluna "Status" do doc renderizado — ela
     # significa "existe na infra real", não "linhagem bem formada". Falhas de
@@ -78,7 +86,7 @@ def main(argv: list[str] | None = None) -> None:
         assets_nao_encontrados=len(failed_live),
     )
 
-    if args.strict and (failed_references or failed_live):
+    if args.strict and (failed_references or blocking_live):
         sys.exit(1)
 
 

@@ -93,6 +93,9 @@ def run(stop_event: Event | None = None) -> None:
             # Gera uma transação por vez reaproveitando o gerador
             tx_list = gen.generate_transactions(customers, n=1)
             tx = tx_list[0]
+            # O gerador espalha timestamps pelos últimos 180 dias; o detector de fraude
+            # usa janela de 1h em tempo de evento, então sem isto nunca forma baseline.
+            tx["timestamp"] = datetime.now(tz=UTC).isoformat()
             msg = _build_message(tx)
             payload = _serialize(msg)
             key = tx["customer_id"]

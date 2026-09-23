@@ -175,6 +175,7 @@ def finalize_dashboard(
     payload = {
         "position_json": json_module.dumps(_build_position_json(chart_ids)),
         "json_metadata": json_module.dumps(metadata),
+        "published": True,  # sem isto o Superset exibe o selo "Draft" no dashboard
     }
     client.put(f"/api/v1/dashboard/{dashboard_id}", payload)
     logger.info("Dashboard Superset finalizado", id=dashboard_id, charts=len(chart_ids))

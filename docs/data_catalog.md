@@ -1,6 +1,6 @@
 # Catálogo de Dados
 
-_Gerado em 2026-09-06T14:25:37.772852+00:00 por `python -m scripts.build_data_catalog`._
+_Gerado em 2026-09-23T19:05:20.718509+00:00 por `python -m scripts.build_data_catalog`._
 
 Substitui o OpenMetadata completo na V1 local (decisão documentada em `docs/architecture.md`) — ver definições de campo e o glossário de negócio completo em [`docs/data_dictionary.md`](data_dictionary.md).
 
@@ -9,14 +9,14 @@ Substitui o OpenMetadata completo na V1 local (decisão documentada em `docs/arc
 | Dataset | Localização | Owner | Classificação | Glossário | Status |
 |---------|-------------|-------|---------------|-----------|--------|
 | **Bronze — Transações**<br>Transações financeiras raw, conforme recebidas do Kafka. | `s3://bronze/transactions/` | Data Engineering | PII, Confidencial | — | ✅ ok |
-| **Bronze — Market Data**<br>Cotações OHLCV coletadas via yfinance. | `s3://bronze/market_data/` | Data Engineering | Público | VWAP, Volatilidade | ✅ ok |
+| **Bronze — Market Data**<br>Cotações OHLCV coletadas via yfinance. | `s3://bronze/market_data/` | Data Engineering | Público | VWAP, Volatilidade | ⚠️ sem dados (opcional): nenhum objeto encontrado em s3://bronze/market_data/ |
 
 ## Silver
 
 | Dataset | Localização | Owner | Classificação | Glossário | Status |
 |---------|-------------|-------|---------------|-----------|--------|
 | **Silver — Transações**<br>Transações limpas, deduplicadas, timestamps normalizados para UTC. | `s3://silver/transactions/` | Data Engineering | PII, Confidencial | — | ✅ ok |
-| **Silver — Market Data**<br>Cotações enriquecidas com retorno diário e price range. | `s3://silver/market_data/` | Data Engineering | Público | VWAP, Volatilidade | ✅ ok |
+| **Silver — Market Data**<br>Cotações enriquecidas com retorno diário e price range. | `s3://silver/market_data/` | Data Engineering | Público | VWAP, Volatilidade | ⚠️ sem dados (opcional): nenhum objeto encontrado em s3://silver/market_data/ |
 
 ## Gold
 

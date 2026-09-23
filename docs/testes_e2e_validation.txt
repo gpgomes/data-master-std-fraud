@@ -13,6 +13,33 @@ Arquivos alterados:
   - Makefile              (.PHONY desatualizado)
 
 ================================================================================
+ERRATA (2026-09-23) — revisada na validação manual V1 (docs/test_status.md)
+================================================================================
+
+  Três diagnósticos deste documento estavam incorretos ou ficaram obsoletos:
+
+  a) Limitação #3 / E2E-DAG-03 / E2E-DAG-04 ("yfinance sem dados para 2026").
+     Causa real: o Yahoo Finance devolve HTTP 429 (Too Many Requests) ao IP do
+     ambiente — confirmado com chamada HTTPS direta a query1.finance.yahoo.com
+     de dentro do container do Airflow. O yfinance engole o 429 e devolve um
+     DataFrame vazio (logs: "No timezone found, symbol may be delisted"), por
+     isso o @retry do collector nunca age. Não tem relação com o relógio.
+     Tratamento atual: dado de mercado é enriquecimento opcional; os gates
+     bronze_market_data/silver_market_data e os assets de mercado do catálogo
+     viram warning, e o bronze_to_silver pula a etapa sem derrubar o job.
+
+  b) E2E-STR-05 / E2E-STR-06 ("0 anomalias: 10k clientes => pouco histórico").
+     Causa real: o simulador de transações gerava o timestamp de cada evento
+     aleatoriamente nos últimos 180 dias, e o detector usa janela de 1h em
+     tempo de evento — quase nunca dois eventos do mesmo cliente caem na mesma
+     hora, então fraud_score ficava sempre nulo. Corrigido: o producer carimba
+     timestamp = agora. Após a correção: fraud_score preenchido e alertas reais.
+
+  c) E2E-CAT-02 (`--strict` saía com código 1 pelos 2 assets de mercado): agora
+     sai com 0 (assets `optional`, marcados com ⚠️ no docs/data_catalog.md).
+
+
+================================================================================
 1. INFRAESTRUTURA (docker compose)
 ================================================================================
 

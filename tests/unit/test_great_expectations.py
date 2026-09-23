@@ -17,12 +17,20 @@ em issues anteriores. CI usa Python 3.11 (compatível) e não é afetado.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pandas as pd
 import pytest
 
 try:
+    from src.governance.great_expectations import runner
     from src.governance.great_expectations.context import get_context
-    from src.governance.great_expectations.runner import QualityGateFailed, run_gate
+    from src.governance.great_expectations.runner import (
+        OPTIONAL_DATASETS,
+        QualityGateFailed,
+        run_gate,
+        run_gate_optional,
+    )
 except Exception as exc:  # great_expectations não importa em Python >= 3.13 (ver nota acima)
     pytest.skip(f"great_expectations indisponível neste ambiente: {exc}", allow_module_level=True)
 
@@ -253,3 +261,57 @@ class TestGoldAggDailyFraudMetrics:
     def test_invalid_duplicate_compound_pk_fails(self, context):
         df = pd.DataFrame(self._base(transaction_type=["PIX", "PIX"], date_key=pd.to_datetime(["2024-06-14", "2024-06-14"])))
         _run_invalid(context, "gold_agg_daily_fraud_metrics", df)
+
+
+# ── Gates opcionais (dados de mercado) ───────────────────────────────────────
+
+
+class TestOptionalGates:
+    _INVALID_MARKET = {
+        "symbol": ["PETR4.SA", "VALE3.SA"],
+        "date": pd.to_datetime(["2024-06-14", "2024-06-15"]),
+        "open": [30.0, 60.0],
+        "high": [28.0, 61.0],  # high < low na 1a linha
+        "low": [29.0, 59.0],
+        "close": [30.5, 60.5],
+        "volume": [1000, 2000],
+        "adjusted_close": [30.5, 60.5],
+    }
+
+    def test_only_market_datasets_are_optional(self):
+        assert OPTIONAL_DATASETS == {"bronze_market_data", "silver_market_data"}
+
+    def test_optional_gate_swallows_expectation_failure(self, context):
+        result = run_gate_optional(
+            "bronze_market_data", df=pd.DataFrame(self._INVALID_MARKET), context=context
+        )
+        assert result is None
+
+    def test_optional_gate_swallows_missing_data(self, context):
+        with patch.object(runner, "load_dataframe", side_effect=FileNotFoundError("sem parquet")):
+            assert run_gate_optional("silver_market_data", context=context) is None
+
+    def test_mandatory_gate_still_raises_on_missing_data(self, context):
+        with patch.object(runner, "load_dataframe", side_effect=FileNotFoundError("sem parquet")):
+            with pytest.raises(FileNotFoundError):
+                run_gate("silver_transactions", context=context)
+
+    def test_cli_all_exits_zero_when_only_optional_gates_fail(self):
+        def fake_gate(key, **_):
+            if key in OPTIONAL_DATASETS:
+                raise FileNotFoundError("sem parquet")
+            return {"success": True}
+
+        with patch.object(runner, "run_gate", side_effect=fake_gate):
+            runner.main(["--all"])  # não deve levantar SystemExit
+
+    def test_cli_all_exits_one_when_mandatory_gate_fails(self):
+        def fake_gate(key, **_):
+            if key == "silver_transactions":
+                raise QualityGateFailed("falhou")
+            return {"success": True}
+
+        with patch.object(runner, "run_gate", side_effect=fake_gate):
+            with pytest.raises(SystemExit) as exc:
+                runner.main(["--all"])
+        assert exc.value.code == 1

@@ -46,18 +46,21 @@ _GOLD_POSTGRES_PACKAGES = f"{_S3A_PACKAGES},org.postgresql:postgresql:42.7.3"
 def _validate_silver_data(**context) -> None:
     """Task: quality gate real via Great Expectations (issue #13) sobre Silver.
 
-    Gate simples: qualquer expectativa falhando bloqueia a task (e portanto a
-    DAG) — em particular, unicidade de transaction_id aqui pega regressões no
-    dedup do bronze_to_silver.py. Diagnóstico/recuperação: docs/runbook.md.
+    silver_transactions bloqueia a task (e portanto a DAG) — em particular,
+    unicidade de transaction_id aqui pega regressões no dedup do
+    bronze_to_silver.py. silver_market_data é enriquecimento que depende de
+    API de terceiros (yfinance, sujeita a rate limit): sem dado no Bronze o
+    job pula a etapa e não gera Parquet, então falha aqui só vira warning.
+    Diagnóstico/recuperação: docs/runbook.md.
     """
     import sys
 
     sys.path.insert(0, "/opt/airflow")
 
-    from src.governance.great_expectations.runner import run_gate
+    from src.governance.great_expectations.runner import run_gate, run_gate_optional
 
     run_gate("silver_transactions")
-    run_gate("silver_market_data")
+    run_gate_optional("silver_market_data")
 
 
 def _validate_gold_data(**context) -> None:

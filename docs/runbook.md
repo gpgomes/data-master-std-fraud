@@ -70,12 +70,39 @@ Airflow (e portanto a DAG inteira, via `trigger_rule` padrão), não há
 quarentena de linhas nem execução parcial. Recuperação = corrigir a causa e
 rerodar a DAG a partir da task que falhou.
 
+Exceção: `bronze_market_data` e `silver_market_data` são **gates opcionais**
+(`OPTIONAL_DATASETS` em `runner.py`). O dado de mercado vem do yfinance/Yahoo Finance,
+que devolve HTTP 429 (rate limit) conforme o IP, e sem dado no Bronze o
+`bronze_to_silver.py` pula a etapa e não gera Parquet no Silver. Nesses dois datasets,
+falha de expectativa ou ausência de Parquet vira **warning** ("Gate opcional falhou —
+não bloqueia o pipeline") e o pipeline segue. Os gates de transações, clientes e Gold
+continuam bloqueando.
+
 ### Rodar um gate manualmente
 
 ```bash
 docker compose exec airflow-scheduler python -m src.governance.great_expectations.runner bronze_transactions
 docker compose exec airflow-scheduler python -m src.governance.great_expectations.runner --all
 ```
+
+`--all` sai com código 0 se só os gates opcionais falharem; qualquer outro gate
+falhando faz sair com código 1 (confira com `echo $?`).
+
+### Gerar e abrir os data docs
+
+Os data docs ficam em
+`src/governance/great_expectations/gx/uncommitted/data_docs/local_site/index.html`.
+O diretório `uncommitted/` é ignorado pelo git (`gx/.gitignore`), então **o HTML não
+existe num clone novo**: ele é gerado quando um gate roda, seja pela task `validate_*`
+no Airflow ou pelo comando manual acima. Para vê-los:
+
+```bash
+docker compose exec airflow-scheduler python -m src.governance.great_expectations.runner --all
+open src/governance/great_expectations/gx/uncommitted/data_docs/local_site/index.html   # macOS
+```
+
+Há uma página de validação por dataset que foi de fato validado. Datasets sem Parquet
+(por exemplo os de mercado, com o Yahoo Finance limitando as requisições) não geram página.
 
 ### Diagnosticar uma falha
 
@@ -168,6 +195,14 @@ se alguma referência de linhagem (`upstream`) apontar para uma key
 inexistente no registro. O log (`data_catalog`) indica a entry e o motivo;
 o próprio `docs/data_catalog.md` gerado também marca cada asset com
 ❌ e o detalhe, ou 🗓️ planejado para o que ainda não foi implementado.
+
+Exceção: assets com `optional=True` no registro (`bronze_market_data` e
+`silver_market_data`, cotações do yfinance que podem vir vazias por rate limit HTTP 429
+do Yahoo Finance) não derrubam o `--strict`. Se estiverem sem dados, o catálogo os marca
+com ⚠️ "sem dados (opcional)", o log registra um warning e o comando sai com código 0.
+Um resultado normal nesta V1 local é, portanto: 17 datasets, 0 referências inválidas,
+14 com ✅, 2 de mercado com ⚠️ e o dashboard "não validado" (não há checagem de infra
+para dashboards).
 
 ### Adicionar/alterar um asset
 
@@ -262,7 +297,8 @@ Só `tests/unit/` roda no CI — testes de integração (`tests/integration/`) e
 |---------|----------------|---------|
 | Kafka não conecta | Zookeeper não iniciou | `make logs-zookeeper`, aguardar healthcheck |
 | MinIO 403 | Credenciais erradas | Verificar MINIO_ACCESS_KEY no .env |
-| Spark OOM | Memória insuficiente | Aumentar SPARK_EXECUTOR_MEMORY no .env |
+| Job Spark morre com `ExecutorLostFailure` / `Command exited with code 137` (SIGKILL) | OOM killer: a VM do Docker Desktop (`docker info` mostra `Total Memory`) ficou sem memória — stack completa + 2 executores de 2G + producers/streaming. Não é bug de código | Docker Desktop → Settings → Resources → Memory: **12 GB** (Apply & restart; volumes são preservados). Enquanto isso, pare os producers e o `spark-submit-stream` antes de rodar jobs batch pesados |
+| Job batch fica esperando recursos / DAG `batch_transformation_pipeline` não avança | O `spark-submit-stream` (streaming) segura os 4 cores e 4 GB do cluster (2 workers × 2 cores × 2G) | `Ctrl+C` no streaming antes de rodar batch, ou aumentar workers/cores no `docker-compose.yml` |
 | Airflow DB error | PostgreSQL não pronto | Aguardar healthcheck, `make logs-postgres` |
 | GX checkpoint falha | Ver seção "Quality Gates" acima | Diagnosticar via logs da task/data docs; corrigir a causa raiz e rerodar a DAG — nunca editar os JSON gerados em `gx/expectations/` diretamente, só `suites.py` |
 | `make test-unit` falha com `JAVA_GATEWAY_EXITED` | JDK ausente no PATH (PySpark local precisa de um JRE) | Instalar Java 17, ex. `brew install openjdk@17` no macOS, e garantir `JAVA_HOME`/`java` no PATH da shell |

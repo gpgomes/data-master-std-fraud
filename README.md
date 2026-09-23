@@ -38,7 +38,7 @@ Reflete o estado real implementado (não o plano original) — ver a tabela "Dec
 | Processamento Batch | PySpark (local mode) | Transformações Bronze → Silver → Gold |
 | Processamento Streaming | Spark Structured Streaming | Consumo do Kafka e detecção de fraudes |
 | Armazenamento | MinIO (Docker) | Object storage compatível com S3 |
-| Serving Layer | PostgreSQL | Consulta analítica das camadas Gold (issue #10). `duckdb` está listado em `pyproject.toml` mas não é usado em nenhum código hoje |
+| Serving Layer | PostgreSQL | Consulta analítica das camadas Gold (issue #10) |
 | Qualidade de Dados | Great Expectations | Validações e expectativas nos dados |
 | Catálogo/Linhagem | Catálogo de dados leve (`docs/data_catalog.md`) | Registro versionado + linhagem, validado contra a infra real (issue #14) |
 | Visualização | Apache Superset | Dashboards analíticos (Grafana descoped da V1 local — issue #16) |
@@ -113,7 +113,9 @@ data-master-std-fraud/
 - Python 3.11+
 - Java 17 (JDK) — necessário para `make test-unit`/`make test`, que rodam PySpark em modo local
 - Make (GNU Make)
-- 8GB RAM disponível para os containers
+- Docker Desktop com **12 GB de memória** alocados (Settings → Resources → Memory) e ao menos 16 GB de RAM na máquina.
+  Com ~8 GB, a stack completa mais um job Spark batch (principalmente com producers/streaming rodando) faz o OOM killer
+  encerrar o executor (`Command exited with code 137`); veja Troubleshooting em [`docs/runbook.md`](docs/runbook.md)
 
 ### Início Rápido
 
@@ -164,6 +166,8 @@ Depois desses passos: Superset em http://localhost:8088 (dashboard "Fraude e Tra
 | Superset | http://localhost:8088 | admin / admin |
 | API (Swagger) | http://localhost:8000/docs | — |
 | Spark UI | http://localhost:8081 | — |
+
+> **Atenção:** essas credenciais (e as chaves fixas do `docker-compose.yml`, como a Fernet key do Airflow) são **apenas para desenvolvimento local**. Nunca use em produção/AWS: gere credenciais e chaves próprias.
 
 O catálogo de dados não é um serviço web — é gerado como documento versionado, ver [`docs/data_catalog.md`](docs/data_catalog.md) e a seção [Governança de Dados](#governança-de-dados) abaixo.
 
@@ -269,14 +273,22 @@ make test-unit
 - **Silver:** Unicidade de chaves, ranges de valores, consistência referencial
 - **Gold:** Integridade de agregações, SLAs de atualização
 
+Os gates de `bronze_market_data` e `silver_market_data` são **opcionais**: o dado de
+mercado vem de uma API gratuita de terceiros (yfinance) sujeita a rate limit, então a
+falta dele vira warning e não bloqueia o pipeline. Os demais bloqueiam.
+
+Os **data docs** (HTML navegável com o resultado de cada suite) não são versionados
+(`gx/uncommitted/` é ignorado pelo git): só existem depois de rodar um gate. Para gerar
+e abrir, veja [`docs/runbook.md`](docs/runbook.md#gerar-e-abrir-os-data-docs).
+
 ### Catálogo de Dados — issue #14
 
 O case original previa OpenMetadata (server + MySQL/Postgres próprio +
 Elasticsearch + ingestion-Airflow) para catálogo e linhagem. Descoped da V1
 local: esse stack soma mais 3-4 serviços pesados aos 19 que já rodam no
 `docker-compose.yml` (Kafka, Zookeeper, Spark x3, Airflow x3, Superset,
-Postgres x2, MinIO x2, producers, API), competindo pelos ~8GB alocados ao
-Docker neste ambiente. Um catálogo real (OpenMetadata ou um equivalente
+Postgres x2, MinIO x2, producers, API), competindo pela memória do
+Docker (~8GB na época desta decisão; a recomendação atual é 12GB, ver Pré-requisitos). Um catálogo real (OpenMetadata ou um equivalente
 gerenciado, ex. AWS Glue Data Catalog) fica para V2/cloud.
 
 No lugar, `src/governance/data_catalog/` mantém um registro declarativo dos
@@ -308,11 +320,21 @@ make dashboards-export   # snapshot versionado em dashboards/superset/dashboard_
 
 **KPI de "score" fora do escopo**: `fraud_score` está sempre `NULL` nas 506k linhas carregadas em `fact_transactions` — só é populado pelo detector de streaming (issue #11), que nunca escreve na camada Gold batch/Postgres. Mesma causa raiz do gap de "latência" (ver `alerts.py`, issue #15, e `docs/architecture.md`).
 
+### Limitações conhecidas da V1
+
+| Limitação | Causa | Referência |
+|-----------|-------|------------|
+| `fraud_score` sempre `NULL` no Gold/Postgres/API; `/alerts` usa o rótulo `is_fraud`, não os alertas do detector; sem KPI de latência | O score só existe no streaming (Kafka e `silver/transactions_stream/`) e não é persistido na serving layer | [#38](https://github.com/gpgomes/data-master-std-fraud/issues/38) |
+| Reprocessamento de 1 micro-batch ao reiniciar o streaming gera mensagens duplicadas em `enriched-transactions`/`fraud-alerts` | Semântica at-least-once do `foreachBatch` → Kafka; consumidores devem deduplicar por `transaction_id` | [#36](https://github.com/gpgomes/data-master-std-fraud/issues/36) |
+| Sem dados de mercado (`bronze/market_data` vazio); gates e catálogo tratam como opcional | O Yahoo Finance devolve HTTP 429 (rate limit) conforme o IP; a coleta via yfinance não é confiável | [`docs/runbook.md`](docs/runbook.md#quality-gates-great-expectations) |
+| Batch e streaming não rodam juntos no cluster Spark padrão | O streaming ocupa os 4 cores e 4 GB dos workers | [`docs/runbook.md`](docs/runbook.md#troubleshooting) |
+| Sem AWS/Terraform, QuickSight e deploy automatizado | Fora do escopo da V1 local | [#17](https://github.com/gpgomes/data-master-std-fraud/issues/17) |
+
 ---
 
 ## Contribuição
 
-Este projeto segue o fluxo de desenvolvimento por fases descrito em `CaseFinancialDataLakeHouse.md`. Para contribuir, abra uma issue ou pull request referenciando a fase correspondente.
+Este projeto segue o fluxo de desenvolvimento por fases descrito em `CaseFinancialDataLakeHouse.md` (junto com `prompts_data_master.md`, é o **briefing original, congelado**: não reflete o estado atual; para isso, veja este README, `docs/architecture.md` e `docs/test_status.md`). Para contribuir, abra uma issue ou pull request referenciando a fase correspondente.
 
 ---
 

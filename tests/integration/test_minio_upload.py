@@ -49,6 +49,23 @@ def real_storage():
     return MinIOClient(use_internal=False)
 
 
+@pytest.fixture(scope="module")
+def scratch_bucket(real_storage):
+    """Bucket exclusivo desta execução, apagado no final.
+
+    Os testes escrevem via loaders/collector reais; sem isolar, deixariam linhas falsas em
+    `bronze/transactions/` e `bronze/market_data/` e quebrariam os gates de qualidade.
+    """
+    name = f"integration-test-{uuid.uuid4().hex[:8]}"
+    client = real_storage._client
+    client.create_bucket(Bucket=name)
+    yield name
+    for page in client.get_paginator("list_objects_v2").paginate(Bucket=name):
+        for obj in page.get("Contents", []):
+            client.delete_object(Bucket=name, Key=obj["Key"])
+    client.delete_bucket(Bucket=name)
+
+
 @pytest.fixture
 def test_key() -> str:
     return f"_test/{uuid.uuid4()}.parquet"
@@ -70,8 +87,8 @@ def sample_df() -> pd.DataFrame:
 
 @requires_minio
 class TestMinIOClientIntegration:
-    def test_upload_and_download_parquet(self, real_storage, sample_df, test_key):
-        bucket = settings.minio.bucket_bronze
+    def test_upload_and_download_parquet(self, real_storage, scratch_bucket, sample_df, test_key):
+        bucket = scratch_bucket
 
         real_storage.upload_parquet(sample_df, bucket, test_key)
         result = real_storage.download_parquet(bucket, test_key)
@@ -79,19 +96,19 @@ class TestMinIOClientIntegration:
         assert list(result.columns) == list(sample_df.columns)
         assert len(result) == len(sample_df)
 
-    def test_check_exists_true_after_upload(self, real_storage, sample_df, test_key):
-        bucket = settings.minio.bucket_bronze
+    def test_check_exists_true_after_upload(self, real_storage, scratch_bucket, sample_df, test_key):
+        bucket = scratch_bucket
 
         assert not real_storage.check_exists(bucket, test_key)
         real_storage.upload_parquet(sample_df, bucket, test_key)
         assert real_storage.check_exists(bucket, test_key)
 
-    def test_check_exists_false_for_nonexistent(self, real_storage):
-        bucket = settings.minio.bucket_bronze
+    def test_check_exists_false_for_nonexistent(self, real_storage, scratch_bucket):
+        bucket = scratch_bucket
         assert not real_storage.check_exists(bucket, f"_test/nonexistent_{uuid.uuid4()}.parquet")
 
-    def test_list_objects_returns_uploaded(self, real_storage, sample_df):
-        bucket = settings.minio.bucket_bronze
+    def test_list_objects_returns_uploaded(self, real_storage, scratch_bucket, sample_df):
+        bucket = scratch_bucket
         prefix = f"_test/list_{uuid.uuid4()}"
         key = f"{prefix}/data.parquet"
 
@@ -100,8 +117,8 @@ class TestMinIOClientIntegration:
 
         assert key in keys
 
-    def test_upload_parquet_bytes(self, real_storage, sample_df, test_key):
-        bucket = settings.minio.bucket_bronze
+    def test_upload_parquet_bytes(self, real_storage, scratch_bucket, sample_df, test_key):
+        bucket = scratch_bucket
         buf = io.BytesIO()
         sample_df.to_parquet(buf, index=False)
         buf.seek(0)
@@ -117,7 +134,7 @@ class TestMinIOClientIntegration:
 
 @requires_minio
 class TestTransactionLoaderIntegration:
-    def test_load_to_bronze_e2e(self, tmp_path):
+    def test_load_to_bronze_e2e(self, tmp_path, scratch_bucket):
         from src.ingestion.batch.transaction_loader import TransactionLoader
 
         # Usa uuid para garantir chave única por execução (evita colisão com runs anteriores)
@@ -133,13 +150,13 @@ class TestTransactionLoaderIntegration:
         )
         df.to_csv(csv_dir / "transactions.csv", index=False)
 
-        loader = TransactionLoader(source_dir=tmp_path)
+        loader = TransactionLoader(source_dir=tmp_path, bucket=scratch_bucket)
         results = loader.load_to_bronze()
 
         total = sum(v for v in results.values() if v > 0)
         assert total == 10
 
-    def test_idempotency_no_double_ingestion(self, tmp_path):
+    def test_idempotency_no_double_ingestion(self, tmp_path, scratch_bucket):
         from src.ingestion.batch.transaction_loader import TransactionLoader
 
         run_id = uuid.uuid4().hex[:8]
@@ -148,7 +165,7 @@ class TestTransactionLoaderIntegration:
         df = pd.DataFrame({"transaction_id": ["tx-idem-1"], "amount": [50.0]})
         df.to_csv(csv_dir / "transactions.csv", index=False)
 
-        loader = TransactionLoader(source_dir=tmp_path)
+        loader = TransactionLoader(source_dir=tmp_path, bucket=scratch_bucket)
 
         first = loader.load_to_bronze()
         second = loader.load_to_bronze()
@@ -165,7 +182,7 @@ class TestTransactionLoaderIntegration:
 
 @requires_minio
 class TestMarketDataCollectorIntegration:
-    def test_collect_daily_e2e(self):
+    def test_collect_daily_e2e(self, scratch_bucket):
         from unittest.mock import patch
 
         import pandas as pd
@@ -183,7 +200,7 @@ class TestMarketDataCollectorIntegration:
             }
         )
 
-        collector = MarketDataCollector(tickers=["PETR4.SA"])
+        collector = MarketDataCollector(tickers=["PETR4.SA"], bucket=scratch_bucket)
         with patch.object(collector, "_fetch_ohlcv", return_value=mock_df):
             results = collector.collect_daily(n_days=1)
 

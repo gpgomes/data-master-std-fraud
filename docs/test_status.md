@@ -33,6 +33,7 @@ checklist completo correspondente em `docs/`.
 | Issue #16 — Dashboards Operacionais/Analíticos com Superset | `16-*` | `docs/testes_issue_16.txt` |
 | Issue #18 — Atualização de Documentação | `18-*` | `docs/testes_issue_18.txt` |
 | Validação End-to-End da Stack Completa | `E2E-*` | `docs/testes_e2e_validation.txt` |
+| Validação Manual V1 (checklist da banca) | `V1-*` | seção "Validação Manual V1" abaixo |
 
 ---
 
@@ -337,6 +338,8 @@ checklist completo correspondente em `docs/`.
 | 1.6-INT-06 | Filtro de datas via CLI | `--start-date 2024-01-01 --end-date 2024-01-31` filtra corretamente | OK² |
 
 ¹ `ingest_market_data` (yfinance, step 1.5) só retornou 1 registro real neste ambiente sandbox — job Bronze→Silver processou corretamente, mas o volume não permite validar a tendência da SMA (ver 1.6-MAN-05).
+
+> **Errata (2026-09-23):** a causa não era o relógio do sandbox: o Yahoo Finance devolve HTTP 429 (rate limit) ao IP do ambiente. Ver a seção "Validação Manual V1" no fim deste arquivo.
 ² Bug real encontrado e corrigido nesta rodada: `spark.sql.sources.partitionOverwriteMode` estava no modo estático (padrão do Spark), então rodar o job com `--start-date/--end-date` apagava **todas** as partições de `silver/transactions/`, não só as do intervalo filtrado. Corrigido em `src/common/spark_session.py` (modo `dynamic`) e revalidado: reprocessar 4 dias específicos preservou as outras 291 partições intactas.
 
 ### 3. Validações Manuais dos Dados Transformados
@@ -1302,3 +1305,55 @@ raiz já documentada em runs anteriores, não é regressão):
 | E2E-CMP-01 | `docker compose config --quiet` (com o fix do MinIO) | Válido, MinIO `healthy` | OK |
 | E2E-LIN-01 | `make lint` | ruff + mypy sem erros | OK |
 | E2E-FIX-01 | PR #33 mergeado, branch deletada | `fix/docker-makefile-e2e-validation` → `main` | OK |
+
+
+---
+
+## Validação Manual V1 — checklist da banca (executado em 2026-09-23)
+
+Roteiro: planilha de validação manual (13 áreas). Ambiente reiniciado do zero (`docker compose down -v` + `make up` + `make setup` + `make seed-data`). Os comandos longos/interativos foram executados manualmente; cada resultado foi conferido por leitura direta (Kafka, MinIO, Postgres, Spark master, Airflow, Superset) e as falhas foram diagnosticadas e corrigidas.
+
+### Resultado por área
+
+| Área | Resultado |
+|------|-----------|
+| 1. Infraestrutura | OK (8/8): 11 containers healthy, 4 buckets, 4 tópicos, 3 DAGs sem import errors, Spark master com 2 workers |
+| 2. Ingestão batch | OK (4/4); `bronze/market_data` vazio (Yahoo 429), tratado como opcional |
+| 3. Ingestão streaming | OK (3/3) |
+| 4. Transformação batch | OK (5/5): Silver 500.000 transações e 10.000 clientes, Gold com 4 tabelas |
+| 5. Streaming e fraude | OK (5/5), 5.5 com ressalva at-least-once (issue #36) |
+| 6. Orquestração | OK (4/4): as 6 tasks da `batch_transformation_pipeline` em success |
+| 7. Great Expectations | OK (4/4): 6 datasets passam, 2 de mercado em warning; falha injetada (`customer_key` duplicado) barrou o pipeline e a restauração o liberou |
+| 8. Catálogo | OK (4/4): 17 datasets, 0 referências inválidas; 14 ✅ + 2 ⚠️ (mercado) + 1 não validado (dashboard) |
+| 9. Serving | OK (8/8): Postgres com 500.000 transações; API coerente com o Postgres |
+| 10. Dashboards | OK (8/8): 7 charts, KPIs iguais ao Postgres (500.000; R$ 933.479.448,51; 2,5078%; 12.539) |
+| 11. CI e qualidade | 4/5: lint OK; 301 testes unitários (81,35%); 8 de integração; 309 no total (82,80%). 11.3 (PR) pendente |
+| 12. Segurança | OK (4/4): `.env` fora do git e do histórico, sem chaves reais, SQL da API parametrizado (injeção testada) |
+| 13. Documentação | Itens revisados; ver correções abaixo |
+
+### Bugs encontrados e corrigidos
+
+| ID | Área | Problema | Causa raiz | Correção |
+|----|------|----------|------------|----------|
+| V1-BUG-01 | 2 | `validate_bronze_data` derrubava a DAG de ingestão | Yahoo Finance devolve HTTP 429; `bronze/market_data` fica sem Parquet (diagnóstico anterior "relógio em 2026" estava errado) | Gates de mercado opcionais (`OPTIONAL_DATASETS`, `run_gate_optional` em `runner.py`) |
+| V1-BUG-02 | 4 | `bronze_to_silver` quebrava com `PATH_NOT_FOUND` e nunca processava clientes | `transform_market_data` lia um prefixo inexistente sem tratar | Etapa pulada com warning e métricas zeradas |
+| V1-BUG-03 | 6 | `validate_silver_data` falhava (sem Parquet de mercado no Silver) | Consequência do V1-BUG-02 | Mesmo tratamento opcional no gate do Silver; scheduler reiniciado (tasks são forks do scheduler) |
+| V1-BUG-04 | 4 | Executor Spark morto (`exit code 137`, `ExecutorLostFailure`) | VM do Docker Desktop com 7,75 GB (OOM killer) | Docker Desktop com 12 GB; README e runbook atualizados |
+| V1-BUG-05 | 5 | `fraud_score` sempre nulo, `fraud-alerts` vazio | Simulador com timestamps aleatórios em 180 dias vs janela de 1h em tempo de evento | Producer carimba `timestamp=agora` (teste incluído) |
+| V1-BUG-06 | 5 | 62 mensagens duplicadas em `enriched-transactions` e 5 em `fraud-alerts` após reiniciar o streaming | At-least-once do `foreachBatch` → Kafka (`alert_id` é `uuid()`) | Documentado; issue #36 |
+| V1-BUG-07 | 7 | `runner --all` (item 7.1) falhava só pelos gates de mercado | Não distinguia gates opcionais | `--all` sai com 0 se só os opcionais falharem |
+| V1-BUG-08 | 8 | `make catalog` (`--strict`) saía com código 1 | Assets de mercado ausentes tratados como obrigatórios | Campo `optional` no registro; ⚠️ "sem dados (opcional)" |
+| V1-BUG-09 | 10 | Dashboard Superset criado como rascunho ("Draft") | Provisionamento nunca publicava | `published: true` no `finalize_dashboard` (teste incluído) |
+| V1-BUG-10 | 11 | Testes de integração deixavam linhas falsas em `bronze/transactions/` e criariam `bronze/market_data/` | Escreviam no lago real sem limpeza | Bucket temporário por execução, apagado ao final; `bronze/` comprovadamente idêntico antes/depois |
+| V1-BUG-11 | 12 | `.env.example` com 14 variáveis sem uso (incl. Delta Lake, descartado na issue #9) | Resíduo de fases anteriores | Removidas; notas sobre chaves fixas do compose e bloco AWS reservado |
+| V1-BUG-12 | 13 | Dependência `duckdb` nunca importada | Resíduo do plano original | Removida do `pyproject.toml` |
+
+### Achados sem correção de código (registrados)
+
+- **Issue #36:** deduplicar reprocessamento de micro-batch do streaming.
+- **Issue #37:** gerar imagem (SVG) da linhagem do catálogo ao final da validação.
+- **Issue #38:** persistir `fraud_score`/alertas do streaming no Postgres e expor na API/Superset (gap de score e latência).
+- O run `scheduled__...` que o Airflow cria ao despausar uma DAG (catchup do último intervalo) roda além do manual; com `max_active_runs=1`, o manual espera.
+- A paginação da API é por `page`/`page_size` (não existe `limit`).
+- Os data docs do GX (`uncommitted/`) não existem num clone novo: só após rodar um gate.
+- O streaming ocupa todo o cluster Spark: pare-o antes de rodar batch.

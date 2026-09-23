@@ -40,7 +40,11 @@ def _status_marker(entry: CatalogEntry, status_by_key: dict[str, ValidationResul
     result = status_by_key.get(entry.key)
     if result is None:
         return "— não validado"
-    return "✅ ok" if result.ok else f"❌ {result.detail}"
+    if result.ok:
+        return "✅ ok"
+    if entry.optional:
+        return f"⚠️ sem dados (opcional): {result.detail}"
+    return f"❌ {result.detail}"
 
 
 def _render_layer_table(

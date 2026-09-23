@@ -14,7 +14,11 @@ from unittest.mock import MagicMock
 
 from src.serving.dashboards.charts import CHARTS, DATASETS
 from src.serving.dashboards.client import SupersetClient
-from src.serving.dashboards.provision import _build_native_filters, _build_position_json
+from src.serving.dashboards.provision import (
+    _build_native_filters,
+    _build_position_json,
+    finalize_dashboard,
+)
 
 
 class TestChartsRegistry:
@@ -115,3 +119,12 @@ class TestSupersetClientFindOne:
         result = client.find_one("/api/v1/dataset/", {"table_name": "fact_transactions"}, page_size=1)
         assert result == {"id": 2, "table_name": "fact_transactions"}
         assert client._session.get.call_count == 2
+
+
+class TestFinalizeDashboard:
+    def test_publishes_dashboard_so_superset_does_not_show_draft_badge(self):
+        client = MagicMock()
+        finalize_dashboard(client, 1, [1, 2, 3], {"fact_transactions": 1, "agg_daily_fraud_metrics": 2})
+        path, payload = client.put.call_args.args
+        assert path == "/api/v1/dashboard/1"
+        assert payload["published"] is True

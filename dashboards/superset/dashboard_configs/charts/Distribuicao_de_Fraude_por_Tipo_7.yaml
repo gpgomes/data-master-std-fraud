@@ -15,6 +15,6 @@ params:
     sqlExpression: is_fraud = true
 query_context: null
 cache_timeout: null
-uuid: d3445ef0-9e99-42c3-b9f4-0e9ccf840409
+uuid: 074d6b00-0891-4027-8be8-2cdb799239d1
 version: 1.0.0
-dataset_uuid: 757c673c-b3b0-4173-8af3-329210970486
+dataset_uuid: ae452b14-d3f3-4258-aa4b-15d245d5fb5d

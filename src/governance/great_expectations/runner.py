@@ -108,6 +108,31 @@ def run_gate(
     return metrics
 
 
+# Enriquecimento de mercado vem de API de terceiros (yfinance/Yahoo Finance, sujeita a
+# rate limit HTTP 429), e sem dado no Bronze o job Bronze→Silver pula a etapa: a falta
+# de Parquet aqui não deve bloquear o pipeline core de transações.
+OPTIONAL_DATASETS = frozenset({"bronze_market_data", "silver_market_data"})
+
+
+def run_gate_optional(
+    dataset_key: str,
+    df: pd.DataFrame | None = None,
+    context: FileDataContext | None = None,
+) -> dict | None:
+    """Como `run_gate`, mas falha (expectativa ou ausência de dados) vira warning
+    e retorna None em vez de levantar — para datasets em `OPTIONAL_DATASETS`."""
+    try:
+        return run_gate(dataset_key, df=df, context=context)
+    except (QualityGateFailed, FileNotFoundError) as exc:
+        logger.warning(
+            "Gate opcional falhou — não bloqueia o pipeline "
+            "(enriquecimento via API de terceiros instável, fora do nosso controle)",
+            dataset=dataset_key,
+            error=str(exc),
+        )
+        return None
+
+
 # ── CLI ────────────────────────────────────────────────────────────────────────
 
 
@@ -125,8 +150,9 @@ def main(argv: list[str] | None = None) -> None:
 
     failures = []
     for dataset_key in targets:
+        gate = run_gate_optional if dataset_key in OPTIONAL_DATASETS else run_gate
         try:
-            run_gate(dataset_key)
+            gate(dataset_key)
         except QualityGateFailed as exc:
             failures.append(str(exc))
 

@@ -14,6 +14,6 @@ params:
     label: Valor Total (R$)
 query_context: null
 cache_timeout: null
-uuid: 9cffc26b-53d8-45ad-9656-30773b2338ce
+uuid: 34b5fdae-5005-45b5-95a5-3b5934c92115
 version: 1.0.0
-dataset_uuid: f6c41fbd-663b-4d96-9f5d-17497ec716d9
+dataset_uuid: 6d5001d1-58af-4ca4-af63-ffa1a3f205b5

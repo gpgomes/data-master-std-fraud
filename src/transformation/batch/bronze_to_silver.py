@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+from pyspark.errors import AnalysisException
 from pyspark.sql import DataFrame, SparkSession, Window
 from pyspark.sql import functions as F
 from pyspark.sql.types import DecimalType
@@ -158,7 +159,18 @@ class BronzeToSilverTransformer:
         path = f"{self._bronze}/market_data/"
         logger.info("Lendo dados de mercado do Bronze", path=path)
 
-        df = self.spark.read.parquet(path)
+        try:
+            df = self.spark.read.parquet(path)
+        except AnalysisException as exc:
+            logger.warning(
+                "Sem dados de mercado no Bronze — etapa pulada, não bloqueia o "
+                "pipeline (enriquecimento via API de terceiros instável, fora "
+                "do nosso controle)",
+                path=path,
+                error=str(exc),
+            )
+            return {"rows_read": 0, "rows_discarded": 0, "rows_written": 0}
+
         rows_read = df.count()
         logger.info("Registros lidos", count=rows_read)
 

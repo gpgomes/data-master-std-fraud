@@ -131,3 +131,38 @@ class TestRenderMarkdown:
         }
         used_terms = {term for entry in CATALOG for term in entry.glossary_terms}
         assert used_terms.issubset(known_terms)
+
+
+class TestOptionalAssets:
+    def test_only_market_assets_are_optional(self):
+        optional = {e.key for e in CATALOG if e.optional}
+        assert optional == {"bronze_market_data", "silver_market_data"}
+
+    def test_missing_optional_asset_rendered_as_warning_not_error(self):
+        results = [ValidationResult("bronze_market_data", False, "nenhum objeto encontrado")]
+        content = render_markdown(CATALOG, validation_results=results)
+        assert "⚠️ sem dados (opcional): nenhum objeto encontrado" in content
+        assert "❌" not in content
+
+    def _run_strict(self, tmp_path, failing_keys):
+        from unittest.mock import patch
+
+        from scripts import build_data_catalog
+
+        live = [
+            ValidationResult(e.key, e.key not in failing_keys, "detalhe")
+            for e in CATALOG
+            if e.kind is not DatasetKind.DASHBOARD
+        ]
+        with patch.object(build_data_catalog, "validate_live", return_value=live):
+            build_data_catalog.main(["--strict", "--output", str(tmp_path / "catalog.md")])
+
+    def test_strict_passes_when_only_optional_assets_missing(self, tmp_path):
+        self._run_strict(tmp_path, {"bronze_market_data", "silver_market_data"})  # sem SystemExit
+
+    def test_strict_fails_when_mandatory_asset_missing(self, tmp_path):
+        import pytest
+
+        with pytest.raises(SystemExit) as exc:
+            self._run_strict(tmp_path, {"bronze_market_data", "gold_fact_transactions"})
+        assert exc.value.code == 1

@@ -4,8 +4,8 @@ css: null
 slug: fraude-transacoes-visao-geral
 certified_by: null
 certification_details: null
-published: false
-uuid: ad70e079-295f-4fae-8efb-4c6328abf066
+published: true
+uuid: 4a2c86b4-13d0-495f-8712-ecdb9011e1e0
 position:
   DASHBOARD_VERSION_KEY: v2
   ROOT_ID:
@@ -20,7 +20,7 @@ position:
     - ROW-0
     - ROW-1
     - ROW-2
-    - ROW-N-0LGUJ8UF
+    - ROW-N-B7KMRJR0
     parents:
     - ROOT_ID
   DASHBOARD_CHART_TYPE: CHART
@@ -145,16 +145,16 @@ position:
       chartId: 7
       width: 12
       height: 50
-  ROW-N-0LGUJ8UF:
+  ROW-N-B7KMRJR0:
     children:
-    - CHART-E7SE0QN7
-    - CHART-D8H07A5U
-    - CHART-MZR2D28A
-    - CHART-5C7MCM6U
-    - CHART-20UNSGEO
-    - CHART-S53YSG4O
-    - CHART-3KVL1VVU
-    id: ROW-N-0LGUJ8UF
+    - CHART-6W5DHQ3H
+    - CHART-HRSBVQ2I
+    - CHART-J10E4YIT
+    - CHART-C2V7174X
+    - CHART-W2LR9PM4
+    - CHART-IN8BLDNH
+    - CHART-P5QGUJL8
+    id: ROW-N-B7KMRJR0
     meta:
       '0': ROOT_ID
       background: BACKGROUND_TRANSPARENT
@@ -162,104 +162,104 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-  CHART-E7SE0QN7:
+  CHART-6W5DHQ3H:
     children: []
-    id: CHART-E7SE0QN7
-    meta:
-      chartId: 4
-      height: 50
-      sliceName: KPI - Alertas de Fraude
-      uuid: a7fcadae-1d1d-4ecc-8860-c27fdb818471
-      width: 4
-    type: CHART
-    parents:
-    - ROOT_ID
-    - GRID_ID
-    - ROW-N-0LGUJ8UF
-  CHART-D8H07A5U:
-    children: []
-    id: CHART-D8H07A5U
-    meta:
-      chartId: 6
-      height: 50
-      sliceName: Taxa de Fraude Diaria (%)
-      uuid: 3374bb1f-30d2-4bb5-b720-dad7fd1e1bc1
-      width: 4
-    type: CHART
-    parents:
-    - ROOT_ID
-    - GRID_ID
-    - ROW-N-0LGUJ8UF
-  CHART-MZR2D28A:
-    children: []
-    id: CHART-MZR2D28A
-    meta:
-      chartId: 1
-      height: 50
-      sliceName: KPI - Volume de Transacoes
-      uuid: 8f8eace7-79f7-4c7e-b2a0-0a9905f21e07
-      width: 4
-    type: CHART
-    parents:
-    - ROOT_ID
-    - GRID_ID
-    - ROW-N-0LGUJ8UF
-  CHART-5C7MCM6U:
-    children: []
-    id: CHART-5C7MCM6U
-    meta:
-      chartId: 2
-      height: 50
-      sliceName: KPI - Valor Total (R$)
-      uuid: 9cffc26b-53d8-45ad-9656-30773b2338ce
-      width: 4
-    type: CHART
-    parents:
-    - ROOT_ID
-    - GRID_ID
-    - ROW-N-0LGUJ8UF
-  CHART-20UNSGEO:
-    children: []
-    id: CHART-20UNSGEO
+    id: CHART-6W5DHQ3H
     meta:
       chartId: 3
       height: 50
       sliceName: KPI - Taxa de Fraude (%)
-      uuid: ea3e0278-915f-4791-a47e-1a9b5c859f1e
+      uuid: 26f95117-4534-4b95-ac30-69acf2e72777
       width: 4
     type: CHART
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-N-0LGUJ8UF
-  CHART-S53YSG4O:
+    - ROW-N-B7KMRJR0
+  CHART-HRSBVQ2I:
     children: []
-    id: CHART-S53YSG4O
-    meta:
-      chartId: 7
-      height: 50
-      sliceName: Distribuicao de Fraude por Tipo
-      uuid: d3445ef0-9e99-42c3-b9f4-0e9ccf840409
-      width: 4
-    type: CHART
-    parents:
-    - ROOT_ID
-    - GRID_ID
-    - ROW-N-0LGUJ8UF
-  CHART-3KVL1VVU:
-    children: []
-    id: CHART-3KVL1VVU
+    id: CHART-HRSBVQ2I
     meta:
       chartId: 5
       height: 50
       sliceName: Volume Diario por Tipo de Transacao
-      uuid: ec4ffce3-3528-4953-aa3b-bdee892541ca
+      uuid: 124e6618-ab42-4b6f-b677-671f83119092
       width: 4
     type: CHART
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-N-0LGUJ8UF
+    - ROW-N-B7KMRJR0
+  CHART-J10E4YIT:
+    children: []
+    id: CHART-J10E4YIT
+    meta:
+      chartId: 7
+      height: 50
+      sliceName: Distribuicao de Fraude por Tipo
+      uuid: 074d6b00-0891-4027-8be8-2cdb799239d1
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-B7KMRJR0
+  CHART-C2V7174X:
+    children: []
+    id: CHART-C2V7174X
+    meta:
+      chartId: 4
+      height: 50
+      sliceName: KPI - Alertas de Fraude
+      uuid: 7681e8e0-8d06-46b6-a213-3c988dd313e5
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-B7KMRJR0
+  CHART-W2LR9PM4:
+    children: []
+    id: CHART-W2LR9PM4
+    meta:
+      chartId: 1
+      height: 50
+      sliceName: KPI - Volume de Transacoes
+      uuid: d13d84a4-6967-4b80-9296-e0eff3d657dc
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-B7KMRJR0
+  CHART-IN8BLDNH:
+    children: []
+    id: CHART-IN8BLDNH
+    meta:
+      chartId: 6
+      height: 50
+      sliceName: Taxa de Fraude Diaria (%)
+      uuid: ce1d9ccd-e195-4d87-87db-2795c030d912
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-B7KMRJR0
+  CHART-P5QGUJL8:
+    children: []
+    id: CHART-P5QGUJL8
+    meta:
+      chartId: 2
+      height: 50
+      sliceName: KPI - Valor Total (R$)
+      uuid: 34b5fdae-5005-45b5-95a5-3b5934c92115
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-B7KMRJR0
 metadata:
   native_filter_configuration:
   - id: NATIVE_FILTER-periodo
@@ -268,10 +268,10 @@ metadata:
     targets:
     - column:
         name: date_key
-      datasetUuid: 757c673c-b3b0-4173-8af3-329210970486
+      datasetUuid: ae452b14-d3f3-4258-aa4b-15d245d5fb5d
     - column:
         name: date_key
-      datasetUuid: f6c41fbd-663b-4d96-9f5d-17497ec716d9
+      datasetUuid: 6d5001d1-58af-4ca4-af63-ffa1a3f205b5
     defaultDataMask:
       extraFormData: {}
       filterState: {}
@@ -291,10 +291,10 @@ metadata:
     targets:
     - column:
         name: transaction_type
-      datasetUuid: 757c673c-b3b0-4173-8af3-329210970486
+      datasetUuid: ae452b14-d3f3-4258-aa4b-15d245d5fb5d
     - column:
         name: transaction_type
-      datasetUuid: f6c41fbd-663b-4d96-9f5d-17497ec716d9
+      datasetUuid: 6d5001d1-58af-4ca4-af63-ffa1a3f205b5
     defaultDataMask:
       extraFormData: {}
       filterState: {}
