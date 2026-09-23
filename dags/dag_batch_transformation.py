@@ -2,7 +2,8 @@
 
 Pipeline diário que roda os jobs PySpark de transformação sobre o que a
 DAG `batch_ingestion_pipeline` já carregou no Bronze, terminando com a carga
-do Gold na serving layer PostgreSQL. Quality gates do Great Expectations
+do Gold na serving layer PostgreSQL e, em seguida, da saída do streaming
+(`fraud_score` e alertas do detector, issue #38). Quality gates do Great Expectations
 (issue #13) bloqueiam o pipeline entre Silver e Gold, e entre Gold e a carga
 na serving layer — ver docs/runbook.md, seção "Quality Gates".
 
@@ -150,7 +151,19 @@ with DAG(
         verbose=False,
     )
 
-    # 6. Notificação de conclusão
+    # 6. Saída do streaming → PostgreSQL (fraud_score e alertas do detector, issue #38).
+    # Sem dado de streaming (job nunca rodou) o loader pula a carga sem falhar, então
+    # esta task não bloqueia a DAG.
+    load_stream_postgres = SparkSubmitOperator(
+        task_id="load_stream_postgres",
+        application=f"{_SERVING}/stream_to_postgres.py",
+        conn_id="spark_default",
+        name="stream_to_postgres",
+        packages=_GOLD_POSTGRES_PACKAGES,
+        verbose=False,
+    )
+
+    # 7. Notificação de conclusão
     notify_completion = PythonOperator(
         task_id="notify_completion",
         python_callable=_notify_completion,
@@ -168,5 +181,6 @@ with DAG(
         >> silver_to_gold
         >> validate_gold_data
         >> load_gold_postgres
+        >> load_stream_postgres
         >> notify_completion
     )

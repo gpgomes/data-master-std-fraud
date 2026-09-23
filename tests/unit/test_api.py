@@ -40,6 +40,19 @@ CREATE TABLE fact_transactions (
     processing_timestamp TIMESTAMP
 );
 
+CREATE TABLE fraud_alerts (
+    alert_id TEXT PRIMARY KEY,
+    transaction_id TEXT UNIQUE,
+    customer_id TEXT,
+    event_time TIMESTAMP,
+    amount REAL,
+    fraud_type TEXT,
+    fraud_score REAL,
+    z_score REAL,
+    alert_reason TEXT,
+    processed_at TIMESTAMP
+);
+
 CREATE TABLE agg_daily_fraud_metrics (
     date_key DATE,
     transaction_type TEXT,
@@ -103,6 +116,36 @@ def _insert_transaction(db: Session, **overrides) -> None:
             (:transaction_id, :customer_key, :date_key, :amount_brl, :currency,
              :transaction_type, :channel, :merchant_category, :is_fraud,
              :fraud_type, :fraud_score, :processing_timestamp)
+            """
+        ),
+        base,
+    )
+    db.commit()
+
+
+def _insert_alert(db: Session, **overrides) -> None:
+    base = {
+        "alert_id": "alert-001",
+        "transaction_id": "tx-001",
+        "customer_id": "cust-001",
+        "event_time": "2024-06-15T10:00:00",
+        "amount": 5000.0,
+        "fraud_type": "MONEY_LAUNDERING",
+        "fraud_score": 0.9,
+        "z_score": 5.4,
+        "alert_reason": "Z-Score 5.4 (limiar=3.0) sobre janela de 60 min por cliente",
+        "processed_at": "2024-06-15T10:00:05",
+    }
+    base.update(overrides)
+    db.execute(
+        text(
+            """
+            INSERT INTO fraud_alerts
+            (alert_id, transaction_id, customer_id, event_time, amount, fraud_type,
+             fraud_score, z_score, alert_reason, processed_at)
+            VALUES
+            (:alert_id, :transaction_id, :customer_id, :event_time, :amount, :fraud_type,
+             :fraud_score, :z_score, :alert_reason, :processed_at)
             """
         ),
         base,
@@ -199,18 +242,45 @@ class TestRepositoryTransactions:
 
 
 class TestRepositoryAlerts:
-    def test_list_alerts_only_fraudulent(self, db: Session):
-        _insert_transaction(db, transaction_id="tx-1", is_fraud=True)
-        _insert_transaction(db, transaction_id="tx-2", is_fraud=False)
+    def test_list_alerts_reads_the_detector_table_not_the_fraud_label(self, db: Session):
+        # rótulo is_fraud em fact_transactions NÃO é alerta do detector
+        _insert_transaction(db, transaction_id="tx-label", is_fraud=True)
+        _insert_alert(db, alert_id="a-1", transaction_id="tx-1")
         rows = repository.list_alerts(db)
-        assert len(rows) == 1
-        assert rows[0]["transaction_id"] == "tx-1"
+        assert [r["transaction_id"] for r in rows] == ["tx-1"]
+        assert rows[0]["z_score"] == 5.4
+        assert "Z-Score" in rows[0]["alert_reason"]
 
     def test_count_alerts_matches_list(self, db: Session):
-        _insert_transaction(db, transaction_id="tx-1", is_fraud=True)
-        _insert_transaction(db, transaction_id="tx-2", is_fraud=True)
-        _insert_transaction(db, transaction_id="tx-3", is_fraud=False)
+        _insert_alert(db, alert_id="a-1", transaction_id="tx-1")
+        _insert_alert(db, alert_id="a-2", transaction_id="tx-2")
         assert repository.count_alerts(db) == 2
+
+    def test_empty_table_returns_empty(self, db: Session):
+        assert repository.list_alerts(db) == []
+        assert repository.count_alerts(db) == 0
+
+    def test_ordered_by_most_recent_processing_first(self, db: Session):
+        _insert_alert(db, alert_id="a-old", transaction_id="tx-1", processed_at="2024-06-15T10:00:00")
+        _insert_alert(db, alert_id="a-new", transaction_id="tx-2", processed_at="2024-06-15T11:00:00")
+        assert [r["alert_id"] for r in repository.list_alerts(db)] == ["a-new", "a-old"]
+
+    def test_filter_by_customer_id(self, db: Session):
+        _insert_alert(db, alert_id="a-1", transaction_id="tx-1", customer_id="c1")
+        _insert_alert(db, alert_id="a-2", transaction_id="tx-2", customer_id="c2")
+        assert [r["alert_id"] for r in repository.list_alerts(db, customer_id="c2")] == ["a-2"]
+
+    def test_filter_by_date_range_is_inclusive_of_the_end_day(self, db: Session):
+        _insert_alert(db, alert_id="a-1", transaction_id="tx-1", event_time="2024-06-14T23:59:59")
+        _insert_alert(db, alert_id="a-2", transaction_id="tx-2", event_time="2024-06-15T23:59:59")
+        _insert_alert(db, alert_id="a-3", transaction_id="tx-3", event_time="2024-06-16T00:00:01")
+        rows = repository.list_alerts(db, start_date=date(2024, 6, 15), end_date=date(2024, 6, 15))
+        assert [r["alert_id"] for r in rows] == ["a-2"]
+        assert repository.count_alerts(db, start_date=date(2024, 6, 15), end_date=date(2024, 6, 15)) == 1
+
+    def test_sql_injection_in_customer_id_is_treated_as_a_value(self, db: Session):
+        _insert_alert(db, alert_id="a-1", transaction_id="tx-1")
+        assert repository.count_alerts(db, customer_id="x' OR '1'='1") == 0
 
 
 class TestRepositoryDailyFraudMetrics:
@@ -335,13 +405,33 @@ class TestTransactionRoutes:
 
 
 class TestAlertRoutes:
-    def test_list_only_fraudulent_transactions(self, client: TestClient, db: Session):
-        _insert_transaction(db, transaction_id="tx-1", is_fraud=True)
-        _insert_transaction(db, transaction_id="tx-2", is_fraud=False)
-        response = client.get("/alerts")
-        body = response.json()
+    def test_list_returns_detector_alerts_with_score_and_reason(
+        self, client: TestClient, db: Session
+    ):
+        _insert_transaction(db, transaction_id="tx-label", is_fraud=True)
+        _insert_alert(db, alert_id="a-1", transaction_id="tx-1")
+        body = client.get("/alerts").json()
+
         assert body["total"] == 1
-        assert body["items"][0]["transaction_id"] == "tx-1"
+        item = body["items"][0]
+        assert item["transaction_id"] == "tx-1"
+        assert item["fraud_score"] == 0.9
+        assert item["z_score"] == 5.4
+        assert item["alert_reason"].startswith("Z-Score")
+
+    def test_empty_when_streaming_never_loaded(self, client: TestClient):
+        body = client.get("/alerts").json()
+        assert body["total"] == 0
+        assert body["items"] == []
+
+    def test_filter_by_customer_id(self, client: TestClient, db: Session):
+        _insert_alert(db, alert_id="a-1", transaction_id="tx-1", customer_id="c1")
+        _insert_alert(db, alert_id="a-2", transaction_id="tx-2", customer_id="c2")
+        body = client.get("/alerts", params={"customer_id": "c1"}).json()
+        assert [i["alert_id"] for i in body["items"]] == ["a-1"]
+
+    def test_invalid_date_is_rejected(self, client: TestClient):
+        assert client.get("/alerts", params={"start_date": "not-a-date"}).status_code == 422
 
     def test_returns_503_on_db_failure(self, failing_client: TestClient):
         response = failing_client.get("/alerts")

@@ -94,8 +94,13 @@ def ensure_chart(client: SupersetClient, chart_def: ChartDef, dataset_id: int, d
 
 def _build_position_json(chart_ids: list[int]) -> dict:
     """Layout simples: 4 KPIs numa linha, os 2 gráficos de série temporal
-    numa segunda linha, a pizza de distribuição numa terceira."""
-    rows = [chart_ids[0:4], chart_ids[4:6], chart_ids[6:7]]
+    numa segunda, a pizza de distribuição numa terceira e, abaixo, os 2 KPIs e os
+    2 gráficos do streaming (issue #38)."""
+    sizes = (4, 2, 1, 2, 2)
+    rows, start = [], 0
+    for size in sizes:
+        rows.append(chart_ids[start : start + size])
+        start += size
     rows = [r for r in rows if r]
 
     position: dict = {
@@ -200,6 +205,12 @@ def verify_chart(client: SupersetClient, chart_def: ChartDef, dataset_id: int) -
     if result.get("error"):
         return VerificationResult(chart_def.slice_name, False, f"erro na query: {result['error']}")
     if result["rowcount"] < 1:
+        if chart_def.optional:
+            return VerificationResult(
+                chart_def.slice_name,
+                True,
+                "sem dados (opcional: rode o streaming e `make spark-submit-stream-postgres`)",
+            )
         return VerificationResult(chart_def.slice_name, False, "query retornou 0 linhas")
     return VerificationResult(chart_def.slice_name, True, f"{result['rowcount']} linha(s), ex.: {result['data'][0]}")
 

@@ -66,3 +66,50 @@ CREATE TABLE IF NOT EXISTS agg_daily_fraud_metrics (
     processing_timestamp TIMESTAMP,
     PRIMARY KEY (date_key, transaction_type)
 );
+
+-- ── Streaming (issue #38) ─────────────────────────────────────────────────────
+-- Saída do detector de fraude (Z-Score, issue #11), carregada de
+-- silver/transactions_stream/ por stream_to_postgres.py (truncate + reload).
+-- Só as colunas úteis à consulta: device_id, ip_address, contas e coordenadas do
+-- Parquet de origem não vão para a serving layer.
+
+CREATE TABLE IF NOT EXISTS stream_scored_transactions (
+    transaction_id       VARCHAR PRIMARY KEY,
+    customer_id          VARCHAR,
+    event_time           TIMESTAMP,
+    amount               DOUBLE PRECISION,
+    currency             VARCHAR,
+    transaction_type     VARCHAR,
+    channel              VARCHAR,
+    merchant_category    VARCHAR,
+    is_fraud             BOOLEAN,
+    fraud_type           VARCHAR,
+    z_score              DOUBLE PRECISION,
+    fraud_score          DOUBLE PRECISION,
+    fraud_score_bucket   DOUBLE PRECISION,
+    is_anomaly           BOOLEAN,
+    produced_at          TIMESTAMP,
+    processing_timestamp TIMESTAMP,
+    latency_seconds      DOUBLE PRECISION
+);
+
+CREATE INDEX IF NOT EXISTS ix_stream_scored_event_time ON stream_scored_transactions (event_time);
+CREATE INDEX IF NOT EXISTS ix_stream_scored_customer_id ON stream_scored_transactions (customer_id);
+
+-- Alertas do detector (mesmos do tópico Kafka fraud-alerts; alert_id é
+-- determinístico a partir de transaction_id, ver stream_processor.py).
+CREATE TABLE IF NOT EXISTS fraud_alerts (
+    alert_id       VARCHAR PRIMARY KEY,
+    transaction_id VARCHAR UNIQUE,
+    customer_id    VARCHAR,
+    event_time     TIMESTAMP,
+    amount         DOUBLE PRECISION,
+    fraud_type     VARCHAR,
+    fraud_score    DOUBLE PRECISION,
+    z_score        DOUBLE PRECISION,
+    alert_reason   VARCHAR,
+    processed_at   TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS ix_fraud_alerts_processed_at ON fraud_alerts (processed_at);
+CREATE INDEX IF NOT EXISTS ix_fraud_alerts_customer_id ON fraud_alerts (customer_id);

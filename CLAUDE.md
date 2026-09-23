@@ -53,6 +53,7 @@ make spark-submit-batch        # Run Bronze→Silver PySpark batch job (Gold is 
 make spark-submit-stream       # Start Spark Structured Streaming (Kafka consumer)
 make spark-submit-silver-gold  # Run Silver→Gold job
 make spark-submit-gold-postgres # Load Gold (MinIO) into the Postgres serving layer
+make spark-submit-stream-postgres # Load streaming output (fraud_score + alerts) into Postgres (stop the stream first)
 make producer-transactions     # Start Kafka transaction producer
 make producer-market           # Start Kafka market data producer
 make api                       # Start FastAPI dev server at :8000

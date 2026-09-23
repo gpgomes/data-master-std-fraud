@@ -108,6 +108,23 @@ CATALOG: tuple[CatalogEntry, ...] = (
         upstream=("bronze_market_data",),
         optional=True,
     ),
+    CatalogEntry(
+        key="silver_transactions_stream",
+        name="Silver — Transações (Streaming)",
+        layer=DatasetLayer.SILVER,
+        kind=DatasetKind.MINIO_PREFIX,
+        location=f"s3://{settings.minio.bucket_silver}/transactions_stream/",
+        owner="Data Engineering",
+        classification=("PII", "Confidencial"),
+        glossary_terms=("Z-Score", "Fraud Score"),
+        description=(
+            "Saída do detector de streaming (issue #11), particionada por query_id/batch_id: "
+            "transações com z_score, fraud_score e is_anomaly. Só existe depois que o job de "
+            "streaming rodou."
+        ),
+        upstream=("kafka_raw_transactions",),
+        optional=True,
+    ),
     # ── Gold (MinIO) ─────────────────────────────────────────────────────
     CatalogEntry(
         key="gold_fact_transactions",
@@ -206,6 +223,33 @@ CATALOG: tuple[CatalogEntry, ...] = (
         description="Espelho da agregação diária de fraude Gold, consumido pela API (issue #15).",
         upstream=("gold_agg_daily_fraud_metrics",),
     ),
+    CatalogEntry(
+        key="serving_stream_scored_transactions",
+        name="Postgres — stream_scored_transactions",
+        layer=DatasetLayer.SERVING,
+        kind=DatasetKind.POSTGRES_TABLE,
+        location="stream_scored_transactions",
+        owner="Analytics Engineering",
+        classification=("Confidencial",),
+        glossary_terms=("Z-Score", "Fraud Score"),
+        description=(
+            "Transações pontuadas pelo detector de streaming (fraud_score, z_score, latência "
+            "evento→processamento), carregadas por `make spark-submit-stream-postgres` (issue #38)."
+        ),
+        upstream=("silver_transactions_stream",),
+    ),
+    CatalogEntry(
+        key="serving_fraud_alerts",
+        name="Postgres — fraud_alerts",
+        layer=DatasetLayer.SERVING,
+        kind=DatasetKind.POSTGRES_TABLE,
+        location="fraud_alerts",
+        owner="Fraud Analytics",
+        classification=("Confidencial",),
+        glossary_terms=("Z-Score", "Fraud Score"),
+        description="Alertas do detector de streaming, os mesmos do tópico fraud-alerts; consumido por GET /alerts (issue #38).",
+        upstream=("silver_transactions_stream",),
+    ),
     # ── Streaming (Kafka) ────────────────────────────────────────────────
     CatalogEntry(
         key="kafka_raw_transactions",
@@ -263,8 +307,16 @@ CATALOG: tuple[CatalogEntry, ...] = (
         owner="Fraud Analytics",
         classification=("Confidencial",),
         glossary_terms=("Fraud Score",),
-        description="KPIs de volume, valor, taxa de fraude e alertas (Superset — Grafana descoped, issue #16).",
-        upstream=("serving_fact_transactions", "serving_agg_daily_fraud_metrics"),
+        description=(
+            "KPIs de volume, valor, taxa de fraude e alertas, mais latência, distribuição de "
+            "fraud_score e alertas por hora do streaming (Superset — Grafana descoped, issue #16)."
+        ),
+        upstream=(
+            "serving_fact_transactions",
+            "serving_agg_daily_fraud_metrics",
+            "serving_stream_scored_transactions",
+            "serving_fraud_alerts",
+        ),
     ),
 )
 

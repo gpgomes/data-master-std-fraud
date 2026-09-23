@@ -15,13 +15,11 @@ Todos os valores abaixo (contagens, taxa de fraude, distribuição por
 `fraud_type`) foram verificados manualmente contra `psql` real antes de
 serem codificados aqui — ver `docs/testes_issue_16.txt`.
 
-Nota: o campo `fraud_score` (mencionado no KPI "score" da issue) está
-sempre NULL nas 506k linhas de `fact_transactions` carregadas no Postgres —
-só é populado pelo detector de streaming (issue #11), que nunca escreve na
-camada Gold batch/Postgres. Mesma causa raiz do gap de "latência" (ver
-issue #14 e `alerts.py`, issue #15). Por isso não há um chart de
-distribuição de `fraud_score`; "alertas"/"taxa de fraude" (`is_fraud`,
-`fraud_type`) são os KPIs de fraude realmente disponíveis.
+Streaming (issue #38): `fraud_score` continua sempre NULL em `fact_transactions` (o
+batch nunca o calcula), mas o detector de streaming agora é carregado no Postgres em
+`stream_scored_transactions` e `fraud_alerts` (`make spark-submit-stream-postgres`). Os
+charts que leem essas tabelas são `optional=True`: sem dado de streaming a verificação
+não os trata como falha.
 """
 
 from __future__ import annotations
@@ -31,7 +29,7 @@ from dataclasses import dataclass
 FRAUD_RATE_PCT_SQL = "SUM(fraud_count)::float / NULLIF(SUM(total_transactions), 0) * 100"
 FRAUD_RATE_PCT_FACT_SQL = "SUM(CASE WHEN is_fraud THEN 1 ELSE 0 END)::float / NULLIF(COUNT(*), 0) * 100"
 
-DATASETS = ("fact_transactions", "agg_daily_fraud_metrics")
+DATASETS = ("fact_transactions", "agg_daily_fraud_metrics", "stream_scored_transactions", "fraud_alerts")
 
 
 @dataclass(frozen=True)
@@ -42,6 +40,7 @@ class ChartDef:
     form_data_extra: dict
     query_extra: dict
     description: str
+    optional: bool = False  # depende de dado de streaming: 0 linhas na verificação não é falha
 
 
 CHARTS: tuple[ChartDef, ...] = (
@@ -126,5 +125,57 @@ CHARTS: tuple[ChartDef, ...] = (
         },
         query_extra={"metrics": ["count"], "groupby": ["fraud_type"], "extras": {"where": "is_fraud = true"}},
         description="COUNT(*) WHERE is_fraud = true, agrupado por fraud_type.",
+    ),
+    ChartDef(
+        slice_name="KPI - Latencia Media do Streaming (s)",
+        viz_type="big_number_total",
+        dataset_table="stream_scored_transactions",
+        form_data_extra={"metric": {"expressionType": "SIMPLE", "column": {"column_name": "latency_seconds"}, "aggregate": "AVG", "label": "Latencia Media (s)"}},
+        query_extra={"metrics": [{"expressionType": "SIMPLE", "column": {"column_name": "latency_seconds"}, "aggregate": "AVG", "label": "Latencia Media (s)"}]},
+        description="AVG(latency_seconds): tempo entre a producao do evento e o processamento pelo detector (processing_timestamp - produced_at).",
+        optional=True,
+    ),
+    ChartDef(
+        slice_name="KPI - Alertas do Detector",
+        viz_type="big_number_total",
+        dataset_table="fraud_alerts",
+        form_data_extra={"metric": "count"},
+        query_extra={"metrics": ["count"]},
+        description="COUNT(*) em fraud_alerts: alertas de Z-Score emitidos pelo detector de streaming (nao e o rotulo is_fraud do batch).",
+        optional=True,
+    ),
+    ChartDef(
+        slice_name="Distribuicao do Fraud Score (Streaming)",
+        viz_type="echarts_timeseries_bar",
+        dataset_table="stream_scored_transactions",
+        form_data_extra={
+            "x_axis": "fraud_score_bucket",
+            "metrics": ["count"],
+            "groupby": [],
+            "adhoc_filters": [{"clause": "WHERE", "expressionType": "SQL", "sqlExpression": "fraud_score IS NOT NULL"}],
+        },
+        query_extra={"metrics": ["count"], "columns": ["fraud_score_bucket"], "extras": {"where": "fraud_score IS NOT NULL"}},
+        description="COUNT(*) por faixa de fraud_score (arredondado a 0,1) entre as transacoes pontuadas; sem score = sem baseline de 2 transacoes na janela de 1h.",
+        optional=True,
+    ),
+    ChartDef(
+        slice_name="Alertas por Hora (Streaming)",
+        viz_type="echarts_timeseries_bar",
+        dataset_table="fraud_alerts",
+        form_data_extra={
+            "metrics": ["count"],
+            "groupby": [],
+            "granularity_sqla": "processed_at",
+            "time_grain_sqla": "PT1H",
+        },
+        query_extra={
+            "metrics": ["count"],
+            "is_timeseries": True,
+            "granularity": "processed_at",
+            "time_grain_sqla": "PT1H",
+            "extras": {"time_grain_sqla": "PT1H"},
+        },
+        description="Alertas do detector por hora de processamento (COUNT(*) em fraud_alerts).",
+        optional=True,
     ),
 )

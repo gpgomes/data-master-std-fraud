@@ -57,6 +57,21 @@ class TransactionOut(BaseModel):
     processing_timestamp: datetime | None = None
 
 
+class AlertOut(BaseModel):
+    """Um alerta do detector de fraude de streaming (`fraud_alerts`, issue #38)."""
+
+    alert_id: str
+    transaction_id: str
+    customer_id: str | None = None
+    event_time: datetime | None = None
+    amount: float | None = None
+    fraud_type: str | None = None
+    fraud_score: float | None = None
+    z_score: float | None = None
+    alert_reason: str | None = None
+    processed_at: datetime | None = None
+
+
 class DailyFraudMetricOut(BaseModel):
     """Uma linha de `agg_daily_fraud_metrics`."""
 

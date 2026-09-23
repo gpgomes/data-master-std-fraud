@@ -64,6 +64,53 @@ _HISTORY_SCHEMA = StructType(
 )
 
 
+def deterministic_alert_id(transaction_id: Column) -> Column:
+    """UUID derivado só do `transaction_id`: o mesmo alerta reprocessado mantém o
+    `alert_id` (com `uuid()` aleatório, um replay gerava um alerta "novo")."""
+    digest = F.md5(F.concat(F.lit("fraud-alert:"), transaction_id))
+    return F.concat_ws(
+        "-",
+        digest.substr(1, 8),
+        digest.substr(9, 4),
+        digest.substr(13, 4),
+        digest.substr(17, 4),
+        digest.substr(21, 12),
+    )
+
+
+def build_fraud_alerts(scored_df: DataFrame) -> DataFrame:
+    """Constrói o payload de FraudAlert a partir das linhas anômalas de um DataFrame já
+    pontuado. Função pura: usada pelo streaming (`fraud-alerts`) e pelo loader da serving
+    layer (`fraud_alerts` no Postgres), que reconstrói os alertas a partir do Parquet.
+
+    `processed_at` é o `processing_timestamp` da própria linha (quando existe), então o
+    valor é o mesmo no Kafka e no Postgres e não muda com o momento da carga."""
+    anomalies = scored_df.filter(F.col("is_anomaly"))
+    processed_at = (
+        F.col("processing_timestamp")
+        if "processing_timestamp" in scored_df.columns
+        else F.current_timestamp()
+    )
+    return anomalies.select(
+        deterministic_alert_id(F.col("transaction_id")).alias("alert_id"),
+        F.col("transaction_id"),
+        F.col("customer_id"),
+        F.col("timestamp"),
+        F.col("amount"),
+        F.coalesce(F.col("fraud_type"), F.lit(DEFAULT_FRAUD_TYPE_FALLBACK)).alias("fraud_type"),
+        F.col("fraud_score"),
+        F.col("z_score"),
+        F.concat(
+            F.lit("Z-Score "),
+            F.round(F.col("z_score"), 2).cast("string"),
+            F.lit(f" (limiar={Z_SCORE_THRESHOLD}) sobre janela de "),
+            F.lit(str(Z_SCORE_WINDOW_SECONDS // 60)),
+            F.lit(" min por cliente"),
+        ).alias("alert_reason"),
+        processed_at.alias("processed_at"),
+    )
+
+
 class StreamProcessor:
     """Enriquece `raw-transactions` e detecta anomalias de valor via Z-Score.
 
@@ -234,43 +281,8 @@ class StreamProcessor:
 
         return df.withColumn("processing_timestamp", F.current_timestamp())
 
-    @staticmethod
-    def _deterministic_alert_id(transaction_id: Column) -> Column:
-        """UUID derivado só do `transaction_id`: o mesmo alerta reprocessado mantém o
-        `alert_id` (com `uuid()` aleatório, um replay gerava um alerta "novo")."""
-        digest = F.md5(F.concat(F.lit("fraud-alert:"), transaction_id))
-        return F.concat_ws(
-            "-",
-            digest.substr(1, 8),
-            digest.substr(9, 4),
-            digest.substr(13, 4),
-            digest.substr(17, 4),
-            digest.substr(21, 12),
-        )
-
     def _build_fraud_alerts(self, scored_df: DataFrame) -> DataFrame:
-        """Constrói o payload de FraudAlert a partir das linhas anômalas."""
-        anomalies = scored_df.filter(F.col("is_anomaly"))
-        return anomalies.select(
-            self._deterministic_alert_id(F.col("transaction_id")).alias("alert_id"),
-            F.col("transaction_id"),
-            F.col("customer_id"),
-            F.col("timestamp"),
-            F.col("amount"),
-            F.coalesce(F.col("fraud_type"), F.lit(DEFAULT_FRAUD_TYPE_FALLBACK)).alias(
-                "fraud_type"
-            ),
-            F.col("fraud_score"),
-            F.col("z_score"),
-            F.concat(
-                F.lit("Z-Score "),
-                F.round(F.col("z_score"), 2).cast("string"),
-                F.lit(f" (limiar={Z_SCORE_THRESHOLD}) sobre janela de "),
-                F.lit(str(Z_SCORE_WINDOW_SECONDS // 60)),
-                F.lit(" min por cliente"),
-            ).alias("alert_reason"),
-            F.current_timestamp().alias("processed_at"),
-        )
+        return build_fraud_alerts(scored_df)
 
     # ── Escrita ──────────────────────────────────────────────────────────────────
 

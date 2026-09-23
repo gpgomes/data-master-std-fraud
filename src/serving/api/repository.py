@@ -1,4 +1,4 @@
-"""Consultas SQL contra a serving layer (fact_transactions, agg_daily_fraud_metrics).
+"""Consultas SQL contra a serving layer (fact_transactions, agg_daily_fraud_metrics, fraud_alerts).
 
 SQL parametrizado via `sqlalchemy.text` (nunca interpolação de string) — os
 filtros vêm de query params da API, então precisam ser tratados como entrada
@@ -7,7 +7,7 @@ não confiável.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, time, timedelta
 from typing import Any
 
 from sqlalchemy import text
@@ -104,9 +104,30 @@ def get_transaction(db: Session, transaction_id: str) -> RowMapping | None:
     return db.execute(text(sql), {"id": transaction_id}).mappings().first()
 
 
-# ── Alertas (fact_transactions com is_fraud=true — ver docs/test_status.md,
-# issue #15: o detector de streaming, issue #11, publica no Kafka mas não
-# persiste em nenhuma tabela consultável hoje) ───────────────────────────────
+# ── Alertas do detector de streaming (fraud_alerts, issue #38) ──────────────────
+
+_ALERT_COLUMNS = """
+    alert_id, transaction_id, customer_id, event_time, amount, fraud_type,
+    fraud_score, z_score, alert_reason, processed_at
+"""
+
+
+def _alert_filters(
+    *, start_date: date | None, end_date: date | None, customer_id: str | None
+) -> tuple[str, dict[str, Any]]:
+    clauses: list[str] = []
+    params: dict[str, Any] = {}
+    if start_date is not None:
+        clauses.append("event_time >= :start_ts")
+        params["start_ts"] = datetime.combine(start_date, time.min)
+    if end_date is not None:
+        clauses.append("event_time < :end_ts")
+        params["end_ts"] = datetime.combine(end_date + timedelta(days=1), time.min)
+    if customer_id is not None:
+        clauses.append("customer_id = :customer_id")
+        params["customer_id"] = customer_id
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    return where, params
 
 
 def count_alerts(
@@ -116,9 +137,11 @@ def count_alerts(
     end_date: date | None = None,
     customer_id: str | None = None,
 ) -> int:
-    return count_transactions(
-        db, start_date=start_date, end_date=end_date, customer_id=customer_id, is_fraud=True
+    where, params = _alert_filters(
+        start_date=start_date, end_date=end_date, customer_id=customer_id
     )
+    row = db.execute(text(f"SELECT count(*) FROM fraud_alerts {where}"), params).first()
+    return int(row[0]) if row else 0
 
 
 def list_alerts(
@@ -130,15 +153,18 @@ def list_alerts(
     limit: int = 20,
     offset: int = 0,
 ) -> list[RowMapping]:
-    return list_transactions(
-        db,
-        start_date=start_date,
-        end_date=end_date,
-        customer_id=customer_id,
-        is_fraud=True,
-        limit=limit,
-        offset=offset,
+    where, params = _alert_filters(
+        start_date=start_date, end_date=end_date, customer_id=customer_id
     )
+    params = {**params, "limit": limit, "offset": offset}
+    sql = f"""
+        SELECT {_ALERT_COLUMNS}
+        FROM fraud_alerts
+        {where}
+        ORDER BY processed_at DESC, alert_id
+        LIMIT :limit OFFSET :offset
+    """
+    return list(db.execute(text(sql), params).mappings().all())
 
 
 # ── KPIs diários de fraude (agg_daily_fraud_metrics) ────────────────────────────

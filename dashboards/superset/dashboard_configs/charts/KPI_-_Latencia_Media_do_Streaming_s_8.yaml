@@ -1,0 +1,19 @@
+slice_name: KPI - Latencia Media do Streaming (s)
+description: null
+certified_by: null
+certification_details: null
+viz_type: big_number_total
+params:
+  datasource: 3__table
+  viz_type: big_number_total
+  metric:
+    expressionType: SIMPLE
+    column:
+      column_name: latency_seconds
+    aggregate: AVG
+    label: Latencia Media (s)
+query_context: null
+cache_timeout: null
+uuid: 6d4e63c6-2bf6-4684-b30e-ad43fe4e6577
+version: 1.0.0
+dataset_uuid: 09a1018c-1a21-4cc3-b035-f07068fe6ff4

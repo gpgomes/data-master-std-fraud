@@ -20,7 +20,9 @@ position:
     - ROW-0
     - ROW-1
     - ROW-2
-    - ROW-N-B7KMRJR0
+    - ROW-3
+    - ROW-4
+    - ROW-N-GV6T9MHC
     parents:
     - ROOT_ID
   DASHBOARD_CHART_TYPE: CHART
@@ -145,16 +147,90 @@ position:
       chartId: 7
       width: 12
       height: 50
-  ROW-N-B7KMRJR0:
+  ROW-3:
+    type: ROW
+    id: ROW-3
     children:
-    - CHART-6W5DHQ3H
-    - CHART-HRSBVQ2I
-    - CHART-J10E4YIT
-    - CHART-C2V7174X
-    - CHART-W2LR9PM4
-    - CHART-IN8BLDNH
-    - CHART-P5QGUJL8
-    id: ROW-N-B7KMRJR0
+    - CHART-8
+    - CHART-9
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  CHART-8:
+    type: CHART
+    id: CHART-8
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-3
+    meta:
+      chartId: 8
+      width: 6
+      height: 50
+  CHART-9:
+    type: CHART
+    id: CHART-9
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-3
+    meta:
+      chartId: 9
+      width: 6
+      height: 50
+  ROW-4:
+    type: ROW
+    id: ROW-4
+    children:
+    - CHART-10
+    - CHART-11
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  CHART-10:
+    type: CHART
+    id: CHART-10
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-4
+    meta:
+      chartId: 10
+      width: 6
+      height: 50
+  CHART-11:
+    type: CHART
+    id: CHART-11
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-4
+    meta:
+      chartId: 11
+      width: 6
+      height: 50
+  ROW-N-GV6T9MHC:
+    children:
+    - CHART-MSA2087C
+    - CHART-17DNVZ48
+    - CHART-34Q5HHT4
+    - CHART-LDT5F5BS
+    - CHART-RBC1FDKU
+    - CHART-7XXLXAGH
+    - CHART-901OZ391
+    - CHART-7NBUMN3V
+    - CHART-2989E905
+    - CHART-FK56WY4Z
+    - CHART-J64MJ54T
+    id: ROW-N-GV6T9MHC
     meta:
       '0': ROOT_ID
       background: BACKGROUND_TRANSPARENT
@@ -162,79 +238,9 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-  CHART-6W5DHQ3H:
+  CHART-MSA2087C:
     children: []
-    id: CHART-6W5DHQ3H
-    meta:
-      chartId: 3
-      height: 50
-      sliceName: KPI - Taxa de Fraude (%)
-      uuid: 26f95117-4534-4b95-ac30-69acf2e72777
-      width: 4
-    type: CHART
-    parents:
-    - ROOT_ID
-    - GRID_ID
-    - ROW-N-B7KMRJR0
-  CHART-HRSBVQ2I:
-    children: []
-    id: CHART-HRSBVQ2I
-    meta:
-      chartId: 5
-      height: 50
-      sliceName: Volume Diario por Tipo de Transacao
-      uuid: 124e6618-ab42-4b6f-b677-671f83119092
-      width: 4
-    type: CHART
-    parents:
-    - ROOT_ID
-    - GRID_ID
-    - ROW-N-B7KMRJR0
-  CHART-J10E4YIT:
-    children: []
-    id: CHART-J10E4YIT
-    meta:
-      chartId: 7
-      height: 50
-      sliceName: Distribuicao de Fraude por Tipo
-      uuid: 074d6b00-0891-4027-8be8-2cdb799239d1
-      width: 4
-    type: CHART
-    parents:
-    - ROOT_ID
-    - GRID_ID
-    - ROW-N-B7KMRJR0
-  CHART-C2V7174X:
-    children: []
-    id: CHART-C2V7174X
-    meta:
-      chartId: 4
-      height: 50
-      sliceName: KPI - Alertas de Fraude
-      uuid: 7681e8e0-8d06-46b6-a213-3c988dd313e5
-      width: 4
-    type: CHART
-    parents:
-    - ROOT_ID
-    - GRID_ID
-    - ROW-N-B7KMRJR0
-  CHART-W2LR9PM4:
-    children: []
-    id: CHART-W2LR9PM4
-    meta:
-      chartId: 1
-      height: 50
-      sliceName: KPI - Volume de Transacoes
-      uuid: d13d84a4-6967-4b80-9296-e0eff3d657dc
-      width: 4
-    type: CHART
-    parents:
-    - ROOT_ID
-    - GRID_ID
-    - ROW-N-B7KMRJR0
-  CHART-IN8BLDNH:
-    children: []
-    id: CHART-IN8BLDNH
+    id: CHART-MSA2087C
     meta:
       chartId: 6
       height: 50
@@ -245,10 +251,136 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-N-B7KMRJR0
-  CHART-P5QGUJL8:
+    - ROW-N-GV6T9MHC
+  CHART-17DNVZ48:
     children: []
-    id: CHART-P5QGUJL8
+    id: CHART-17DNVZ48
+    meta:
+      chartId: 10
+      height: 50
+      sliceName: Distribuicao do Fraud Score (Streaming)
+      uuid: e0c39ecd-5c88-4777-a734-01ad0908ecb2
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-GV6T9MHC
+  CHART-34Q5HHT4:
+    children: []
+    id: CHART-34Q5HHT4
+    meta:
+      chartId: 3
+      height: 50
+      sliceName: KPI - Taxa de Fraude (%)
+      uuid: 26f95117-4534-4b95-ac30-69acf2e72777
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-GV6T9MHC
+  CHART-LDT5F5BS:
+    children: []
+    id: CHART-LDT5F5BS
+    meta:
+      chartId: 7
+      height: 50
+      sliceName: Distribuicao de Fraude por Tipo
+      uuid: 074d6b00-0891-4027-8be8-2cdb799239d1
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-GV6T9MHC
+  CHART-RBC1FDKU:
+    children: []
+    id: CHART-RBC1FDKU
+    meta:
+      chartId: 8
+      height: 50
+      sliceName: KPI - Latencia Media do Streaming (s)
+      uuid: 6d4e63c6-2bf6-4684-b30e-ad43fe4e6577
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-GV6T9MHC
+  CHART-7XXLXAGH:
+    children: []
+    id: CHART-7XXLXAGH
+    meta:
+      chartId: 11
+      height: 50
+      sliceName: Alertas por Hora (Streaming)
+      uuid: d8f1ad63-aa11-456d-993c-bb574594e74d
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-GV6T9MHC
+  CHART-901OZ391:
+    children: []
+    id: CHART-901OZ391
+    meta:
+      chartId: 9
+      height: 50
+      sliceName: KPI - Alertas do Detector
+      uuid: 4c94a6f3-75b7-402f-b785-7b679874ad74
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-GV6T9MHC
+  CHART-7NBUMN3V:
+    children: []
+    id: CHART-7NBUMN3V
+    meta:
+      chartId: 1
+      height: 50
+      sliceName: KPI - Volume de Transacoes
+      uuid: d13d84a4-6967-4b80-9296-e0eff3d657dc
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-GV6T9MHC
+  CHART-2989E905:
+    children: []
+    id: CHART-2989E905
+    meta:
+      chartId: 5
+      height: 50
+      sliceName: Volume Diario por Tipo de Transacao
+      uuid: 124e6618-ab42-4b6f-b677-671f83119092
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-GV6T9MHC
+  CHART-FK56WY4Z:
+    children: []
+    id: CHART-FK56WY4Z
+    meta:
+      chartId: 4
+      height: 50
+      sliceName: KPI - Alertas de Fraude
+      uuid: 7681e8e0-8d06-46b6-a213-3c988dd313e5
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-GV6T9MHC
+  CHART-J64MJ54T:
+    children: []
+    id: CHART-J64MJ54T
     meta:
       chartId: 2
       height: 50
@@ -259,7 +391,7 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-N-B7KMRJR0
+    - ROW-N-GV6T9MHC
 metadata:
   native_filter_configuration:
   - id: NATIVE_FILTER-periodo

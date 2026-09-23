@@ -18,6 +18,7 @@ from src.serving.dashboards.provision import (
     _build_native_filters,
     _build_position_json,
     finalize_dashboard,
+    verify_chart,
 )
 
 
@@ -35,7 +36,24 @@ class TestChartsRegistry:
             assert "metric" in chart.query_extra or "metrics" in chart.query_extra
 
     def test_datasets_tuple_matches_schema_tables(self):
-        assert DATASETS == ("fact_transactions", "agg_daily_fraud_metrics")
+        assert DATASETS == (
+            "fact_transactions",
+            "agg_daily_fraud_metrics",
+            "stream_scored_transactions",
+            "fraud_alerts",
+        )
+
+    def test_only_streaming_charts_are_optional(self):
+        optional = {c.dataset_table for c in CHARTS if c.optional}
+        assert optional == {"stream_scored_transactions", "fraud_alerts"}
+        assert not any(c.optional for c in CHARTS if c.dataset_table in DATASETS[:2])
+
+    def test_streaming_datasets_match_the_postgres_schema(self):
+        from pathlib import Path
+
+        ddl = (Path(__file__).parents[2] / "src/serving/loaders/schema.sql").read_text(encoding="utf-8")
+        for table in DATASETS:
+            assert f"CREATE TABLE IF NOT EXISTS {table}" in ddl
 
 
 class TestBuildPositionJson:
@@ -50,6 +68,12 @@ class TestBuildPositionJson:
         assert position["ROW-0"]["children"] == ["CHART-1", "CHART-2", "CHART-3", "CHART-4"]
         assert position["ROW-1"]["children"] == ["CHART-5", "CHART-6"]
         assert position["ROW-2"]["children"] == ["CHART-7"]
+
+    def test_eleven_charts_add_the_streaming_rows(self):
+        position = _build_position_json(list(range(1, 12)))
+        assert position["GRID_ID"]["children"] == ["ROW-0", "ROW-1", "ROW-2", "ROW-3", "ROW-4"]
+        assert position["ROW-3"]["children"] == ["CHART-8", "CHART-9"]
+        assert position["ROW-4"]["children"] == ["CHART-10", "CHART-11"]
 
     def test_every_chart_node_references_correct_chart_id(self):
         position = _build_position_json([10, 20])
@@ -128,3 +152,29 @@ class TestFinalizeDashboard:
         path, payload = client.put.call_args.args
         assert path == "/api/v1/dashboard/1"
         assert payload["published"] is True
+
+
+class TestVerifyChartOptional:
+    @staticmethod
+    def _client(rowcount: int) -> MagicMock:
+        client = MagicMock()
+        client.post.return_value.json.return_value = {
+            "result": [{"rowcount": rowcount, "data": [{"count": 1}] if rowcount else []}]
+        }
+        return client
+
+    def test_optional_chart_without_data_is_not_a_failure(self):
+        chart = next(c for c in CHARTS if c.optional)
+        result = verify_chart(self._client(0), chart, 1)
+        assert result.ok is True
+        assert "sem dados" in result.detail
+
+    def test_mandatory_chart_without_data_is_a_failure(self):
+        chart = next(c for c in CHARTS if not c.optional)
+        assert verify_chart(self._client(0), chart, 1).ok is False
+
+    def test_optional_chart_with_data_passes_normally(self):
+        chart = next(c for c in CHARTS if c.optional)
+        result = verify_chart(self._client(3), chart, 1)
+        assert result.ok is True
+        assert "3 linha(s)" in result.detail

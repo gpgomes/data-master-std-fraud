@@ -165,8 +165,20 @@ tabela — sem foreign keys entre fato e dimensões de propósito (ver
 |----------|-----------|
 | `GET /health/live`, `GET /health/ready` | Liveness/readiness (readiness checa a conexão com o Postgres) |
 | `GET /transactions`, `GET /transactions/{id}` | Transações (paginado) |
-| `GET /alerts` | `fact_transactions` filtrado por `is_fraud=true` — ver nota em `alerts.py` sobre a fonte de dados |
+| `GET /alerts` | Alertas reais do detector de streaming (tabela `fraud_alerts`, com `z_score`, `fraud_score` e `alert_reason`); a visão pelo rótulo do batch é `GET /transactions?is_fraud=true` |
 | `GET /kpis/fraud-daily` | `agg_daily_fraud_metrics` (paginado) |
+
+### Carregar a saída do streaming (issue #38)
+
+`stream_to_postgres.py` lê `silver/transactions_stream/` e recarrega `stream_scored_transactions` (scores e latência) e `fraud_alerts`:
+
+```bash
+make spark-submit-stream-postgres
+```
+
+Truncate + reload idempotente: rodar de novo não duplica nada. Sem saída de streaming no Silver ele pula a carga com um aviso e sai com 0 (por isso é a última task da DAG `batch_transformation_pipeline`, sem bloqueá-la). Como o streaming ocupa todos os cores do cluster Spark local, **pare o `spark-submit-stream` (Ctrl+C) antes de rodar a carga**; o Parquet já gravado continua lá. A serving layer reflete o streaming com a defasagem da última carga.
+
+Conferir: `SELECT COUNT(*), COUNT(fraud_score), ROUND(AVG(latency_seconds)::numeric, 2) FROM stream_scored_transactions;` e `SELECT COUNT(*) FROM fraud_alerts;` (deve bater com as mensagens de `fraud-alerts`).
 
 ### Rodar manualmente
 
@@ -183,11 +195,7 @@ make api                         # sobe a API em http://localhost:8000/docs
 2. **`503 database unavailable`**: Postgres não está pronto ou
    `POSTGRES_*` no `.env` não bate com o container — ver
    `make logs-postgres`.
-3. **`/alerts` não reflete os alertas do streaming (Z-Score)**: esperado —
-   `fraud-alerts` (Kafka, issue #11) não é persistido em nenhuma tabela
-   consultável hoje; `/alerts` usa o rótulo `is_fraud` já carregado pelo
-   batch. Ligar essa fonte exigiria um consumidor Kafka novo (mesmo gap
-   documentado para `fraud_score`, issue #16).
+3. **`/alerts` vazio**: `fraud_alerts` só tem dados depois que o job de streaming rodou e a carga foi executada (`make spark-submit-stream-postgres`, ver abaixo). Sem streaming a API devolve `total: 0`, não erro.
 
 ## Catálogo de Dados
 
@@ -224,9 +232,10 @@ Exceção: assets com `optional=True` no registro (`bronze_market_data` e
 `silver_market_data`, cotações do yfinance que podem vir vazias por rate limit HTTP 429
 do Yahoo Finance) não derrubam o `--strict`. Se estiverem sem dados, o catálogo os marca
 com ⚠️ "sem dados (opcional)", o log registra um warning e o comando sai com código 0.
-Um resultado normal nesta V1 local é, portanto: 17 datasets, 0 referências inválidas,
-14 com ✅, 2 de mercado com ⚠️ e o dashboard "não validado" (não há checagem de infra
-para dashboards).
+`silver_transactions_stream` (a saída do streaming) também é opcional: só existe depois que o job de
+streaming rodou. Um resultado normal nesta V1 local é, portanto: 20 datasets, 0 referências inválidas,
+17 com ✅ (16 se o streaming nunca rodou), 2 de mercado com ⚠️ (3 sem streaming) e o dashboard
+"não validado" (não há checagem de infra para dashboards).
 
 ### Adicionar/alterar um asset
 
@@ -284,9 +293,7 @@ regenerado a cada execução, não editado à mão.
 2. **Chart sem dado / "0 rows"**: confira se `make spark-submit-batch` +
    `make spark-submit-gold-postgres` já rodaram (o Postgres precisa ter
    linhas em `fact_transactions`/`agg_daily_fraud_metrics`).
-3. **`fraud_score` sempre nulo**: esperado — só o detector de streaming
-   (issue #11) popula esse campo, e ele não escreve na camada Gold
-   batch/Postgres (mesmo gap de `alerts.py`, issue #15).
+3. **Charts do streaming sem dado** (latência, alertas do detector, distribuição de `fraud_score`, alertas por hora): as tabelas `stream_scored_transactions`/`fraud_alerts` estão vazias. Rode o streaming e `make spark-submit-stream-postgres`. Esses 4 charts são opcionais na verificação (`make dashboards` não falha sem eles). O `fraud_score` de `fact_transactions` (batch) continua nulo por definição.
 
 ### Validação visual (checklist manual)
 

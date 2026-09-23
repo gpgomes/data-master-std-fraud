@@ -134,9 +134,9 @@ class TestRenderMarkdown:
 
 
 class TestOptionalAssets:
-    def test_only_market_assets_are_optional(self):
+    def test_only_market_and_streaming_output_are_optional(self):
         optional = {e.key for e in CATALOG if e.optional}
-        assert optional == {"bronze_market_data", "silver_market_data"}
+        assert optional == {"bronze_market_data", "silver_market_data", "silver_transactions_stream"}
 
     def test_missing_optional_asset_rendered_as_warning_not_error(self):
         results = [ValidationResult("bronze_market_data", False, "nenhum objeto encontrado")]
