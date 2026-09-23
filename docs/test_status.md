@@ -1340,7 +1340,7 @@ Roteiro: planilha de validação manual (13 áreas). Ambiente reiniciado do zero
 | V1-BUG-03 | 6 | `validate_silver_data` falhava (sem Parquet de mercado no Silver) | Consequência do V1-BUG-02 | Mesmo tratamento opcional no gate do Silver; scheduler reiniciado (tasks são forks do scheduler) |
 | V1-BUG-04 | 4 | Executor Spark morto (`exit code 137`, `ExecutorLostFailure`) | VM do Docker Desktop com 7,75 GB (OOM killer) | Docker Desktop com 12 GB; README e runbook atualizados |
 | V1-BUG-05 | 5 | `fraud_score` sempre nulo, `fraud-alerts` vazio | Simulador com timestamps aleatórios em 180 dias vs janela de 1h em tempo de evento | Producer carimba `timestamp=agora` (teste incluído) |
-| V1-BUG-06 | 5 | 62 mensagens duplicadas em `enriched-transactions` e 5 em `fraud-alerts` após reiniciar o streaming | At-least-once do `foreachBatch` → Kafka (`alert_id` é `uuid()`) | Documentado; issue #36 |
+| V1-BUG-06 | 5 | 62 mensagens duplicadas em `enriched-transactions` e 5 em `fraud-alerts` após reiniciar o streaming | At-least-once do `foreachBatch` → Kafka (`alert_id` é `uuid()`) | Corrigido na issue #36: replay idempotente por etapa (Parquet por `query_id/batch_id`, marcadores de progresso, `alert_id` determinístico). Provado ao vivo: 4 `kill -9` no meio de batches, 0 duplicatas no Parquet, no `enriched-transactions` (3.098 msgs) e no `fraud-alerts` (244) |
 | V1-BUG-07 | 7 | `runner --all` (item 7.1) falhava só pelos gates de mercado | Não distinguia gates opcionais | `--all` sai com 0 se só os opcionais falharem |
 | V1-BUG-08 | 8 | `make catalog` (`--strict`) saía com código 1 | Assets de mercado ausentes tratados como obrigatórios | Campo `optional` no registro; ⚠️ "sem dados (opcional)" |
 | V1-BUG-09 | 10 | Dashboard Superset criado como rascunho ("Draft") | Provisionamento nunca publicava | `published: true` no `finalize_dashboard` (teste incluído) |
@@ -1350,7 +1350,7 @@ Roteiro: planilha de validação manual (13 áreas). Ambiente reiniciado do zero
 
 ### Achados sem correção de código (registrados)
 
-- **Issue #36:** deduplicar reprocessamento de micro-batch do streaming.
+- **Issue #36:** deduplicação do reprocessamento de micro-batch do streaming (resolvida em branch próprio; janela residual at-least-once nos tópicos Kafka documentada).
 - **Issue #37:** gerar imagem (SVG) da linhagem do catálogo ao final da validação.
 - **Issue #38:** persistir `fraud_score`/alertas do streaming no Postgres e expor na API/Superset (gap de score e latência).
 - O run `scheduled__...` que o Airflow cria ao despausar uma DAG (catchup do último intervalo) roda além do manual; com `max_active_runs=1`, o manual espera.

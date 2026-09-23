@@ -49,6 +49,30 @@ docker compose exec minio mc rm --recursive --force local/checkpoints/
 make spark-submit-stream
 ```
 
+Apagar `local/checkpoints/` também apaga os marcadores de progresso (`stream_processor_progress/`), que precisam ser resetados junto com os `batch_id`. A saída em `silver/transactions_stream/` fica separada por `query_id` (o id do checkpoint), então o novo stream não sobrescreve a saída de execuções anteriores.
+
+### Semântica de entrega do streaming (issue #36)
+
+Reiniciar ou derrubar o `spark-submit-stream` no meio de um micro-batch faz o Spark reexecutar aquele mesmo `batch_id`. O `_process_batch` trata isso por etapa:
+
+| Etapa | No replay |
+|-------|-----------|
+| Parquet em `silver/transactions_stream/query_id=<id>/batch_id=<n>/` | Sobrescreve a própria partição (overwrite dinâmico): sem linhas duplicadas |
+| Kafka `enriched-transactions`, Kafka `fraud-alerts`, histórico do Z-Score | Pulada se o marcador `checkpoints/stream_processor_progress/batch_<n>.<etapa>` existe; o histórico não é contado em dobro |
+| `alert_id` | Derivado de `transaction_id`: o mesmo alerta mantém o mesmo id |
+
+Garantia: **sem duplicatas no Parquet**; **at-least-once nos tópicos Kafka** (o Kafka sink do Spark não é transacional, então cair entre o fim de uma etapa Kafka e a gravação do seu marcador ainda pode duplicar aquela mensagem). Consumidores de `enriched-transactions`/`fraud-alerts` devem deduplicar por `transaction_id` (ou `alert_id`).
+
+Verificar duplicatas no Kafka (as mensagens do Kafka carregam `transaction_id`):
+
+```bash
+docker compose exec -T kafka kafka-console-consumer --bootstrap-server kafka:9092 \
+  --topic enriched-transactions --from-beginning --timeout-ms 10000 2>/dev/null \
+  | grep -o '"transaction_id":"[^"]*"' | sort | uniq -d | wc -l
+```
+
+Layout novo: `silver/transactions_stream/` passou a ser particionado por `query_id` e `batch_id`. Saída gravada por versões anteriores fica solta na raiz do prefixo; apague `silver/transactions_stream/` antes de ler o conjunto todo.
+
 ### Resetar ambiente completo
 ```bash
 make clean

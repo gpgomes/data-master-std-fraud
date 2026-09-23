@@ -22,11 +22,12 @@ Execução via CLI:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import tempfile
 
-from pyspark.sql import DataFrame, SparkSession, Window
+from pyspark.sql import Column, DataFrame, SparkSession, Window
 from pyspark.sql import functions as F
 from pyspark.sql.types import DoubleType, StringType, StructField, StructType, TimestampType
 from pyspark.sql.utils import AnalysisException
@@ -46,6 +47,11 @@ Z_SCORE_THRESHOLD = 3.0  # |z_score| > limiar => anomalia
 Z_SCORE_SCALE = 6.0  # mapeia |z_score| para [0,1]: |z|=6 => fraud_score=1.0
 WATERMARK_DELAY = "1 hour"
 DEFAULT_FRAUD_TYPE_FALLBACK = "MONEY_LAUNDERING"
+
+# Etapas de um micro-batch, na ordem em que rodam. Cada uma grava um marcador ao concluir
+# (ver `_run_stage`), para que o replay de um batch interrompido pule o que já foi feito.
+_STAGES = ("parquet", "enriched", "alerts", "history")
+PROGRESS_RETENTION_BATCHES = 100  # marcadores de batches mais antigos que isto são apagados
 
 # Schema do estado persistido entre micro-batches (histórico de amount por
 # cliente, usado como baseline da janela deslizante — ver `_enrich_and_score`).
@@ -73,6 +79,10 @@ class StreamProcessor:
         self._gold = f"s3a://{settings.minio.bucket_gold}"
         self._checkpoints = f"s3a://{settings.minio.bucket_checkpoints}"
         self._history_path = f"{self._silver}/_stream_state/customer_amount_history/"
+        # Marcadores de progresso ficam no bucket de checkpoints de propósito: apagar o
+        # checkpoint (que zera os batch_id) apaga os marcadores junto.
+        self._progress_path = f"{self._checkpoints}/stream_processor_progress"
+        self._query_id: str | None = None
         self._dim_customers = dim_customers
 
     # ── Leitura e parsing ────────────────────────────────────────────────────────
@@ -224,11 +234,25 @@ class StreamProcessor:
 
         return df.withColumn("processing_timestamp", F.current_timestamp())
 
+    @staticmethod
+    def _deterministic_alert_id(transaction_id: Column) -> Column:
+        """UUID derivado só do `transaction_id`: o mesmo alerta reprocessado mantém o
+        `alert_id` (com `uuid()` aleatório, um replay gerava um alerta "novo")."""
+        digest = F.md5(F.concat(F.lit("fraud-alert:"), transaction_id))
+        return F.concat_ws(
+            "-",
+            digest.substr(1, 8),
+            digest.substr(9, 4),
+            digest.substr(13, 4),
+            digest.substr(17, 4),
+            digest.substr(21, 12),
+        )
+
     def _build_fraud_alerts(self, scored_df: DataFrame) -> DataFrame:
         """Constrói o payload de FraudAlert a partir das linhas anômalas."""
         anomalies = scored_df.filter(F.col("is_anomaly"))
         return anomalies.select(
-            F.expr("uuid()").alias("alert_id"),
+            self._deterministic_alert_id(F.col("transaction_id")).alias("alert_id"),
             F.col("transaction_id"),
             F.col("customer_id"),
             F.col("timestamp"),
@@ -262,8 +286,84 @@ class StreamProcessor:
             .save()
         )
 
+    # ── Idempotência do micro-batch (issue #36) ──────────────────────────────────
+    #
+    # O Spark reexecuta o mesmo `batch_id` (com os mesmos dados) se o job cair antes de
+    # gravar o commit do checkpoint. O foreachBatch escreve em vários destinos sem
+    # transação, então cada etapa é idempotente (Parquet, sobrescrevendo a própria
+    # partição) ou pulada no replay (marcador de etapa concluída).
+    # Janela residual: cair entre o fim de uma etapa Kafka e a escrita do marcador dela
+    # ainda pode duplicar aquela mensagem — o Kafka sink do Spark não é transacional;
+    # consumidores devem deduplicar por `transaction_id` (e `alert_id`, agora estável).
+
+    def _hadoop_path(self, path: str):
+        hadoop_path = self.spark._jvm.org.apache.hadoop.fs.Path(path)  # type: ignore[union-attr]
+        return hadoop_path, hadoop_path.getFileSystem(self.spark._jsc.hadoopConfiguration())
+
+    def _marker_path(self, batch_id: int, stage: str) -> str:
+        return f"{self._progress_path}/batch_{batch_id}.{stage}"
+
+    def _stage_done(self, batch_id: int, stage: str) -> bool:
+        path, fs = self._hadoop_path(self._marker_path(batch_id, stage))
+        return bool(fs.exists(path))
+
+    def _mark_stage_done(self, batch_id: int, stage: str) -> None:
+        path, fs = self._hadoop_path(self._marker_path(batch_id, stage))
+        fs.create(path, True).close()
+
+    def _prune_markers(self, batch_id: int) -> None:
+        old_batch = batch_id - PROGRESS_RETENTION_BATCHES
+        if old_batch < 0:
+            return
+        for stage in _STAGES:
+            path, fs = self._hadoop_path(self._marker_path(old_batch, stage))
+            fs.delete(path, False)
+
+    def _run_stage(self, batch_id: int, stage: str, action) -> None:
+        if self._stage_done(batch_id, stage):
+            logger.info(
+                "Etapa do micro-batch já concluída — ignorada no replay",
+                batch_id=batch_id,
+                stage=stage,
+            )
+            return
+        action()
+        self._mark_stage_done(batch_id, stage)
+
+    def _resolve_query_id(self) -> str:
+        """Id da query, lido do `metadata` do checkpoint. Muda quando o checkpoint é
+        recriado (o `batch_id` volta a 0), então separa a saída de cada "vida" do stream."""
+        if self._query_id is None:
+            path = f"{self._checkpoints}/stream_processor/metadata"
+            try:
+                row = self.spark.read.text(path).first()
+                if row is None:
+                    raise ValueError("metadata vazio")
+                self._query_id = json.loads(row["value"])["id"]
+            except (AnalysisException, ValueError, KeyError, TypeError):
+                logger.warning("Checkpoint sem metadata legível — usando query_id 'unknown'", path=path)
+                self._query_id = "unknown"
+        return self._query_id
+
+    def _write_silver_stream(self, scored: DataFrame, batch_id: int) -> None:
+        """Grava em `query_id=<id>/batch_id=<n>` com overwrite dinâmico: reexecutar o
+        mesmo batch substitui a própria partição em vez de anexar linhas duplicadas."""
+        (
+            scored.withColumn("query_id", F.lit(self._resolve_query_id()))
+            .withColumn("batch_id", F.lit(batch_id))
+            .write.format("parquet")
+            .mode("overwrite")
+            .option("partitionOverwriteMode", "dynamic")
+            .partitionBy("query_id", "batch_id")
+            .save(f"{self._silver}/transactions_stream/")
+        )
+
     def _process_batch(self, batch_df: DataFrame, batch_id: int) -> None:
+        self._prune_markers(batch_id)
         if batch_df.isEmpty():
+            return
+        if self._stage_done(batch_id, _STAGES[-1]):
+            logger.info("Micro-batch já concluído (replay após restart) — ignorado", batch_id=batch_id)
             return
 
         batch_df = batch_df.cache()
@@ -272,20 +372,25 @@ class StreamProcessor:
 
             scored = self._enrich_and_score(batch_df, history).cache()
             rows = scored.count()
-
-            scored.write.format("parquet").mode("append").save(
-                f"{self._silver}/transactions_stream/"
-            )
-            self._write_to_kafka(scored, settings.kafka.topic_enriched, key_col="customer_id")
-
             alerts = self._build_fraud_alerts(scored).cache()
             alert_count = alerts.count()
-            if alert_count:
-                self._write_to_kafka(
-                    alerts, settings.kafka.topic_fraud_alerts, key_col="customer_id"
-                )
 
-            self._persist_history(batch_df, history)
+            def write_alerts() -> None:
+                if alert_count:
+                    self._write_to_kafka(
+                        alerts, settings.kafka.topic_fraud_alerts, key_col="customer_id"
+                    )
+
+            self._run_stage(batch_id, "parquet", lambda: self._write_silver_stream(scored, batch_id))
+            self._run_stage(
+                batch_id,
+                "enriched",
+                lambda: self._write_to_kafka(
+                    scored, settings.kafka.topic_enriched, key_col="customer_id"
+                ),
+            )
+            self._run_stage(batch_id, "alerts", write_alerts)
+            self._run_stage(batch_id, "history", lambda: self._persist_history(batch_df, history))
 
             logger.info(
                 "Micro-batch processado", batch_id=batch_id, rows=rows, anomalies=alert_count
