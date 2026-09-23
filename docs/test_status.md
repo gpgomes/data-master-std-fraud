@@ -1328,9 +1328,9 @@ Roteiro: planilha de validação manual (13 áreas). Ambiente reiniciado do zero
 | 8. Catálogo | OK (4/4): 17 datasets, 0 referências inválidas; 14 ✅ + 2 ⚠️ (mercado) + 1 não validado (dashboard) |
 | 9. Serving | OK (8/8): Postgres com 500.000 transações; API coerente com o Postgres |
 | 10. Dashboards | OK (8/8): 7 charts, KPIs iguais ao Postgres (500.000; R$ 933.479.448,51; 2,5078%; 12.539) |
-| 11. CI e qualidade | 4/5: lint OK; 301 testes unitários (81,35%); 8 de integração; 309 no total (82,80%). 11.3 (PR) pendente |
+| 11. CI e qualidade | OK (5/5): lint limpo; 336 testes unitários (82,68%); 8 de integração; as PRs #39 e #40 passaram Lint e Unit tests no GitHub Actions |
 | 12. Segurança | OK (4/4): `.env` fora do git e do histórico, sem chaves reais, SQL da API parametrizado (injeção testada) |
-| 13. Documentação | Itens revisados; ver correções abaixo |
+| 13. Documentação | OK (10/10): itens revisados e a rodada limpa do zero (13.10) concluída; ver abaixo |
 
 ### Bugs encontrados e corrigidos
 
@@ -1348,6 +1348,29 @@ Roteiro: planilha de validação manual (13 áreas). Ambiente reiniciado do zero
 | V1-BUG-10 | 11 | Testes de integração deixavam linhas falsas em `bronze/transactions/` e criariam `bronze/market_data/` | Escreviam no lago real sem limpeza | Bucket temporário por execução, apagado ao final; `bronze/` comprovadamente idêntico antes/depois |
 | V1-BUG-11 | 12 | `.env.example` com 14 variáveis sem uso (incl. Delta Lake, descartado na issue #9) | Resíduo de fases anteriores | Removidas; notas sobre chaves fixas do compose e bloco AWS reservado |
 | V1-BUG-12 | 13 | Dependência `duckdb` nunca importada | Resíduo do plano original | Removida do `pyproject.toml` |
+
+### Rodada limpa do zero (13.10, 2026-09-23)
+
+Feita no `main` já com as correções das PRs #33 a #40: `docker compose down -v`, `data/sample/` apagado, `.env` regenerado a partir do `.env.example` e nenhuma DAG despausada. Cada resultado abaixo foi comparado com o esperado.
+
+| Etapa | Resultado |
+|-------|-----------|
+| `make up` + `make setup` + `make seed-data` | 12 containers healthy em 42 s, 4 buckets, 4 tópicos, 500.000 transações (12.539 fraudes), 10.000 clientes |
+| Airflow: `batch_ingestion_pipeline` | 6 tasks em success (~40 s); `bronze/market_data` vazio (Yahoo 429), gate opcional só avisa |
+| Airflow: `batch_transformation_pipeline` | 7 tasks em success (~3 min) incluindo `load_stream_postgres`, que pulou a carga sem falhar (streaming ainda não tinha rodado) |
+| `bronze_to_silver` | 500.000 lidas = 500.000 gravadas, 0 descartadas; clientes 10.000 |
+| Postgres | `fact_transactions` 500.000 (12.539 fraudes, 2,5078%), `dim_customers` 10.000, `dim_date` 182 |
+| Streaming (~4,5 min) + `make spark-submit-stream-postgres` | 1.997 transações pontuadas (531 com `fraud_score`), 137 alertas, latência média 5,28 s; 0 duplicatas no Parquet, no `enriched-transactions` e no `fraud-alerts` |
+| `alert_id` Kafka x Postgres | 137 = 137, 0 diferenças |
+| `runner --all` (GX) | exit 0: 6 gates OK, 130 expectativas, 0 falhas |
+| `make catalog` | exit 0: 20 datasets (17 ✅, 2 ⚠️ de mercado, 1 dashboard não validado) |
+| `make dashboards` | exit 0: 11 charts, 0 verificações falhadas; valores iguais ao Postgres (500.000; R$ 933.479.448,51; 2,5078%; 12.539; latência 5,2828; 137 alertas) |
+| API | `/health/ready` ready; `/transactions` 500.000; `/alerts` 137; `/kpis/fraud-daily` 1.087; `/transactions?is_fraud=true` 12.539 |
+| `make lint`, `make test-unit`, `make test-integration` | limpo; 336 passed (82,68%); 8 passed com `bronze/` idêntico antes e depois |
+
+Nenhum bug novo apareceu nesta rodada.
+
+Achado: na sessão anterior o `bronze/transactions` tinha 197 partições e o `bronze_to_silver` descartava 42.637 linhas; do zero são 181 partições e 0 descartes. A diferença é atribuível a partições antigas em `data/sample/`, que `make seed-data` não limpa (só `make clean` limpa). Em um clone novo isso não acontece.
 
 ### Achados sem correção de código (registrados)
 
