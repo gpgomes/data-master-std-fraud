@@ -470,3 +470,133 @@ class TestBuildFraudAlerts:
         alert = FraudAlert(**row)
         assert alert.transaction_id == "tx-alert-1"
         assert alert.fraud_type == "CARD_CLONING"
+
+
+# ── TestIdempotentMicroBatch (issue #36) ─────────────────────────────────────────
+
+
+class TestIdempotentMicroBatch:
+    """O Spark reexecuta o mesmo `batch_id` se o job cai antes do commit do checkpoint.
+    Cada etapa do `_process_batch` deve ser idempotente ou pulada no replay."""
+
+    _BATCH = [
+        _tx(customer_id="cust-9", ts="2024-06-15T10:00:00Z", amount=100.0),
+        _tx(customer_id="cust-9", ts="2024-06-15T10:01:00Z", amount=110.0),
+        _tx(customer_id="cust-9", ts="2024-06-15T10:02:00Z", amount=90.0),
+        _tx(customer_id="cust-9", ts="2024-06-15T10:03:00Z", amount=5000.0),  # anomalia
+    ]
+
+    @staticmethod
+    def _local_processor(spark: SparkSession, root, query_id: str = "query-A") -> StreamProcessor:
+        base = root.as_uri()
+        p = StreamProcessor(spark=spark)
+        p._silver = f"{base}/silver"
+        p._checkpoints = f"{base}/checkpoints"
+        p._history_path = f"{base}/silver/_stream_state/customer_amount_history/"
+        p._progress_path = f"{base}/checkpoints/stream_processor_progress"
+        p._query_id = query_id
+        return p
+
+    @classmethod
+    def _new_batch(cls, spark: SparkSession):
+        # DataFrame novo a cada execução, como no foreachBatch real: `_process_batch` faz
+        # unpersist no fim, e o helper de teste lê de um JSON temporário já apagado.
+        return _make_tx(spark, cls._BATCH)
+
+    @staticmethod
+    def _silver_stream(spark: SparkSession, p: StreamProcessor):
+        return spark.read.parquet(f"{p._silver}/transactions_stream/")
+
+    def test_replayed_batch_does_not_duplicate_parquet_or_kafka(self, spark, tmp_path):
+        from unittest.mock import patch
+
+        p = self._local_processor(spark, tmp_path)
+        with patch.object(p, "_write_to_kafka") as kafka:
+            p._process_batch(self._new_batch(spark), 7)
+            p._process_batch(self._new_batch(spark), 7)  # replay pós-restart
+
+        out = self._silver_stream(spark, p)
+        assert out.count() == 4
+        assert out.select("transaction_id").distinct().count() == 4
+        assert kafka.call_count == 2  # enriched + alerts, uma vez cada
+
+    def test_crash_after_parquet_then_replay_does_not_duplicate_parquet(self, spark, tmp_path):
+        from unittest.mock import patch
+
+        p = self._local_processor(spark, tmp_path)
+        with patch.object(p, "_write_to_kafka", side_effect=RuntimeError("kafka fora")):
+            with pytest.raises(RuntimeError):
+                p._process_batch(self._new_batch(spark), 3)
+        assert self._silver_stream(spark, p).count() == 4  # parquet já tinha sido gravado
+
+        with patch.object(p, "_write_to_kafka") as kafka:
+            p._process_batch(self._new_batch(spark), 3)  # replay: pula o parquet, refaz o Kafka
+
+        assert self._silver_stream(spark, p).count() == 4
+        assert kafka.call_count == 2
+
+    def test_history_is_not_counted_twice_on_replay(self, spark, tmp_path):
+        from unittest.mock import patch
+
+        p = self._local_processor(spark, tmp_path)
+        with patch.object(p, "_write_to_kafka"):
+            p._process_batch(self._new_batch(spark), 5)
+            p._process_batch(self._new_batch(spark), 5)
+
+        assert spark.read.parquet(p._history_path).count() == 4
+
+    def test_new_checkpoint_does_not_overwrite_previous_run_output(self, spark, tmp_path):
+        from unittest.mock import patch
+
+        first = self._local_processor(spark, tmp_path, query_id="query-A")
+        second = self._local_processor(spark, tmp_path, query_id="query-B")
+        # checkpoint recriado: marcadores somem junto e o batch_id volta a 0
+        second._progress_path = f"{tmp_path.as_uri()}/checkpoints-novo/stream_processor_progress"
+        other = [{**row, "transaction_id": f"novo-{i}"} for i, row in enumerate(self._BATCH)]
+
+        with patch.object(first, "_write_to_kafka"), patch.object(second, "_write_to_kafka"):
+            first._process_batch(_make_tx(spark, self._BATCH), 0)
+            second._process_batch(_make_tx(spark, other), 0)
+
+        out = self._silver_stream(spark, first)
+        assert out.count() == 8
+        assert {r["query_id"] for r in out.select("query_id").distinct().collect()} == {
+            "query-A",
+            "query-B",
+        }
+
+    def test_alert_id_is_deterministic_for_the_same_transaction(self, spark, processor):
+        import uuid
+
+        scored = processor._enrich_and_score(_make_tx(spark, self._BATCH), _empty_history(spark))
+        first = [r["alert_id"] for r in processor._build_fraud_alerts(scored).collect()]
+        second = [r["alert_id"] for r in processor._build_fraud_alerts(scored).collect()]
+
+        assert len(first) == 1
+        assert first == second
+        assert str(uuid.UUID(first[0])) == first[0]
+
+    def test_alert_ids_differ_between_transactions(self, spark, processor):
+        rows = self._BATCH + [
+            _tx(customer_id="cust-10", ts="2024-06-15T10:00:00Z", amount=100.0),
+            _tx(customer_id="cust-10", ts="2024-06-15T10:01:00Z", amount=110.0),
+            _tx(customer_id="cust-10", ts="2024-06-15T10:02:00Z", amount=90.0),
+            _tx(customer_id="cust-10", ts="2024-06-15T10:03:00Z", amount=7000.0),
+        ]
+        scored = processor._enrich_and_score(_make_tx(spark, rows), _empty_history(spark))
+        ids = [r["alert_id"] for r in processor._build_fraud_alerts(scored).collect()]
+
+        assert len(ids) == 2
+        assert len(set(ids)) == 2
+
+    def test_old_progress_markers_are_pruned(self, spark, tmp_path):
+        from src.transformation.streaming.stream_processor import PROGRESS_RETENTION_BATCHES
+
+        p = self._local_processor(spark, tmp_path)
+        p._mark_stage_done(50, "history")
+        p._mark_stage_done(51, "history")
+
+        p._prune_markers(50 + PROGRESS_RETENTION_BATCHES)
+
+        assert not p._stage_done(50, "history")
+        assert p._stage_done(51, "history")

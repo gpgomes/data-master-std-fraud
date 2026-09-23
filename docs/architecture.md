@@ -55,6 +55,8 @@ Simulador Python → Kafka (raw-transactions)
     todas as linhas scored) + Kafka (fraud-alerts, só as anômalas)
 ```
 
+**Semântica de entrega (issue #36):** o Spark reexecuta o mesmo micro-batch se o job cair antes de gravar o commit do checkpoint, e o `foreachBatch` escreve em vários destinos sem transação. Por isso cada etapa é idempotente ou pulada no replay: o Parquet é gravado em `silver/transactions_stream/query_id=<id>/batch_id=<n>/` com overwrite dinâmico da própria partição, e cada etapa (parquet, enriched, alerts, histórico do Z-Score) grava um marcador em `checkpoints/stream_processor_progress/` que faz o replay pulá-la. O `alert_id` é derivado de `transaction_id`, então um alerta reprocessado mantém o mesmo id. Garantia final: **at-least-once nos tópicos Kafka** (o Kafka sink do Spark não é transacional; cair entre o fim de uma etapa Kafka e a escrita do seu marcador ainda pode duplicar aquela mensagem, uma janela de milissegundos) e **sem duplicatas no Parquet**. Consumidores devem deduplicar por `transaction_id`.
+
 ## Componentes
 
 ### Ingestão
