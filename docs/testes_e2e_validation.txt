@@ -1,0 +1,274 @@
+================================================================================
+CHECKLIST DE TESTES — Validação End-to-End da Stack Completa
+================================================================================
+
+Não é uma issue numerada do GitHub — validação ad-hoc pedida entre sessões
+("vamos validar o conjunto todo rodando"), depois de todas as issues #7-#16
+e #18 já mergeadas. Objetivo: rodar a plataforma inteira junto, com dados
+reais, em vez de validar cada componente isolado (como cada issue fez até
+aqui). Único artefato de código resultante: PR #33.
+
+Arquivos alterados:
+  - docker-compose.yml   (healthcheck do MinIO)
+  - Makefile              (.PHONY desatualizado)
+
+================================================================================
+1. INFRAESTRUTURA (docker compose)
+================================================================================
+
+  ID           Descrição                                   Resultado Esperado
+  -----------------------------------------------------------------------------
+  E2E-INF-01   `make up` (15 serviços)                      Todos os containers
+                                                              "healthy" ou "Up"
+  E2E-INF-02   `docker compose config --quiet`              Válido, sem erros
+  E2E-INF-03   MinIO healthcheck                            "healthy" (ver bug
+                                                              #1 abaixo)
+
+================================================================================
+2. SEED DATA
+================================================================================
+
+  ID           Descrição                                   Resultado Esperado
+  -----------------------------------------------------------------------------
+  E2E-SEED-01  `make seed-data`                              500.000 transações,
+                                                              10.000 clientes,
+                                                              1.000 cotações
+
+================================================================================
+3. AIRFLOW — INGESTÃO (batch_ingestion_pipeline)
+================================================================================
+
+  ID           Descrição                                   Resultado Esperado
+  -----------------------------------------------------------------------------
+  E2E-DAG-01   Trigger manual de batch_ingestion_pipeline    Tasks executam
+  E2E-DAG-02   ingest_transactions, ingest_customers          success (dados de
+                                                              data/sample/)
+  E2E-DAG-03   ingest_market_data                            success, mas 0
+                                                              registros reais
+                                                              (yfinance sem
+                                                              dados pra 2026 —
+                                                              ver limitação #3)
+  E2E-DAG-04   validate_bronze_data (gate GX)                failed — sem
+                                                              nenhum Parquet em
+                                                              bronze/market_data
+                                                              (consequência
+                                                              direta de E2E-DAG-03,
+                                                              comportamento
+                                                              correto do gate)
+
+================================================================================
+4. PIPELINE BATCH — BRONZE → SILVER → GOLD → POSTGRES
+================================================================================
+
+  ID           Etapa                                        Resultado
+  -----------------------------------------------------------------------------
+  E2E-BATCH-01 bronze_to_silver.py --dataset transactions    rows_read=500000,
+                                                              rows_discarded=0,
+                                                              rows_written=500000
+  E2E-BATCH-02 bronze_to_silver.py --dataset customers       rows_read=10000,
+                                                              rows_discarded=0,
+                                                              rows_written=10000
+  E2E-BATCH-03 silver_to_gold.py — dim_customers             10.000 linhas
+  E2E-BATCH-04 silver_to_gold.py — dim_date                  182 linhas
+  E2E-BATCH-05 silver_to_gold.py — fact_transactions         500.000 linhas
+  E2E-BATCH-06 silver_to_gold.py — agg_daily_fraud_metrics   1.089 grupos
+  E2E-BATCH-07 gold_to_postgres.py — 4 tabelas               rows_read ==
+                                                              rows_written nas 4
+
+================================================================================
+5. STREAMING — KAFKA → SPARK STRUCTURED STREAMING
+================================================================================
+
+Pré-requisito: producer rodando (`PRODUCER_RATE_TPS=20 make producer-transactions`)
+e `spark-submit --packages ... stream_processor.py` com log redirecionado.
+
+  ID           Descrição                                   Resultado Esperado
+  -----------------------------------------------------------------------------
+  E2E-STR-01   Micro-batches processados (8+, ~90s)          Sem erro, "Micro-
+                                                              batch processado"
+                                                              com rows > 0
+  E2E-STR-02   Kafka enriched-transactions                   Recebendo todas as
+                                                              linhas com
+                                                              is_anomaly
+                                                              calculado
+  E2E-STR-03   MinIO silver/transactions_stream/              Parquet crescendo
+                                                              a cada trigger
+                                                              (10s)
+  E2E-STR-04   MinIO checkpoints/stream_processor/             Diretório de
+                                                              checkpoint presente
+  E2E-STR-05   Anomalias detectadas (Z-Score)                 0 — esperado:
+                                                              janela por
+                                                              customer_id, 10k
+                                                              clientes ⇒ pouco
+                                                              histórico por
+                                                              cliente na janela;
+                                                              lógica já coberta
+                                                              isoladamente pelos
+                                                              testes unitários
+                                                              da issue #11
+  E2E-STR-06   Kafka fraud-alerts (GetOffsetShell)             offset 0,
+                                                              consistente com
+                                                              E2E-STR-05
+
+================================================================================
+6. API (FastAPI)
+================================================================================
+
+  ID           Endpoint                                     Resultado Esperado
+  -----------------------------------------------------------------------------
+  E2E-API-01   GET /health/live                              {"status":"ok"}
+  E2E-API-02   GET /health/ready                              {"status":"ready"}
+  E2E-API-03   GET /transactions?limit=2                      Dados reais do
+                                                              Postgres
+  E2E-API-04   GET /kpis/fraud-daily?limit=3                   Agregações reais
+                                                              (agg_daily_fraud_
+                                                              metrics)
+  E2E-API-05   GET /alerts?limit=3                             is_fraud=true,
+                                                              fraud_score=null
+                                                              (esperado —
+                                                              issue #12/#16)
+
+================================================================================
+7. GREAT EXPECTATIONS — QUALITY GATES
+================================================================================
+
+Comando: `python -m src.governance.great_expectations.runner <dataset>`
+
+  ID           Dataset                                      Resultado Esperado
+  -----------------------------------------------------------------------------
+  E2E-GX-01    bronze_transactions                           OK, 26 expectations,
+                                                              0 falhas
+  E2E-GX-02    silver_transactions                           OK, 21 expectations,
+                                                              0 falhas
+  E2E-GX-03    gold_fact_transactions                        OK, 22 expectations,
+                                                              0 falhas
+  E2E-GX-04    gold_dim_customers                             OK, 17 expectations,
+                                                              0 falhas
+  E2E-GX-05    gold_dim_date                                  OK, 24 expectations,
+                                                              0 falhas
+  E2E-GX-06    gold_agg_daily_fraud_metrics                   OK, 20 expectations,
+                                                              0 falhas
+
+================================================================================
+8. CATÁLOGO DE DADOS
+================================================================================
+
+  ID           Descrição                                   Resultado Esperado
+  -----------------------------------------------------------------------------
+  E2E-CAT-01   `make catalog --strict` (antes do fix do      "up to date" sem
+               .PHONY)                                       rodar nada — BUG
+                                                              (ver #2 abaixo)
+  E2E-CAT-02   `python -m scripts.build_data_catalog          17 datasets,
+               --strict` (direto, sem o Makefile)             0 referências
+                                                              inválidas, sinaliza
+                                                              corretamente os 2
+                                                              assets de
+                                                              market_data sem
+                                                              dados (exit 1,
+                                                              esperado com
+                                                              --strict)
+
+================================================================================
+9. DASHBOARDS (Superset)
+================================================================================
+
+  ID           Descrição                                   Resultado Esperado
+  -----------------------------------------------------------------------------
+  E2E-DASH-01  `make dashboards` (antes do fix do .PHONY)    "up to date" sem
+                                                              rodar nada — BUG
+                                                              (ver #2 abaixo)
+  E2E-DASH-02  `make dashboards` (depois do fix)              2 datasets, 7
+                                                              charts, 0 falhas
+                                                              de verificação
+                                                              (Volume=500000,
+                                                              Taxa Fraude=
+                                                              2,5078%,
+                                                              Alertas=12539)
+
+================================================================================
+10. VALIDAÇÃO FINAL
+================================================================================
+
+  ID           Descrição                                   Resultado Esperado
+  -----------------------------------------------------------------------------
+  E2E-LIN-01   `make lint`                                    ruff + mypy sem
+                                                              erros
+  E2E-CMP-01   `docker compose config --quiet` (com o fix)    Válido, MinIO
+                                                              publica porta
+                                                              default (9000)
+
+================================================================================
+BUGS ENCONTRADOS E CORRIGIDOS (PR #33)
+================================================================================
+
+  1. docker-compose.yml — healthcheck do MinIO
+     test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+     A imagem minio/minio:RELEASE.2024-03-30T09-41-56Z não tem curl:
+     `docker inspect minio --format='{{json .State.Health}}'` mostrava, em
+     todo ciclo: "OCI runtime exec failed: exec failed: unable to start
+     container process: exec: \"curl\": executable file not found in $PATH".
+     O container ficava "unhealthy" pra sempre, e qualquer serviço com
+     depends_on: condition: service_healthy travava — `make up` falhava com
+     "dependency failed to start: container minio is unhealthy".
+     Corrigido para test: ["CMD", "mc", "ready", "local"] — `mc` já vem
+     embutido na imagem oficial; `docker exec minio mc ready local` retorna
+     "The cluster is ready" (exit 0) sem precisar de `mc alias set` antes.
+
+  2. Makefile — .PHONY desatualizado
+     .PHONY: up down setup test lint format spark-submit-batch
+             spark-submit-stream seed-data clean logs ps help
+     Não incluía a maioria dos alvos adicionados depois da issue #7:
+     catalog, dashboards, dashboards-export, test-unit, test-integration,
+     test-cov, install, spark-submit-silver-gold, spark-submit-gold-postgres,
+     producer-transactions, producer-market, api, clean-data.
+     Consequência real (não só teórica): existe um diretório dashboards/ no
+     repo raiz. Sem dashboards no .PHONY, o Make trata o alvo como
+     correspondente a esse diretório existente e, como ele "já existe" e não
+     tem timestamp mais antigo que nenhuma dependência listada, imprime
+     "make: 'dashboards' is up to date." e pula a recipe inteira — o
+     Superset nunca é provisionado, sem nenhum erro visível.
+     Corrigido incluindo todos os 25 alvos reais do Makefile no .PHONY.
+
+================================================================================
+LIMITAÇÕES DE AMBIENTE (não são bugs, não corrigidas)
+================================================================================
+
+  3. yfinance sem dados reais para a data do sandbox (2026)
+     ingest_market_data (Airflow) chama MarketDataCollector.collect_daily(),
+     que busca cotações reais via yfinance para os últimos N dias a partir
+     de "hoje". Como o relógio deste ambiente está em 2026, não existem
+     cotações reais nesse período — mesma causa raiz já documentada em
+     docs/test_status.md, seção Step 1.6 ("yfinance só retornou 1 registro
+     real neste ambiente sandbox"). validate_bronze_data (gate GX) falha
+     como consequência direta, com FileNotFoundError — comportamento
+     correto do gate (falhar alto quando não há dado nenhum), não uma
+     lacuna de robustez a suavizar.
+
+  4. Great Expectations reescreve suites a cada execução
+     ensure_suites() (chamado por run_gate() a cada invocação) recalcula a
+     janela de freshness de bronze_transactions.json/silver_transactions.json
+     relativa a datetime.now() e persiste no arquivo JSON versionado — já
+     documentado em docs/runbook.md ("esses são saída, sobrescritos a cada
+     run"). Confirmado nesta rodada: rodar os gates localmente deixa
+     git status com esses 2 arquivos como "modified" mesmo sem nenhuma
+     mudança de regra de negócio. Um commit direto pra main
+     (037d68f, fora deste PR) já capturou um desses ciclos de reescrita.
+
+================================================================================
+RESULTADO
+================================================================================
+
+  Pipeline batch (Bronze→Silver→Gold→Postgres):  OK, 0 descartes
+  Streaming (Kafka→Spark→Silver+Kafka):          OK, checkpoints funcionando
+  API (FastAPI):                                 OK, dados reais
+  Great Expectations:                            6/6 gates OK (~130 expectations)
+  Catálogo de dados:                             OK (17 datasets, gap de
+                                                  market_data sinalizado
+                                                  corretamente)
+  Dashboards (Superset):                         OK, 7/7 charts verificados
+  Bugs de infra encontrados:                     2 (MinIO healthcheck,
+                                                  Makefile .PHONY)
+  Bugs de infra corrigidos:                      2/2
+  Lint (ruff + mypy):                            All checks passed!
+
+  PR: https://github.com/gpgomes/data-master-std-fraud/pull/33 (mergeado)

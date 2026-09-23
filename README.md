@@ -214,6 +214,7 @@ make down                      # Derrubar todos os containers
 make setup                     # Inicializar buckets MinIO e tópicos Kafka
 make ps                        # Listar containers em execução
 make logs                      # Logs de todos os serviços (make logs-kafka, logs-postgres, ... para um serviço específico)
+make help                      # Listar todos os alvos com descrição (padrão ao rodar `make` sem argumentos)
 
 # Desenvolvimento
 make install                   # Instalar dependências de desenvolvimento
