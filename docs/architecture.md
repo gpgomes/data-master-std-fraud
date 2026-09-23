@@ -59,6 +59,14 @@ Simulador Python → Kafka (raw-transactions)
 
 **Serving do streaming (issue #38):** `stream_to_postgres.py` lê `silver/transactions_stream/` e carrega `stream_scored_transactions` (uma linha por `transaction_id`, com `fraud_score`, `z_score` e `latency_seconds = processing_timestamp - produced_at`) e `fraud_alerts` (os alertas, reconstruídos com a mesma função do detector, então o `alert_id` é idêntico ao do tópico `fraud-alerts`). É um loader batch (truncate + reload, também a última task da DAG `batch_transformation_pipeline`) e não um consumidor Kafka, porque o streaming já ocupa todos os cores do cluster local. Só as colunas úteis vão ao Postgres: `device_id`, `ip_address`, contas e coordenadas ficam de fora.
 
+### Linhagem de dados
+
+<p align="center">
+  <img src="images/data_lineage.svg" alt="Linhagem de dados gerada a partir do catálogo" width="900">
+</p>
+
+Gerada de `src/governance/data_catalog/registry.py` por `make catalog` (a mesma fonte do `docs/data_catalog.md`), então mostra exatamente o que o catálogo declara: o fluxo batch, o fluxo de streaming (Kafka, Silver do streaming e as tabelas `stream_scored_transactions` e `fraud_alerts`) e os datasets opcionais tracejados. Ver o runbook, seção "Catálogo de Dados".
+
 ## Componentes
 
 ### Ingestão

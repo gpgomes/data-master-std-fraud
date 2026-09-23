@@ -219,6 +219,14 @@ prefixos MinIO/tabelas Postgres não ficarem vazios) — sem `--strict`, ou com
 Saída: `docs/data_catalog.md` (tabelas por camada + diagrama de linhagem em
 Mermaid).
 
+### Imagem da linhagem (issue #37)
+
+`make catalog` também escreve `docs/images/data_lineage.svg`, a linhagem do registro como imagem (embutida no README, no `docs/architecture.md` e no `docs/data_catalog.md`). É gerada em Python puro (`src/governance/data_catalog/lineage_image.py`): não precisa de Graphviz, mermaid-cli nem Node, e a saída é determinística (sem data/hora), então o git só muda quando o catálogo muda.
+
+- **Nunca edite o SVG à mão.** Mude o `registry.py` e rode `make catalog`; um teste (`test_versioned_image_matches_the_catalog`) falha no CI se a imagem versionada não bater com o registro.
+- Nó novo no registro: aparece sozinho, no fim da coluna da sua camada. Para posicioná-lo melhor, ajuste `_ROW_HINTS` em `lineage_image.py` (só ordem visual; o conteúdo vem do catálogo).
+- Datasets `optional=True` saem tracejados; nós sem nenhuma ligação saem com a nota "sem consumidor no catálogo" (hoje só `raw-market-data`, que ninguém consome na V1).
+
 ### Diagnosticar uma falha de validação
 
 `--strict` sai com código 1 se algum asset não existir na infra real

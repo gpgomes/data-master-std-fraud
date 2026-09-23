@@ -1,6 +1,6 @@
 # Catálogo de Dados
 
-_Gerado em 2026-09-23T21:03:05.635688+00:00 por `python -m scripts.build_data_catalog`._
+_Gerado em 2026-09-23T23:32:13.949024+00:00 por `python -m scripts.build_data_catalog`._
 
 Substitui o OpenMetadata completo na V1 local (decisão documentada em `docs/architecture.md`) — ver definições de campo e o glossário de negócio completo em [`docs/data_dictionary.md`](data_dictionary.md).
 
@@ -44,7 +44,7 @@ Substitui o OpenMetadata completo na V1 local (decisão documentada em `docs/arc
 | Dataset | Localização | Owner | Classificação | Glossário | Status |
 |---------|-------------|-------|---------------|-----------|--------|
 | **Kafka — raw-transactions**<br>Transações publicadas em tempo real pelo producer. | `raw-transactions` | Data Engineering | PII, Confidencial | — | ✅ ok |
-| **Kafka — raw-market-data**<br>Cotações publicadas em tempo real pelo producer. | `raw-market-data` | Data Engineering | Público | VWAP | ✅ ok |
+| **Kafka — raw-market-data**<br>Cotações publicadas em tempo real pelo producer. Sem consumidor na V1: o Spark Streaming só lê raw-transactions e o Bronze de mercado vem do yfinance. | `raw-market-data` | Data Engineering | Público | VWAP | ✅ ok |
 | **Kafka — enriched-transactions**<br>Transações com fraud_score anexado pelo StreamProcessor (issue #11). | `enriched-transactions` | Data Engineering | PII, Confidencial | Z-Score, Fraud Score | ✅ ok |
 | **Kafka — fraud-alerts**<br>Alertas de fraude confirmados pelo detector Z-Score (issue #11). | `fraud-alerts` | Fraud Analytics | PII, Confidencial | Z-Score, Fraud Score, Velocity Check | ✅ ok |
 
@@ -55,6 +55,10 @@ Substitui o OpenMetadata completo na V1 local (decisão documentada em `docs/arc
 | **Dashboard — Visão Geral de Fraude**<br>KPIs de volume, valor, taxa de fraude e alertas, mais latência, distribuição de fraud_score e alertas por hora do streaming (Superset — Grafana descoped, issue #16). | `http://localhost:8088/superset/dashboard/fraude-transacoes-visao-geral/` | Fraud Analytics | Confidencial | Fraud Score | — não validado |
 
 ## Linhagem
+
+![Linhagem de dados do catálogo](images/data_lineage.svg)
+
+O mesmo grafo em Mermaid (o GitHub renderiza nativamente):
 
 ```mermaid
 graph LR
