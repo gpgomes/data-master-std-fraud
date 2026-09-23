@@ -34,6 +34,7 @@ checklist completo correspondente em `docs/`.
 | Issue #18 — Atualização de Documentação | `18-*` | `docs/testes_issue_18.txt` |
 | Validação End-to-End da Stack Completa | `E2E-*` | `docs/testes_e2e_validation.txt` |
 | Validação Manual V1 (checklist da banca) | `V1-*` | seção "Validação Manual V1" abaixo |
+| Issue #38 — Serving do streaming (`fraud_score` e alertas) | `38-*` | seção "Issue #38" abaixo |
 
 ---
 
@@ -1357,3 +1358,35 @@ Roteiro: planilha de validação manual (13 áreas). Ambiente reiniciado do zero
 - A paginação da API é por `page`/`page_size` (não existe `limit`).
 - Os data docs do GX (`uncommitted/`) não existem num clone novo: só após rodar um gate.
 - O streaming ocupa todo o cluster Spark: pare-o antes de rodar batch.
+
+---
+
+## Issue #38 — Serving do streaming: `fraud_score` e alertas no Postgres, API e Superset (executado em 2026-09-23)
+
+Fecha o gap de "score" e de "latência" da V1: a saída do detector de streaming passa a ser consultável na serving layer.
+
+**Decisão de arquitetura:** loader batch `silver/transactions_stream` → Postgres (`stream_to_postgres.py`, truncate + reload), e não um consumidor Kafka, porque o streaming já ocupa os 4 cores do cluster local. Os alertas são reconstruídos com `build_fraud_alerts` (a mesma função do detector), então o `alert_id` é idêntico ao do tópico Kafka.
+
+### Testes automatizados
+
+| ID | Descrição | Resultado |
+|----|-----------|-----------|
+| 38-LDR | `tests/unit/test_stream_to_postgres.py` (14): latência e bucket, colunas sensíveis fora, dedup por `transaction_id` entre `query_id`, alertas só de anomalias com `alert_id` determinístico e `processed_at` da linha, carga pulada sem dado, colunas iguais ao DDL | OK |
+| 38-API | `tests/unit/test_api.py`: `/alerts` lê `fraud_alerts` (não o rótulo), ordenação, filtros por cliente e data (fim inclusivo), tabela vazia, injeção SQL, 422 e 503 | OK (37 no arquivo) |
+| 38-SUP | `tests/unit/test_dashboards.py` (21): 4 datasets, charts de streaming opcionais, layout com 11 charts, verificação opcional sem dado | OK |
+| 38-CAT | `tests/unit/test_data_catalog.py`: assets opcionais incluem `silver_transactions_stream` | OK |
+
+### Validação ao vivo (MinIO, Kafka, Postgres, Airflow e Superset reais)
+
+| ID | Descrição | Resultado |
+|----|-----------|-----------|
+| 38-INT-01 | `make spark-submit-stream-postgres` | Exit 0: 3.098 transações pontuadas (1.319 com `fraud_score`), 244 alertas |
+| 38-INT-02 | `alert_id` do Postgres vs tópico `fraud-alerts` | 244 = 244, 0 diferenças |
+| 38-INT-03 | Latência evento→processamento | média 7,85 s (mín 0,25 s, máx 40,99 s, com reinícios do teste do #36) |
+| 38-INT-04 | `GET /alerts` na API viva | 244 alertas com `z_score`, `fraud_score` e `alert_reason`; filtros por cliente e data; `/transactions?is_fraud=true` segue com 12.539 |
+| 38-INT-05 | `make dashboards` | Exit 0: 11 charts, 0 verificações falhadas; latência média 7,8498, 244 alertas e distribuição de score iguais ao Postgres |
+| 38-INT-06 | `airflow dags test batch_transformation_pipeline` | 7 tasks em success, incluindo `load_stream_postgres` |
+| 38-INT-07 | `make catalog` | Exit 0: 20 datasets (17 ✅, 2 ⚠️ de mercado, 1 dashboard não validado) |
+| 38-INT-08 | `make dashboards-export` | Snapshot com 11 charts e 4 datasets |
+
+Nota: os charts criados por API não guardam `query_context`, então `GET /api/v1/chart/{id}/data/` devolve 400 ("Chart has no query context saved") para qualquer chart do dashboard, novo ou antigo. A conferência dos valores usa `POST /api/v1/chart/data` com a mesma query do provisionador.

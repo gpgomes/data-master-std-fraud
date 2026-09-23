@@ -38,7 +38,7 @@ Reflete o estado real implementado (não o plano original) — ver a tabela "Dec
 | Processamento Batch | PySpark (local mode) | Transformações Bronze → Silver → Gold |
 | Processamento Streaming | Spark Structured Streaming | Consumo do Kafka e detecção de fraudes |
 | Armazenamento | MinIO (Docker) | Object storage compatível com S3 |
-| Serving Layer | PostgreSQL | Consulta analítica das camadas Gold (issue #10) |
+| Serving Layer | PostgreSQL | Consulta analítica das camadas Gold (issue #10) e da saída do streaming, `fraud_score` e alertas (issue #38) |
 | Qualidade de Dados | Great Expectations | Validações e expectativas nos dados |
 | Catálogo/Linhagem | Catálogo de dados leve (`docs/data_catalog.md`) | Registro versionado + linhagem, validado contra a infra real (issue #14) |
 | Visualização | Apache Superset | Dashboards analíticos (Grafana descoped da V1 local — issue #16) |
@@ -143,8 +143,9 @@ make spark-submit-silver-gold
 # 7. Carregar o Gold no Postgres (serving layer)
 make spark-submit-gold-postgres
 
-# 8. Iniciar streaming (em outro terminal)
+# 8. Iniciar streaming (em outro terminal) e, depois de alguns minutos, carregar a saída dele no Postgres
 make spark-submit-stream
+make spark-submit-stream-postgres   # o streaming ocupa o cluster: pare-o (Ctrl+C) antes
 
 # 9. Gerar o catálogo de dados e provisionar os dashboards
 make catalog
@@ -318,13 +319,13 @@ make dashboards          # provisiona + roda o smoke test contra cada chart
 make dashboards-export   # snapshot versionado em dashboards/superset/dashboard_configs/
 ```
 
-**KPI de "score" fora do escopo**: `fraud_score` está sempre `NULL` nas 506k linhas carregadas em `fact_transactions` — só é populado pelo detector de streaming (issue #11), que nunca escreve na camada Gold batch/Postgres. Mesma causa raiz do gap de "latência" (ver `alerts.py`, issue #15, e `docs/architecture.md`).
+**Streaming na serving layer (issue #38)**: o `fraud_score` do batch (`fact_transactions`) segue `NULL` por definição (só o streaming o calcula), mas a saída do detector é carregada no Postgres em `stream_scored_transactions` (scores, `z_score`, latência evento→processamento) e `fraud_alerts` (os mesmos alertas do tópico Kafka), com `make spark-submit-stream-postgres` (também é a última task da DAG `batch_transformation_pipeline`). `GET /alerts` devolve esses alertas reais, e o dashboard ganhou latência média, alertas do detector, distribuição de `fraud_score` e alertas por hora.
 
 ### Limitações conhecidas da V1
 
 | Limitação | Causa | Referência |
 |-----------|-------|------------|
-| `fraud_score` sempre `NULL` no Gold/Postgres/API; `/alerts` usa o rótulo `is_fraud`, não os alertas do detector; sem KPI de latência | O score só existe no streaming (Kafka e `silver/transactions_stream/`) e não é persistido na serving layer | [#38](https://github.com/gpgomes/data-master-std-fraud/issues/38) |
+| A serving layer reflete o streaming com a defasagem da última carga (`make spark-submit-stream-postgres` ou a DAG), e `fact_transactions.fraud_score` (batch) continua nulo | O loader lê o Parquet do streaming em batch em vez de consumir o Kafka (o streaming já ocupa todos os cores do cluster local) | [#38](https://github.com/gpgomes/data-master-std-fraud/issues/38) |
 | Ao derrubar/reiniciar o streaming no meio de um micro-batch, mensagens de `enriched-transactions`/`fraud-alerts` podem repetir numa janela residual (o Parquet em `silver/transactions_stream/` não duplica) | O Kafka sink do Spark não é transacional (at-least-once); consumidores devem deduplicar por `transaction_id`. Ver [`docs/runbook.md`](docs/runbook.md#semântica-de-entrega-do-streaming-issue-36) | [#36](https://github.com/gpgomes/data-master-std-fraud/issues/36) |
 | Sem dados de mercado (`bronze/market_data` vazio); gates e catálogo tratam como opcional | O Yahoo Finance devolve HTTP 429 (rate limit) conforme o IP; a coleta via yfinance não é confiável | [`docs/runbook.md`](docs/runbook.md#quality-gates-great-expectations) |
 | Batch e streaming não rodam juntos no cluster Spark padrão | O streaming ocupa os 4 cores e 4 GB dos workers | [`docs/runbook.md`](docs/runbook.md#troubleshooting) |

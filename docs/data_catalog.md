@@ -1,6 +1,6 @@
 # Catálogo de Dados
 
-_Gerado em 2026-09-23T19:05:20.718509+00:00 por `python -m scripts.build_data_catalog`._
+_Gerado em 2026-09-23T21:03:05.635688+00:00 por `python -m scripts.build_data_catalog`._
 
 Substitui o OpenMetadata completo na V1 local (decisão documentada em `docs/architecture.md`) — ver definições de campo e o glossário de negócio completo em [`docs/data_dictionary.md`](data_dictionary.md).
 
@@ -17,6 +17,7 @@ Substitui o OpenMetadata completo na V1 local (decisão documentada em `docs/arc
 |---------|-------------|-------|---------------|-----------|--------|
 | **Silver — Transações**<br>Transações limpas, deduplicadas, timestamps normalizados para UTC. | `s3://silver/transactions/` | Data Engineering | PII, Confidencial | — | ✅ ok |
 | **Silver — Market Data**<br>Cotações enriquecidas com retorno diário e price range. | `s3://silver/market_data/` | Data Engineering | Público | VWAP, Volatilidade | ⚠️ sem dados (opcional): nenhum objeto encontrado em s3://silver/market_data/ |
+| **Silver — Transações (Streaming)**<br>Saída do detector de streaming (issue #11), particionada por query_id/batch_id: transações com z_score, fraud_score e is_anomaly. Só existe depois que o job de streaming rodou. | `s3://silver/transactions_stream/` | Data Engineering | PII, Confidencial | Z-Score, Fraud Score | ✅ ok |
 
 ## Gold
 
@@ -35,6 +36,8 @@ Substitui o OpenMetadata completo na V1 local (decisão documentada em `docs/arc
 | **Postgres — dim_customers**<br>Espelho da dimensão de clientes Gold. | `dim_customers` | Analytics Engineering | PII, Confidencial | — | ✅ ok |
 | **Postgres — dim_date**<br>Espelho da dimensão de calendário Gold. | `dim_date` | Analytics Engineering | Público | — | ✅ ok |
 | **Postgres — agg_daily_fraud_metrics**<br>Espelho da agregação diária de fraude Gold, consumido pela API (issue #15). | `agg_daily_fraud_metrics` | Analytics Engineering | Confidencial | Fraud Score | ✅ ok |
+| **Postgres — stream_scored_transactions**<br>Transações pontuadas pelo detector de streaming (fraud_score, z_score, latência evento→processamento), carregadas por `make spark-submit-stream-postgres` (issue #38). | `stream_scored_transactions` | Analytics Engineering | Confidencial | Z-Score, Fraud Score | ✅ ok |
+| **Postgres — fraud_alerts**<br>Alertas do detector de streaming, os mesmos do tópico fraud-alerts; consumido por GET /alerts (issue #38). | `fraud_alerts` | Fraud Analytics | Confidencial | Z-Score, Fraud Score | ✅ ok |
 
 ## Streaming (Kafka)
 
@@ -49,7 +52,7 @@ Substitui o OpenMetadata completo na V1 local (decisão documentada em `docs/arc
 
 | Dataset | Localização | Owner | Classificação | Glossário | Status |
 |---------|-------------|-------|---------------|-----------|--------|
-| **Dashboard — Visão Geral de Fraude**<br>KPIs de volume, valor, taxa de fraude e alertas (Superset — Grafana descoped, issue #16). | `http://localhost:8088/superset/dashboard/fraude-transacoes-visao-geral/` | Fraud Analytics | Confidencial | Fraud Score | — não validado |
+| **Dashboard — Visão Geral de Fraude**<br>KPIs de volume, valor, taxa de fraude e alertas, mais latência, distribuição de fraud_score e alertas por hora do streaming (Superset — Grafana descoped, issue #16). | `http://localhost:8088/superset/dashboard/fraude-transacoes-visao-geral/` | Fraud Analytics | Confidencial | Fraud Score | — não validado |
 
 ## Linhagem
 
@@ -59,6 +62,7 @@ graph LR
     bronze_market_data["Bronze — Market Data"]
     silver_transactions["Silver — Transações"]
     silver_market_data["Silver — Market Data"]
+    silver_transactions_stream["Silver — Transações (Streaming)"]
     gold_fact_transactions["Gold — Fato Transações"]
     gold_dim_customers["Gold — Dimensão Clientes"]
     gold_dim_date["Gold — Dimensão Data"]
@@ -67,6 +71,8 @@ graph LR
     serving_dim_customers["Postgres — dim_customers"]
     serving_dim_date["Postgres — dim_date"]
     serving_agg_daily_fraud_metrics["Postgres — agg_daily_fraud_metrics"]
+    serving_stream_scored_transactions["Postgres — stream_scored_transactions"]
+    serving_fraud_alerts["Postgres — fraud_alerts"]
     kafka_raw_transactions["Kafka — raw-transactions"]
     kafka_raw_market_data["Kafka — raw-market-data"]
     kafka_enriched_transactions["Kafka — enriched-transactions"]
@@ -74,6 +80,7 @@ graph LR
     dashboard_fraud_overview["Dashboard — Visão Geral de Fraude"]
     bronze_transactions --> silver_transactions
     bronze_market_data --> silver_market_data
+    kafka_raw_transactions --> silver_transactions_stream
     silver_transactions --> gold_fact_transactions
     silver_transactions --> gold_dim_customers
     silver_transactions --> gold_dim_date
@@ -82,8 +89,12 @@ graph LR
     gold_dim_customers --> serving_dim_customers
     gold_dim_date --> serving_dim_date
     gold_agg_daily_fraud_metrics --> serving_agg_daily_fraud_metrics
+    silver_transactions_stream --> serving_stream_scored_transactions
+    silver_transactions_stream --> serving_fraud_alerts
     kafka_raw_transactions --> kafka_enriched_transactions
     kafka_enriched_transactions --> kafka_fraud_alerts
     serving_fact_transactions --> dashboard_fraud_overview
     serving_agg_daily_fraud_metrics --> dashboard_fraud_overview
+    serving_stream_scored_transactions --> dashboard_fraud_overview
+    serving_fraud_alerts --> dashboard_fraud_overview
 ```

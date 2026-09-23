@@ -1,0 +1,14 @@
+slice_name: KPI - Alertas do Detector
+description: null
+certified_by: null
+certification_details: null
+viz_type: big_number_total
+params:
+  datasource: 4__table
+  viz_type: big_number_total
+  metric: count
+query_context: null
+cache_timeout: null
+uuid: 4c94a6f3-75b7-402f-b785-7b679874ad74
+version: 1.0.0
+dataset_uuid: 8297b3e3-ebc1-4a9c-b29a-d24af5fe1eb5

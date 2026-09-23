@@ -1,5 +1,6 @@
 .PHONY: up down setup test test-unit test-integration test-cov lint format install \
         spark-submit-batch spark-submit-stream spark-submit-silver-gold spark-submit-gold-postgres \
+        spark-submit-stream-postgres \
         seed-data producer-transactions producer-market api catalog dashboards dashboards-export \
         clean clean-data logs ps help
 
@@ -94,6 +95,11 @@ spark-submit-gold-postgres: ## Submeter job Gold → PostgreSQL (serving layer)
 	$(COMPOSE) exec spark-master spark-submit \
 		--master $(SPARK_MASTER) \
 		src/serving/loaders/gold_to_postgres.py
+
+spark-submit-stream-postgres: ## Submeter job saída do streaming → PostgreSQL (fraud_score e alertas do detector)
+	$(COMPOSE) exec spark-master spark-submit \
+		--master $(SPARK_MASTER) \
+		src/serving/loaders/stream_to_postgres.py
 
 # ── Producers ──────────────────────────────────────────────────────────────────
 producer-transactions: ## Iniciar producer de transações financeiras

@@ -131,6 +131,43 @@ Particionado por `date_key`.
 Registros de anomalias detectadas no streaming com Z-Score e contexto —
 depende do job de streaming (roadmap 2.3/2.4), não incluído no batch Silver→Gold.
 
+## Serving Layer — streaming (issue #38)
+
+Carregadas em PostgreSQL por `src/serving/loaders/stream_to_postgres.py` a partir de `silver/transactions_stream/` (truncate + reload).
+
+### stream_scored_transactions
+Uma linha por `transaction_id` processada pelo detector de streaming.
+
+| Coluna | Tipo | Descrição |
+|--------|------|-----------|
+| transaction_id | string | PK |
+| customer_id | string | Cliente (id do evento, não é FK para `dim_customers`: o simulador gera clientes próprios) |
+| event_time | timestamp | Horário do evento (`timestamp` da transação) |
+| amount, currency, transaction_type, channel, merchant_category | — | Atributos da transação |
+| is_fraud, fraud_type | boolean, string | Rótulo sintético do gerador (não é a decisão do detector) |
+| z_score | double | Z-Score do valor sobre a janela de 1h do cliente; nulo sem baseline (menos de 2 transações na janela) |
+| fraud_score | double | `min(abs(z_score) / 6, 1)`; nulo quando `z_score` é nulo |
+| fraud_score_bucket | double | `fraud_score` arredondado a 0,1 (para o histograma) |
+| is_anomaly | boolean | `abs(z_score) > 3` |
+| produced_at | timestamp | Quando o producer emitiu o evento |
+| processing_timestamp | timestamp | Quando o Spark processou o micro-batch |
+| latency_seconds | double | `processing_timestamp - produced_at` |
+
+Não carrega `device_id`, `ip_address`, contas nem coordenadas.
+
+### fraud_alerts
+Os alertas do detector, o mesmo conteúdo do tópico Kafka `fraud-alerts`.
+
+| Coluna | Tipo | Descrição |
+|--------|------|-----------|
+| alert_id | string | PK, UUID determinístico derivado de `transaction_id` (idêntico ao do Kafka) |
+| transaction_id | string | Única: um alerta por transação |
+| customer_id, event_time, amount | — | Dados da transação alertada |
+| fraud_type | string | Rótulo do gerador quando existe; senão `MONEY_LAUNDERING` (fallback fixo) |
+| fraud_score, z_score | double | Score e Z-Score que dispararam o alerta |
+| alert_reason | string | Texto com o Z-Score, o limiar e a janela |
+| processed_at | timestamp | `processing_timestamp` da linha (não a hora da carga) |
+
 ## Glossário de Negócio
 
 | Termo | Definição |

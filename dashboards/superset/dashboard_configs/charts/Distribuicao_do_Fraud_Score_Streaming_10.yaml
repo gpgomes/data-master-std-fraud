@@ -1,0 +1,21 @@
+slice_name: Distribuicao do Fraud Score (Streaming)
+description: null
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_bar
+params:
+  datasource: 3__table
+  viz_type: echarts_timeseries_bar
+  x_axis: fraud_score_bucket
+  metrics:
+  - count
+  groupby: []
+  adhoc_filters:
+  - clause: WHERE
+    expressionType: SQL
+    sqlExpression: fraud_score IS NOT NULL
+query_context: null
+cache_timeout: null
+uuid: e0c39ecd-5c88-4777-a734-01ad0908ecb2
+version: 1.0.0
+dataset_uuid: 09a1018c-1a21-4cc3-b035-f07068fe6ff4
