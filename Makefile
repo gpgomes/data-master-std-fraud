@@ -113,7 +113,7 @@ api: ## Iniciar API FastAPI em modo desenvolvimento
 	$(PYTHON) -m uvicorn src.serving.api.main:app --reload --host 0.0.0.0 --port 8000
 
 # ── Catálogo de Dados ────────────────────────────────────────────────────────────
-catalog: ## Gera docs/data_catalog.md e valida os datasets contra a infra real (requer make up)
+catalog: ## Gera docs/data_catalog.md e a imagem da linhagem, e valida os datasets contra a infra real (requer make up)
 	$(PYTHON) -m scripts.build_data_catalog --strict
 
 # ── Dashboards ─────────────────────────────────────────────────────────────────

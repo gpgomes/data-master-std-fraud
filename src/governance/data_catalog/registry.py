@@ -271,7 +271,10 @@ CATALOG: tuple[CatalogEntry, ...] = (
         owner="Data Engineering",
         classification=("Público",),
         glossary_terms=("VWAP",),
-        description="Cotações publicadas em tempo real pelo producer.",
+        description=(
+            "Cotações publicadas em tempo real pelo producer. Sem consumidor na V1: o Spark "
+            "Streaming só lê raw-transactions e o Bronze de mercado vem do yfinance."
+        ),
     ),
     CatalogEntry(
         key="kafka_enriched_transactions",

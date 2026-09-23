@@ -205,7 +205,7 @@ make producer-market            # Iniciar producer de dados de mercado
 
 # Serving, governança e dashboards
 make api                       # Iniciar a API FastAPI em modo desenvolvimento
-make catalog                   # Gerar docs/data_catalog.md e validar os datasets contra a infra real
+make catalog                   # Gerar docs/data_catalog.md e docs/images/data_lineage.svg, e validar os datasets contra a infra real
 make dashboards                # Provisionar o dashboard Superset de KPIs (+ smoke test)
 make dashboards-export         # Exportar o dashboard provisionado para dashboards/superset/dashboard_configs/
 
@@ -297,9 +297,15 @@ datasets, validado contra a infra real (MinIO/Postgres/Kafka) e renderizado
 em [`docs/data_catalog.md`](docs/data_catalog.md) via `make catalog`:
 
 - Catálogo de todos os datasets (Bronze, Silver, Gold, Postgres, Kafka) com owner e tags de classificação (PII, Confidencial, Público)
-- Linhagem: fonte → Bronze → Silver → Gold → Serving → Dashboard, como diagrama Mermaid
+- Linhagem: fonte → Bronze → Silver → Gold → Serving → Dashboard (mais o caminho do streaming, do Kafka às tabelas `stream_scored_transactions`/`fraud_alerts`), como imagem SVG e como diagrama Mermaid
 - Business Glossary: já documentado em [`docs/data_dictionary.md`](docs/data_dictionary.md) (VWAP, Volatilidade, Fraud Score, Z-Score, etc.) — o catálogo referencia esses termos por dataset, sem duplicar as definições
 - Validação real: cada asset é checado contra o MinIO/Postgres/Kafka rodando (`make catalog`, ou `--strict` para falhar caso algo não bata) — não é um documento estático
+
+<p align="center">
+  <img src="docs/images/data_lineage.svg" alt="Linhagem de dados do catálogo: Bronze, Silver, Gold, tabelas do Postgres e dashboard no fluxo batch, e Kafka, Silver do streaming e as tabelas de streaming no fluxo de tempo real; datasets opcionais tracejados" width="900">
+</p>
+
+A imagem é gerada do próprio registro (`make catalog`, Python puro, sem Graphviz nem mermaid-cli) e um teste falha se ela ficar desatualizada em relação ao catálogo.
 
 ---
 

@@ -155,7 +155,15 @@ class TestOptionalAssets:
             if e.kind is not DatasetKind.DASHBOARD
         ]
         with patch.object(build_data_catalog, "validate_live", return_value=live):
-            build_data_catalog.main(["--strict", "--output", str(tmp_path / "catalog.md")])
+            build_data_catalog.main(
+                [
+                    "--strict",
+                    "--output",
+                    str(tmp_path / "catalog.md"),
+                    "--lineage-image",
+                    str(tmp_path / "lineage.svg"),
+                ]
+            )
 
     def test_strict_passes_when_only_optional_assets_missing(self, tmp_path):
         self._run_strict(tmp_path, {"bronze_market_data", "silver_market_data"})  # sem SystemExit

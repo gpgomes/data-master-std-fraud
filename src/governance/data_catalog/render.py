@@ -80,6 +80,7 @@ def _render_lineage(entries: tuple[CatalogEntry, ...]) -> str:
 def render_markdown(
     entries: tuple[CatalogEntry, ...],
     validation_results: list[ValidationResult] | None = None,
+    lineage_image: str | None = None,
 ) -> str:
     status_by_key = {r.entry_key: r for r in (validation_results or [])}
     generated_at = datetime.now(tz=UTC).isoformat()
@@ -106,6 +107,11 @@ def render_markdown(
 
     parts.append("## Linhagem")
     parts.append("")
+    if lineage_image:
+        parts.append(f"![Linhagem de dados do catálogo]({lineage_image})")
+        parts.append("")
+        parts.append("O mesmo grafo em Mermaid (o GitHub renderiza nativamente):")
+        parts.append("")
     parts.append(_render_lineage(entries))
     parts.append("")
 

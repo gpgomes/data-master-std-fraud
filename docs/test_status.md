@@ -35,6 +35,7 @@ checklist completo correspondente em `docs/`.
 | Validação End-to-End da Stack Completa | `E2E-*` | `docs/testes_e2e_validation.txt` |
 | Validação Manual V1 (checklist da banca) | `V1-*` | seção "Validação Manual V1" abaixo |
 | Issue #38 — Serving do streaming (`fraud_score` e alertas) | `38-*` | seção "Issue #38" abaixo |
+| Issue #37 — Imagem SVG da linhagem do catálogo | `37-*` | seção "Issue #37" abaixo |
 
 ---
 
@@ -1413,3 +1414,21 @@ Fecha o gap de "score" e de "latência" da V1: a saída do detector de streaming
 | 38-INT-08 | `make dashboards-export` | Snapshot com 11 charts e 4 datasets |
 
 Nota: os charts criados por API não guardam `query_context`, então `GET /api/v1/chart/{id}/data/` devolve 400 ("Chart has no query context saved") para qualquer chart do dashboard, novo ou antigo. A conferência dos valores usa `POST /api/v1/chart/data` com a mesma query do provisionador.
+
+---
+
+## Issue #37 — Imagem SVG da linhagem do catálogo (executado em 2026-09-23)
+
+Decisão de ferramenta: gerador em **Python puro** (`src/governance/data_catalog/lineage_image.py`), sem Graphviz nem mermaid-cli. Nenhum dos dois estava instalado (o mermaid-cli ainda exigiria baixar um Chromium), e uma dependência de sistema quebraria o "roda igual num clone novo e no CI". A saída é determinística (sem data/hora), então o git só muda quando o catálogo muda.
+
+| ID | Descrição | Resultado |
+|----|-----------|-----------|
+| 37-GEN | `tests/unit/test_lineage_image.py` (15): XML válido com título/descrição acessíveis, todos os 20 nós e todas as 19 dependências desenhados, opcionais tracejados, saída determinística, nó novo sem dica de layout, upstream desconhecido ignorado, escape de XML, nota nos nós sem ligação, faixa de streaming abaixo do batch, sem nós sobrepostos | OK |
+| 37-SYNC | `test_versioned_image_matches_the_catalog`: a imagem versionada é igual à gerada agora do registro (falha no CI se esquecerem de rodar `make catalog`) | OK |
+| 37-MD | `render_markdown` embute a imagem acima do bloco Mermaid; `make catalog` grava o SVG junto do Markdown | OK |
+| 37-INT | `make catalog` na infra real: exit 0, gera `docs/images/data_lineage.svg` (17,9 KB) | OK |
+| 37-VIS | Conferência visual do render (SVG convertido para PNG): colunas Bronze a Dashboard, faixa Batch e faixa Streaming, opcionais tracejados, legenda | OK |
+
+Falha visual encontrada e corrigida durante a conferência: (1) a faixa "Streaming" cobria os nós de Market Data do batch porque o dashboard, que descende do Kafka, entrava no cálculo da faixa; (2) a seta do Silver do streaming para a tabela `fraud_alerts` passava por trás do nó Kafka `fraud-alerts`, parecendo que o Kafka alimentava o Postgres. Ambos corrigidos, com testes de layout.
+
+Achado sobre o catálogo: o tópico `raw-market-data` aparece isolado porque **ninguém o consome** na V1 (o Spark Streaming lê só `raw-transactions`, e o Bronze de mercado vem do yfinance). Não é um bug do registro: a descrição do asset agora diz isso e a imagem anota "sem consumidor no catálogo".
