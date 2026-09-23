@@ -32,6 +32,7 @@ checklist completo correspondente em `docs/`.
 | Issue #14 — Catálogo de Dados Leve | `14-*` | `docs/testes_issue_14.txt` |
 | Issue #16 — Dashboards Operacionais/Analíticos com Superset | `16-*` | `docs/testes_issue_16.txt` |
 | Issue #18 — Atualização de Documentação | `18-*` | `docs/testes_issue_18.txt` |
+| Validação End-to-End da Stack Completa | `E2E-*` | `docs/testes_e2e_validation.txt` |
 
 ---
 
@@ -1205,3 +1206,99 @@ Resultado: 16/16 PASSED (4 testes reescritos, mesma contagem total).
 | 18-COV-01 | Cobertura total | ≥70% | OK (73,21%) |
 | 18-LIN-01 | `ruff check .` | All checks passed! | OK |
 | 18-LIN-02 | `mypy src/ scripts/` | Success: no issues found | OK |
+
+---
+
+## Validação End-to-End da Stack Completa (executado em 2026-09-07)
+
+> Checklist completo: `docs/testes_e2e_validation.txt`
+> PR: [#33](https://github.com/gpgomes/data-master-std-fraud/pull/33) — não é uma issue numerada; validação ad-hoc pedida entre sessões, depois da issue #18.
+
+Objetivo: rodar a plataforma inteira junto, com dados reais de ponta a
+ponta — infra → seed → batch (Bronze→Silver→Gold→Postgres) → streaming →
+API → quality gates → catálogo → dashboards — em vez de validar cada
+componente isolado, como as issues anteriores fizeram. Todas as issues
+#7–#16/#18 já estavam mergeadas antes desta rodada; #17 (Terraform) segue
+como a única aberta.
+
+**Dados usados**: `make seed-data` gerou 500.000 transações (2,51%
+fraude), 10.000 clientes, 1.000 cotações — mesma seed/volume documentado
+no step 1.3.
+
+**2 bugs reais de infraestrutura encontrados e corrigidos** (únicos que
+exigiram mudança de código; o resto do achados abaixo são limitações de
+ambiente, não bugs):
+
+1. `docker-compose.yml` — healthcheck do MinIO usava `curl`, ausente na
+   imagem `minio/minio:RELEASE.2024-03-30T09-41-56Z` (`exec: "curl":
+   executable file not found in $PATH`, confirmado via
+   `docker inspect minio --format='{{json .State.Health}}'`). O
+   healthcheck falhava sempre, deixando o container permanentemente
+   `unhealthy` e bloqueando `make up` (serviços com
+   `depends_on: condition: service_healthy` nunca sobem). Corrigido para
+   `mc ready local` — `mc` já vem embutido na imagem e resolve a
+   instância local sem precisar de `mc alias set` antes (confirmado com
+   `docker exec minio mc ready local` → `The cluster is ready`, exit 0).
+2. `Makefile` — `.PHONY` não tinha sido atualizado desde a issue #7,
+   faltando praticamente todos os alvos adicionados depois (`catalog`,
+   `dashboards`, `dashboards-export`, `test-unit`, `test-integration`,
+   `test-cov`, `install`, `spark-submit-silver-gold`,
+   `spark-submit-gold-postgres`, `producer-transactions`,
+   `producer-market`, `api`, `clean-data`). Isso quebrava
+   silenciosamente `make dashboards` especificamente: como existe um
+   **diretório real** `dashboards/` no repo, o Make tratava o alvo como
+   já satisfeito e imprimia `make: 'dashboards' is up to date` sem rodar
+   a recipe — o Superset nunca era provisionado. Corrigido incluindo
+   todos os 25 alvos reais no `.PHONY`.
+
+**Limitações de ambiente encontradas, sem correção de código** (causa
+raiz já documentada em runs anteriores, não é regressão):
+
+3. `ingest_market_data` (Airflow) não retornou dados reais — o coletor
+   chama yfinance para o dia corrente, e não existem cotações reais para
+   2026 (data do sandbox). Mesma causa raiz do step 1.6
+   (`docs/test_status.md`, nota da seção Step 1.6). `validate_bronze_data`
+   (GX gate) falhou como consequência direta — `FileNotFoundError:
+   Nenhum arquivo Parquet encontrado em s3://bronze/market_data/` — e
+   isso é o comportamento correto do gate (falhar alto quando não há
+   dado nenhum), não um bug a suavizar.
+4. `ensure_suites()` (GX) reescreve `bronze_transactions.json`/
+   `silver_transactions.json` com uma nova janela de freshness relativa
+   a "agora" toda vez que um gate roda — já documentado em
+   `docs/runbook.md` ("Adicionar/alterar uma expectativa": "esses são
+   saída, sobrescritos a cada run"). Confirmado nesta rodada: rodar os
+   gates localmente deixa esses 2 arquivos como `modified` no
+   `git status`, mesmo sem nenhuma mudança de regra de negócio — comitado
+   à parte em `037d68f`, fora do escopo do PR #33.
+
+### Pipeline batch, ponta a ponta
+
+| ID | Etapa | Resultado |
+|----|-------|-----------|
+| E2E-BATCH-01 | Bronze→Silver, `transactions` | 500.000 lidas, 0 descartadas, 500.000 gravadas |
+| E2E-BATCH-02 | Bronze→Silver, `customers` | 10.000 lidas, 0 descartadas, 10.000 gravadas |
+| E2E-BATCH-03 | Silver→Gold, `dim_customers` | 10.000 linhas |
+| E2E-BATCH-04 | Silver→Gold, `dim_date` | 182 linhas |
+| E2E-BATCH-05 | Silver→Gold, `fact_transactions` | 500.000 linhas |
+| E2E-BATCH-06 | Silver→Gold, `agg_daily_fraud_metrics` | 1.089 grupos (data × tipo) |
+| E2E-BATCH-07 | Gold→Postgres, as 4 tabelas | `rows_read == rows_written` nas 4, truncate+reload OK |
+
+### Streaming, API, governança e dashboards
+
+| ID | Componente | Resultado |
+|----|-----------|-----------|
+| E2E-STR-01 | Producer (`kafka_producer_transactions`, 20 tps) + `stream_processor.py` | 8+ micro-batches processados sem erro; `enriched-transactions` recebendo todas as linhas scored (`is_anomaly` calculado); `silver/transactions_stream/` gravando Parquet a cada trigger; checkpoints em `checkpoints/stream_processor/` |
+| E2E-STR-02 | Anomalias no Z-Score | 0 detectadas — esperado: janela é por `customer_id`, e com 10k clientes e baixo throughput cada cliente acumula pouco histórico na janela; não é falha da lógica (já coberta isoladamente pelos testes unitários da issue #11) |
+| E2E-API-01 | `GET /health/live`, `/health/ready` | `{"status":"ok"}` / `{"status":"ready"}` |
+| E2E-API-02 | `GET /transactions`, `/kpis/fraud-daily`, `/alerts` | Dados reais do Postgres recém-carregado; `fraud_score` corretamente `null` (issue #12/#16 — campo derivado do streaming, que não escreve no Gold batch) |
+| E2E-GX-01 | 6 quality gates (`bronze_transactions`, `silver_transactions`, `gold_fact_transactions`, `gold_dim_customers`, `gold_dim_date`, `gold_agg_daily_fraud_metrics`) | 6/6 passaram, 0 de ~130 expectations falhando, contra dados reais (não fixtures) |
+| E2E-CAT-01 | `make catalog --strict` | 17 datasets catalogados, 0 referências de linhagem inválidas; sinalizou corretamente os 2 assets de `market_data` sem dados reais (achado 3 acima) — saída não commitada (reflete só o estado transitório desta sessão) |
+| E2E-DASH-01 | `make dashboards --verify --strict` (só depois do fix do `.PHONY`) | 2 datasets, 7 charts, 0 falhas de verificação contra Postgres real (ex.: Volume=500000, Taxa de Fraude=2,5078%, Alertas=12539) |
+
+### Resultado
+
+| ID | Descrição | Resultado Esperado | Status |
+|----|-----------|-------------------|--------|
+| E2E-CMP-01 | `docker compose config --quiet` (com o fix do MinIO) | Válido, MinIO `healthy` | OK |
+| E2E-LIN-01 | `make lint` | ruff + mypy sem erros | OK |
+| E2E-FIX-01 | PR #33 mergeado, branch deletada | `fix/docker-makefile-e2e-validation` → `main` | OK |
