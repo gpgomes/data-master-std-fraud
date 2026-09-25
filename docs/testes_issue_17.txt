@@ -228,21 +228,25 @@ em docs/runbook.md, secao "Infraestrutura AWS (Terraform)".
 ================================================================================
 5. PROXIMOS PASSOS — para retomar nos proximos dias
 ================================================================================
-Estado ao parar (2026-09-23):
-  - Branch feat/issue-17-terraform-skeleton, base main (164a493). NADA foi
-    commitado nem enviado ao GitHub: o esqueleto esta so na arvore de trabalho
-    (terraform/, tests/unit/test_terraform_guardrails.py, este arquivo e as
-    edicoes em Makefile, ci.yml, .gitignore, pyproject.toml, CLAUDE.md, README.md,
-    docs/architecture.md, docs/runbook.md). Nao apagar a branch/arvore.
+Estado ao parar (2026-09-25):
+  - Branch feat/issue-17-terraform-skeleton, base main (164a493), commit 32cf59b,
+    JA ENVIADA ao GitHub (origin). O PR ainda NAO foi aberto: sem PR o CI nao
+    roda (o workflow so dispara em push para main e em pull_request).
   - Tudo verde localmente (secoes 1 a 3). Nada foi aplicado na AWS.
+  - Rodar `make test-unit` regrava dois arquivos gerados do Great Expectations
+    (gx/expectations/bronze_transactions.json e silver_transactions.json, janela
+    de datas baseada em now()). Nao fazem parte da #17: nao commitar; restaurar
+    com `git checkout -- src/governance/great_expectations/gx/expectations/`.
   - A issue #17 ja foi atualizada no GitHub (escopo, decisoes, andamento).
   - Decisoes fechadas: us-east-1; US$ 50/mes; so o ambiente dev; compute caro
     temporario atras de flags enable_*; #17 = IaC validada e planejada.
 
-Passo A — commitar e abrir o PR do esqueleto (quando o usuario pedir)
-  [ ] Rodar de novo: make tf-check, make lint, make test-unit.
-  [ ] Commit na branch feat/issue-17-terraform-skeleton e PR para main. O CI
-      roda o job terraform; terraform-plan fica PULADO ate o passo B.
+Passo A — abrir o PR do esqueleto (quando o usuario pedir)
+  [x] Commit e push da branch feat/issue-17-terraform-skeleton (32cf59b).
+  [ ] Abrir o PR para main (corpo: "Refs #17", a issue continua aberta). O CI
+      roda o job terraform pela primeira vez; terraform-plan fica PULADO ate o
+      passo B. Se o job terraform falhar no runner (tflint --init, checkov ou
+      versao do terraform), corrigir antes de mergear.
 
 Passo B — com a conta AWS (bloqueia so o apply; depende do usuario)
   [ ] Secao 4 deste checklist, em ordem: AWS CLI + usuario admin com MFA,
