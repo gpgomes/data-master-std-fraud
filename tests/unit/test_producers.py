@@ -192,7 +192,7 @@ class TestProducerRun:
         mock_producer = MagicMock()
         mock_producer.send.return_value = mock_future
 
-        # Stub para DataGenerator — evita gerar 1 000 clientes reais (lento)
+        # Stubs para DataGenerator e TransactionStream — evitam gerar 1 000 clientes reais (lento)
         fake_customer = {"customer_id": "cust-test-1", "name": "Test"}
         fake_tx = {
             "transaction_id": "tx-test-1",
@@ -212,10 +212,12 @@ class TestProducerRun:
             "fraud_score": None,
         }
 
+        module = "src.ingestion.streaming.kafka_producer_transactions"
         with patch("kafka.KafkaProducer", return_value=mock_producer), \
-             patch("src.ingestion.streaming.kafka_producer_transactions.DataGenerator") as MockGen:
+             patch(f"{module}.DataGenerator") as MockGen, \
+             patch(f"{module}.TransactionStream") as MockStream:
             MockGen.return_value.generate_customers.return_value = [fake_customer]
-            MockGen.return_value.generate_transactions.return_value = [fake_tx]
+            MockStream.return_value.next_events.side_effect = lambda now: [(0.0, dict(fake_tx))]
 
             def _run():
                 from src.ingestion.streaming.kafka_producer_transactions import run
@@ -233,6 +235,80 @@ class TestProducerRun:
         sent = json.loads(mock_producer.send.call_args.kwargs["value"])
         event_time = datetime.fromisoformat(sent["timestamp"].replace("Z", "+00:00"))
         assert abs((datetime.now(tz=UTC) - event_time).total_seconds()) < 60
+
+    def test_producer_keeps_customer_seed_and_reseeds_events(self) -> None:
+        """Clientes com a seed do seed-data; eventos com seed própria (ids não se repetem)."""
+        import threading
+        import time
+
+        stop = Event()
+        mock_producer = MagicMock()
+        mock_producer.send.return_value = MagicMock()
+
+        module = "src.ingestion.streaming.kafka_producer_transactions"
+        with patch("kafka.KafkaProducer", return_value=mock_producer), \
+             patch(f"{module}.DataGenerator") as MockGen, \
+             patch(f"{module}.TransactionStream") as MockStream:
+            MockStream.return_value.next_events.return_value = []
+
+            def _run():
+                from src.ingestion.streaming.kafka_producer_transactions import run
+                run(stop_event=stop)
+
+            t = threading.Thread(target=_run, daemon=True)
+            t.start()
+            time.sleep(0.3)
+            stop.set()
+            t.join(timeout=5)
+
+        MockGen.assert_called_once_with(seed=42)
+        MockGen.return_value.generate_customers.assert_called_once_with(n=1_000)
+        MockGen.return_value.reseed_events.assert_called_once()
+
+    def test_follow_up_events_are_emitted_only_after_their_delay(self) -> None:
+        import threading
+        import time
+
+        stop = Event()
+        mock_future = MagicMock()
+        mock_future.get.return_value = None
+        mock_producer = MagicMock()
+        mock_producer.send.return_value = mock_future
+
+        def _tx(tx_id: str) -> dict:
+            return {
+                "transaction_id": tx_id, "customer_id": "cust-1", "amount": 100.0,
+                "timestamp": "2024-01-01T10:00:00+00:00", "currency": "BRL",
+                "transaction_type": "PIX", "merchant_category": "TRANSFERENCIA",
+                "origin_account": "0001-1", "destination_account": "0002-2",
+                "origin_bank": "BancA", "destination_bank": "BancB",
+                "channel": "APP_MOBILE", "is_fraud": False, "fraud_type": None,
+            }
+
+        first_call = iter([[(0.0, _tx("tx-now")), (0.5, _tx("tx-later"))]])
+        module = "src.ingestion.streaming.kafka_producer_transactions"
+        with patch("kafka.KafkaProducer", return_value=mock_producer), \
+             patch(f"{module}.DataGenerator"), \
+             patch(f"{module}.TransactionStream") as MockStream:
+            MockStream.return_value.next_events.side_effect = lambda now: next(first_call, [])
+
+            def _run():
+                from src.ingestion.streaming.kafka_producer_transactions import run
+                run(stop_event=stop)
+
+            t = threading.Thread(target=_run, daemon=True)
+            t.start()
+            time.sleep(0.25)
+            sent_early = [json.loads(c.kwargs["value"])["transaction_id"]
+                          for c in mock_producer.send.call_args_list]
+            time.sleep(0.6)
+            stop.set()
+            t.join(timeout=5)
+
+        sent_all = [json.loads(c.kwargs["value"])["transaction_id"]
+                    for c in mock_producer.send.call_args_list]
+        assert sent_early == ["tx-now"]
+        assert sent_all == ["tx-now", "tx-later"]
 
     def test_market_producer_sends_and_stops(self) -> None:
         """Market producer deve enviar ao menos um tick e parar."""

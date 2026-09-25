@@ -63,6 +63,17 @@ def save_transactions(transactions: list[dict], output_dir: Path) -> None:
     )
 
 
+def save_ground_truth(ground_truth: list[dict], output_dir: Path) -> None:
+    """Sidecar de ground truth (episódio, cenário, stealth, hard negatives) por transaction_id.
+
+    Fica em `ground_truth/`, fora de `transactions/` (que o loader Bronze varre por `*.csv`), e
+    fora do `TransactionEvent`: só o avaliador do detector (issue #44) o consome.
+    """
+    path = output_dir / "ground_truth" / "ground_truth.csv"
+    _write_csv(path, ground_truth)
+    print(f"  Ground truth salvo: {path}  ({len(ground_truth):,} registros)")
+
+
 def save_market_data(market_records: list[dict], output_dir: Path) -> None:
     """Particiona cotações por data (YYYY/MM/DD) e salva como CSV."""
     by_date: dict[str, list[dict]] = {}
@@ -88,6 +99,7 @@ def print_stats(
     customers: list[dict],
     transactions: list[dict],
     market_records: list[dict],
+    ground_truth: list[dict] | None = None,
 ) -> None:
     total = len(transactions)
     fraud_count = sum(1 for t in transactions if t["is_fraud"])
@@ -118,6 +130,17 @@ def print_stats(
     print("  Distribuição por tipo de fraude:")
     for ft, count in fraud_type_counter.most_common():
         print(f"    {ft:<30} {count:>6,}")
+    if ground_truth:
+        episodes = {r["episode_id"] for r in ground_truth if r["episode_id"]}
+        stealth_episodes = {r["episode_id"] for r in ground_truth if r["episode_id"] and r["stealth"]}
+        hard_negatives: Counter = Counter(
+            kind for r in ground_truth for kind in r["hard_negative"].split(";") if kind
+        )
+        print()
+        print(f"  Episódios de fraude: {len(episodes):>8,}  (stealth: {len(stealth_episodes):,})")
+        print("  Hard negatives (legítimos que imitam fraude):")
+        for kind, count in hard_negatives.most_common():
+            print(f"    {kind:<25} {count:>8,}  ({count / total * 100:.2f}%)")
     print("=" * 60 + "\n")
 
 
@@ -197,6 +220,7 @@ def main() -> None:
         end_date=end_date,
     )
     save_transactions(transactions, output_dir)
+    save_ground_truth(gen.last_ground_truth, output_dir)
 
     # 3. Cotações
     total_market = len(MARKET_SYMBOLS) * args.market_days
@@ -204,7 +228,7 @@ def main() -> None:
     market_records = gen.generate_market_data(n_days=args.market_days)
     save_market_data(market_records, output_dir)
 
-    print_stats(customers, transactions, market_records)
+    print_stats(customers, transactions, market_records, gen.last_ground_truth)
     print("Concluído.")
 
 

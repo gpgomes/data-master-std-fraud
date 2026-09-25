@@ -65,3 +65,20 @@ class TestMakefilePython:
             "PYTHON não pode apontar para um caminho Windows (.venv\\Scripts\\python) "
             "— o setup precisa ser reproduzível em macOS/Linux"
         )
+
+
+class TestProducerSeeds:
+    """O producer só enriquece com dim_customers se usar os mesmos clientes do seed-data (#43)."""
+
+    def test_customer_seed_matches_seed_data_everywhere(self):
+        from src.ingestion.streaming.kafka_producer_transactions import CUSTOMER_SEED
+
+        assert CUSTOMER_SEED == int(_env_example_value("CUSTOMER_SEED")) == 42
+        assert re.search(r'CUSTOMER_SEED:\s*"42"', _read("docker-compose.yml"))
+        assert re.search(r'"--seed",\s*type=int,\s*default=42', _read("scripts/generate_sample_data.py"))
+        assert '"seed": 42' in _read("dags/dag_seed_data.py")
+
+    def test_event_seed_stays_time_based_by_default(self):
+        """Fixar a seed dos eventos repetiria os mesmos transaction_id a cada reinício."""
+        assert _env_example_value("GENERATOR_SEED") == "0"
+        assert re.search(r'GENERATOR_SEED:\s*"0"', _read("docker-compose.yml"))

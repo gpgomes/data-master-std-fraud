@@ -1,5 +1,7 @@
 """Kafka producer de transações financeiras — simula stream em tempo real."""
 
+import heapq
+import itertools
 import json
 import os
 import signal
@@ -12,7 +14,7 @@ from typing import Any
 from loguru import logger
 
 from src.common.config import settings
-from src.common.data_generator import DataGenerator
+from src.common.data_generator import DataGenerator, TransactionStream
 from src.common.schemas import TransactionEvent
 from src.ingestion.streaming.producer_config import ProducerConfig
 
@@ -21,7 +23,15 @@ from src.ingestion.streaming.producer_config import ProducerConfig
 TOPIC = settings.kafka.topic_transactions
 RATE = float(os.getenv("PRODUCER_RATE_TPS", "10"))          # transações por segundo
 SOURCE_SYSTEM = os.getenv("SOURCE_SYSTEM", "transaction-simulator")
-SEED = int(os.getenv("GENERATOR_SEED", "0")) or None        # 0 = não-determinístico
+# Ritmo diurno: o volume segue o horário ativo dos clientes (cai de madrugada). Por padrão o ritmo
+# é constante (PRODUCER_RATE_TPS), como sempre foi.
+DIURNAL = os.getenv("PRODUCER_DIURNAL", "false").strip().lower() == "true"
+# Seed dos clientes: tem de bater com a do `make seed-data` (--seed 42). Os 1.000 clientes daqui
+# são então o prefixo dos 10.000 do batch, e o enriquecimento (dim_customers) e o perfil de
+# comportamento (Gold) encontram cada cliente do stream.
+CUSTOMER_SEED = int(os.getenv("CUSTOMER_SEED", "42"))
+# Seed dos eventos: 0 = por horário. Fixa-la faria cada reinício repetir os mesmos transaction_id.
+SEED = int(os.getenv("GENERATOR_SEED", "0")) or None
 
 # ── Métricas em memória ────────────────────────────────────────────────────────
 
@@ -81,46 +91,56 @@ def run(stop_event: Event | None = None) -> None:
     config = ProducerConfig()
     producer = KafkaProducer(**config.to_kafka_python_dict())
 
-    gen = DataGenerator(seed=SEED or int(time.time()))
-    # Pré-gera clientes para reutilizar nos generates
+    gen = DataGenerator(seed=CUSTOMER_SEED)
+    # Pré-gera clientes para reutilizar nos eventos
     customers = gen.generate_customers(n=1_000)
+    gen.reseed_events(SEED or int(time.time()))
+    stream = TransactionStream(gen, customers, diurnal=DIURNAL)
+
+    # Follow-ups de episódios de fraude saem com atraso: heap por instante de emissão.
+    pending: list[tuple[float, int, dict[str, Any]]] = []
+    tiebreak = itertools.count()
+
+    def send(tx: dict[str, Any]) -> None:
+        # O timestamp é o instante de emissão: o detector usa janela em tempo de evento e o
+        # watermark do streaming depende de o evento chegar "agora".
+        tx["timestamp"] = datetime.now(tz=UTC).isoformat()
+        msg = _build_message(tx)
+        payload = _serialize(msg)
+        key = tx["customer_id"]
+
+        t0 = time.monotonic()
+        try:
+            future = producer.send(TOPIC, value=payload, key=key, headers=[
+                ("produced_at", msg["produced_at"].encode()),
+                ("source_system", SOURCE_SYSTEM.encode()),
+            ])
+            future.get(timeout=10)
+            latency_ms = (time.monotonic() - t0) * 1000
+            _metrics["sent"] += 1
+            _metrics["latency_sum_ms"] += latency_ms
+
+            if _metrics["sent"] % 100 == 0:
+                logger.info(
+                    f"Enviadas {_metrics['sent']} msgs | "
+                    f"erros={_metrics['errors']} | "
+                    f"lat_media={_avg_latency():.1f}ms"
+                )
+
+        except KafkaError as exc:
+            _metrics["errors"] += 1
+            logger.error(f"Erro ao enviar mensagem: {exc}")
 
     interval = 1.0 / RATE
     logger.info(f"Producer iniciado | tópico={TOPIC} | rate={RATE} tps")
 
     try:
         while not stop_event.is_set():
-            # Gera uma transação por vez reaproveitando o gerador
-            tx_list = gen.generate_transactions(customers, n=1)
-            tx = tx_list[0]
-            # O gerador espalha timestamps pelos últimos 180 dias; o detector de fraude
-            # usa janela de 1h em tempo de evento, então sem isto nunca forma baseline.
-            tx["timestamp"] = datetime.now(tz=UTC).isoformat()
-            msg = _build_message(tx)
-            payload = _serialize(msg)
-            key = tx["customer_id"]
-
-            t0 = time.monotonic()
-            try:
-                future = producer.send(TOPIC, value=payload, key=key, headers=[
-                    ("produced_at", msg["produced_at"].encode()),
-                    ("source_system", SOURCE_SYSTEM.encode()),
-                ])
-                future.get(timeout=10)
-                latency_ms = (time.monotonic() - t0) * 1000
-                _metrics["sent"] += 1
-                _metrics["latency_sum_ms"] += latency_ms
-
-                if _metrics["sent"] % 100 == 0:
-                    logger.info(
-                        f"Enviadas {_metrics['sent']} msgs | "
-                        f"erros={_metrics['errors']} | "
-                        f"lat_media={_avg_latency():.1f}ms"
-                    )
-
-            except KafkaError as exc:
-                _metrics["errors"] += 1
-                logger.error(f"Erro ao enviar mensagem: {exc}")
+            now = datetime.now(tz=UTC)
+            for delay_s, tx in stream.next_events(now):
+                heapq.heappush(pending, (now.timestamp() + delay_s, next(tiebreak), tx))
+            while pending and pending[0][0] <= now.timestamp():
+                send(heapq.heappop(pending)[2])
 
             stop_event.wait(timeout=interval)
 

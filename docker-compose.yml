@@ -455,6 +455,8 @@ services:
       PRODUCER_TYPE: transactions
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       PRODUCER_RATE_TPS: "10"
+      PRODUCER_DIURNAL: "false"
+      CUSTOMER_SEED: "42"
       GENERATOR_SEED: "0"
       SOURCE_SYSTEM: transaction-simulator
       LOG_LEVEL: INFO

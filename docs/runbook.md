@@ -73,6 +73,36 @@ docker compose exec -T kafka kafka-console-consumer --bootstrap-server kafka:909
 
 Layout novo: `silver/transactions_stream/` passou a ser particionado por `query_id` e `batch_id`. Saída gravada por versões anteriores fica solta na raiz do prefixo; apague `silver/transactions_stream/` antes de ler o conjunto todo.
 
+### Dados sintéticos: perfis, fraude por episódio e ground truth (issue #43)
+
+O gerador (`src/common/data_generator.py`) dá a cada cliente um perfil de comportamento
+determinístico (devices, redes /24, destinatários frequentes, faixa de valor, horário ativo,
+cidade-base), derivado só de `seed + customer_id` (`src/common/customer_profile.py`). A fraude é
+gerada como **episódio** coerente com o tipo (`src/common/fraud_scenarios.py`), com ~20% de
+variantes *stealth*, e o tráfego legítimo carrega ruído deliberado (*hard negatives*: troca de
+celular, rede nova, viagem, compra grande, transação fora do horário habitual).
+
+`make seed-data` grava, além de `data/sample/transactions/`, o sidecar
+`data/sample/ground_truth/ground_truth.csv` (`transaction_id, episode_id, scenario, stealth,
+hard_negative`). Ele fica fora de `transactions/` e fora do `TransactionEvent` de propósito: só o
+avaliador do detector o consome. O `is_fraud`/`fraud_type` do evento continuam sendo o rótulo.
+
+Variáveis do producer de transações (`docker-compose.yml`, `.env.example`):
+
+| Variável | Padrão | Para que serve |
+|---|---|---|
+| `CUSTOMER_SEED` | `42` | Seed dos clientes e perfis. **Tem de bater com a do `make seed-data`** (`--seed 42`): os 1.000 clientes do stream são o prefixo dos 10.000 do batch, e é isso que faz o join com `dim_customers` encontrar o cliente |
+| `GENERATOR_SEED` | `0` | Seed dos **eventos**; `0` = por horário. Não fixe: com a seed fixa cada reinício do producer repetiria os mesmos `transaction_id` |
+| `PRODUCER_DIURNAL` | `false` | `true` faz o volume seguir o horário ativo dos clientes (cai de madrugada); `false` mantém o ritmo constante de `PRODUCER_RATE_TPS` |
+
+Follow-ups de um episódio de fraude (o clone de cartão, o segundo saque do account takeover) saem
+com atraso: o producer os mantém num heap e os emite na hora certa, com `timestamp` = instante de
+emissão. Pedir uma execução curta do producer pode, portanto, mostrar só o início de um episódio.
+
+Limitação conhecida: o roubo de identidade mira contas abertas nos últimos 30 dias, e a idade da
+conta vem de `account_opening_date` no momento em que os clientes foram gerados. Se o `seed-data`
+foi rodado há semanas, essas contas já não são "novas" para o stream.
+
 ### Resetar ambiente completo
 ```bash
 make clean
