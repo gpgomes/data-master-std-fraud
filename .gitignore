@@ -243,6 +243,9 @@ src/governance/great_expectations/data_docs/
 .idea/
 .vscode/
 
+# macOS
+.DS_Store
+
 # Secrets
 *.pem
 *.key
@@ -250,3 +253,6 @@ src/governance/great_expectations/data_docs/
 secrets/
 credentials/
 nul
+
+# Material de apoio local
+help/
