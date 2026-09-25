@@ -31,11 +31,21 @@ make format    # black + ruff --fix
 ```
 
 ### CI (GitHub Actions)
-`.github/workflows/ci.yml` runs on every push/PR to `main` (plus manual `workflow_dispatch`), two parallel jobs mirroring the Makefile targets above so there's no drift between CI and local dev:
+`.github/workflows/ci.yml` runs on every push/PR to `main` (plus manual `workflow_dispatch`), parallel jobs mirroring the Makefile targets above so there's no drift between CI and local dev:
 - `lint` — `make lint` (ruff + mypy)
 - `test` — `make test-unit`, with Java 17 set up first (PySpark needs a JVM even in local mode); enforces the `--cov-fail-under=70` gate already defined in `pyproject.toml`; uploads `htmlcov/` as an artifact
+- `terraform` — `make tf-check` (terraform fmt/validate + tflint + checkov; no AWS credentials needed)
+- `terraform-plan` — read-only `terraform plan` of dev via GitHub OIDC; **skipped** until the repo variables `AWS_PLAN_ROLE_ARN` and `TF_STATE_BUCKET` exist (i.e. after the bootstrap is applied)
 
 Integration tests (`tests/integration/`) are intentionally **not** run in CI — they need the full Docker Compose stack (Kafka, Zookeeper, Airflow, Superset, Postgres, MinIO, Spark cluster), which is too slow/heavy for a per-PR gate. Run them locally via `make up && make setup && make test-integration`.
+
+### Terraform / AWS (issue #17)
+```bash
+make tf-check          # tf-fmt + tf-validate + tf-lint + tf-security (needs terraform, tflint, checkov; no AWS credentials)
+make tf-plan           # real plan of dev — needs AWS credentials + terraform/environments/dev/backend.hcl
+pytest tests/unit/test_terraform_guardrails.py  # cost/IAM/secrets/single-environment guardrails (no terraform binary needed)
+```
+Fixed decisions: region **us-east-1**, **US$ 50/month** ceiling for the whole account (so MWAA/MSK/EMR/NAT are ephemeral: apply → test → destroy), and `dev` is the **only** environment. Forgetting the full stack running costs ~US$ 22 per day. AWS Budgets only alerts, it does not block. Details and provisioning order: `docs/runbook.md`, "Infraestrutura AWS (Terraform)".
 
 ### Infrastructure (Docker)
 ```bash
@@ -101,6 +111,7 @@ Python Simulator → Kafka raw-transactions → Spark Structured Streaming
 | Great Expectations suites | `src/governance/great_expectations/` |
 | Data catalog (registry, validation, render) | `src/governance/data_catalog/` |
 | Airflow DAGs | `dags/` |
+| Terraform (AWS, V2) | `terraform/` — `bootstrap/` (account baseline), `modules/`, `environments/dev` |
 | Shared test fixtures | `tests/conftest.py` |
 
 ### Configuration Pattern
@@ -156,7 +167,7 @@ The project is being built in phases (see `CaseFinancialDataLakeHouse.md` — th
 - **Phase 2 — PySpark batch + streaming transformations:** ✅ Done (batch: `bronze_to_silver.py`/`silver_to_gold.py`; streaming: `stream_processor.py`, Z-Score anomaly detection, issue #11)
 - **Phase 3 — Data governance:** ✅ Done, with two scope changes from the original plan: Great Expectations quality gates (issue #13); a lightweight, code-based data catalog (issue #14) instead of OpenMetadata — see `docs/architecture.md`'s "Decisões Arquiteturais" table; Delta Lake was evaluated and explicitly **not** adopted (issue #9) — the platform uses Parquet only, no time-travel/versioning layer exists
 - **Phase 4 — Serving layer:** ✅ Done — PostgreSQL loader (issue #10), FastAPI (issue #15), Superset dashboards (issue #16, Grafana descoped — see `docs/architecture.md`)
-- **Phase 5 — AWS migration via Terraform:** ⬜ Not started (issue #17, open)
+- **Phase 5 — AWS migration via Terraform:** 🚧 In progress (issue #17, open) — skeleton done: `bootstrap/` (remote-state bucket, US$ 50/month Budget, GitHub OIDC plan role), modules `s3`/`iam`/`budget`, `dev` environment, CI jobs, guardrail tests. Not started: NAT/networking, MSK, EMR, MWAA, Glue/Athena, app portability to AWS (MinIO/Kafka/credentials assumptions in `src/common/`), deploying the jobs to EMR
 - **Phase 6 — CI/CD, QuickSight, documentation:** 🚧 Partial — the lint + unit-test slice of CI/CD (`.github/workflows/ci.yml`) is done; deploy automation and QuickSight are not started; this documentation pass is issue #18
 
 ## Code Style

@@ -65,3 +65,92 @@ jobs:
           name: coverage-html
           path: htmlcov/
           retention-days: 7
+
+  # Checagens estáticas do Terraform (issue #17) — sem credenciais AWS, as mesmas
+  # que `make tf-check` roda localmente. Os guardrails em pytest (custo, IAM,
+  # segredos) rodam no job `test`.
+  terraform:
+    name: Terraform (fmt, validate, tflint, checkov)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.16.4"
+          terraform_wrapper: false
+
+      - uses: terraform-linters/setup-tflint@v6
+        with:
+          tflint_version: v0.64.0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install checkov
+        run: pip install checkov==3.3.19
+
+      # GITHUB_TOKEN: `tflint --init` baixa o ruleset AWS do GitHub e, sem token,
+      # cai no rate limit anônimo.
+      - name: Run Terraform checks
+        run: make tf-check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # `terraform plan` somente-leitura contra a conta AWS, via OIDC (sem chave
+  # estática). Só roda depois do bootstrap: exige as variáveis de repositório
+  # AWS_PLAN_ROLE_ARN e TF_STATE_BUCKET (outputs do bootstrap, não são segredos —
+  # ver docs/runbook.md, "Infraestrutura AWS"). Sem elas o job é pulado.
+  # PRs de fork não recebem token OIDC, então também são pulados.
+  terraform-plan:
+    name: Terraform plan (dev)
+    needs: terraform
+    if: >-
+      vars.AWS_PLAN_ROLE_ARN != '' && vars.TF_STATE_BUCKET != '' &&
+      (github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.16.4"
+          terraform_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Write backend config
+        working-directory: terraform/environments/dev
+        run: |
+          {
+            echo 'bucket       = "${{ vars.TF_STATE_BUCKET }}"'
+            echo 'key          = "dev/terraform.tfstate"'
+            echo 'region       = "us-east-1"'
+            echo 'encrypt      = true'
+            echo 'use_lockfile = true'
+          } > backend.hcl
+
+      - name: Terraform init
+        working-directory: terraform/environments/dev
+        run: terraform init -input=false -lockfile=readonly -backend-config=backend.hcl
+
+      # -lock=false: a role de plan é somente-leitura e não escreve o lock no bucket.
+      - name: Terraform plan
+        shell: bash
+        working-directory: terraform/environments/dev
+        run: |
+          terraform plan -input=false -lock=false -no-color | tee plan.txt
+          {
+            echo '### terraform plan (dev)'
+            echo '```'
+            tail -n 60 plan.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

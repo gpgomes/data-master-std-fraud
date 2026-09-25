@@ -1,0 +1,7 @@
+# Copie para backend.hcl (ignorado pelo git). O nome do bucket sai do output
+# `state_bucket_name` do bootstrap (terraform -chdir=../../bootstrap output).
+bucket       = "data-master-std-fraud-<ACCOUNT_ID>-tfstate"
+key          = "dev/terraform.tfstate"
+region       = "us-east-1"
+encrypt      = true
+use_lockfile = true

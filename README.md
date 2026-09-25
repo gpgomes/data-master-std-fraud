@@ -335,7 +335,7 @@ make dashboards-export   # snapshot versionado em dashboards/superset/dashboard_
 | Ao derrubar/reiniciar o streaming no meio de um micro-batch, mensagens de `enriched-transactions`/`fraud-alerts` podem repetir numa janela residual (o Parquet em `silver/transactions_stream/` não duplica) | O Kafka sink do Spark não é transacional (at-least-once); consumidores devem deduplicar por `transaction_id`. Ver [`docs/runbook.md`](docs/runbook.md#semântica-de-entrega-do-streaming-issue-36) | [#36](https://github.com/gpgomes/data-master-std-fraud/issues/36) |
 | Sem dados de mercado (`bronze/market_data` vazio); gates e catálogo tratam como opcional | O Yahoo Finance devolve HTTP 429 (rate limit) conforme o IP; a coleta via yfinance não é confiável | [`docs/runbook.md`](docs/runbook.md#quality-gates-great-expectations) |
 | Batch e streaming não rodam juntos no cluster Spark padrão | O streaming ocupa os 4 cores e 4 GB dos workers | [`docs/runbook.md`](docs/runbook.md#troubleshooting) |
-| Sem AWS/Terraform, QuickSight e deploy automatizado | Fora do escopo da V1 local | [#17](https://github.com/gpgomes/data-master-std-fraud/issues/17) |
+| MSK, EMR, MWAA, Glue/Athena, QuickSight e deploy automatizado ainda não estão na AWS | V2 em andamento: o esqueleto Terraform (bootstrap da conta, S3, IAM, Budget de US$ 50/mês, CI) está pronto; os módulos de compute e a portabilidade do código para a AWS ainda não. Ver [`docs/runbook.md`](docs/runbook.md#infraestrutura-aws-terraform) | [#17](https://github.com/gpgomes/data-master-std-fraud/issues/17) |
 
 ---
 

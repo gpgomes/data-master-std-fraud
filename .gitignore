@@ -223,13 +223,16 @@ metastore_db/
 spark-warehouse/
 
 # Terraform
-terraform/.terraform/
-terraform/*.tfstate
-terraform/*.tfstate.*
-terraform/*.tfstate.backup
-terraform/.terraform.lock.hcl
-terraform/terraform.tfvars
+# .terraform.lock.hcl É versionado (fixa a versão dos providers); state, planos,
+# variáveis locais e backend.hcl (nome do bucket com account id) não são.
+**/.terraform/
+*.tfstate
+*.tfstate.*
 *.tfplan
+*.tfvars
+backend.hcl
+crash.log
+crash.*.log
 
 # Airflow
 logs/

@@ -2,6 +2,7 @@
         spark-submit-batch spark-submit-stream spark-submit-silver-gold spark-submit-gold-postgres \
         spark-submit-stream-postgres \
         seed-data producer-transactions producer-market api catalog dashboards dashboards-export \
+        tf-fmt tf-validate tf-lint tf-security tf-check tf-plan \
         clean clean-data logs ps help
 
 # ── Variáveis ──────────────────────────────────────────────────────────────────
@@ -13,6 +14,7 @@ STREAM_JOB       := src/transformation/streaming/stream_processor.py
 # senão cai para python3 do PATH. Sobrescrevível: `make test PYTHON=python3.11`.
 PYTHON           ?= $(shell [ -x .venv/bin/python ] && echo .venv/bin/python || echo python3)
 PYTEST_ARGS      ?= -v
+TF_ROOTS         := terraform/bootstrap terraform/environments/dev
 
 # ── Infra ──────────────────────────────────────────────────────────────────────
 up: ## Subir toda a infraestrutura local
@@ -130,6 +132,30 @@ dashboards-export: ## Exporta o dashboard Superset provisionado para dashboards/
 	cp -r .tmp_dashboard_export/dashboard_export_*/* dashboards/superset/dashboard_configs/
 	rm -rf .tmp_dashboard_export
 	@echo "Export atualizado em dashboards/superset/dashboard_configs/"
+
+# ── Terraform / AWS (issue #17) ────────────────────────────────────────────────
+# tf-fmt/validate/lint/security não precisam de credenciais AWS (mesmas checagens do CI).
+tf-fmt: ## Verificar formatação do Terraform (terraform fmt -check)
+	terraform fmt -check -recursive -diff terraform
+
+tf-validate: ## terraform init -backend=false + validate em bootstrap e dev
+	@for dir in $(TF_ROOTS); do \
+		echo "==> $$dir"; \
+		terraform -chdir=$$dir init -backend=false -input=false -lockfile=readonly >/dev/null && \
+		terraform -chdir=$$dir validate || exit 1; \
+	done
+
+tf-lint: ## tflint (ruleset AWS) em todos os módulos e ambientes
+	cd terraform && tflint --init && tflint --recursive --minimum-failure-severity=notice
+
+tf-security: ## checkov (segurança IaC) — requer `pip install checkov`
+	checkov -d terraform --framework terraform --quiet --compact --download-external-modules false
+
+tf-check: tf-fmt tf-validate tf-lint tf-security ## Todas as verificações estáticas do Terraform
+
+tf-plan: ## terraform plan do ambiente dev (requer credenciais AWS + backend.hcl)
+	terraform -chdir=terraform/environments/dev init -input=false -backend-config=backend.hcl
+	terraform -chdir=terraform/environments/dev plan -input=false -out=dev.tfplan
 
 # ── Limpeza ────────────────────────────────────────────────────────────────────
 clean: ## Limpar volumes Docker, dados temporários e artefatos de build

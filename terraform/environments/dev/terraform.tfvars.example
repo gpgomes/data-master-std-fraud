@@ -1,0 +1,3 @@
+# Copie para terraform.tfvars (ignorado pelo git) só se precisar sobrescrever algum
+# default. Nunca coloque credenciais aqui.
+# region = "us-east-1"

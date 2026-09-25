@@ -1,0 +1,305 @@
+================================================================================
+CHECKLIST DE TESTES — Infraestrutura Terraform para AWS (issue #17) — ESQUELETO
+================================================================================
+
+Objetivo da issue: migracao cloud (V2) com infraestrutura versionada — modulos e
+ambientes em terraform/ para S3, MSK, EMR, MWAA, Glue/Athena e IAM, backend
+remoto, ambiente dev, least privilege, sem credencial estatica, fmt/validate/plano e
+runbook.
+
+Este documento cobre o PRIMEIRO PR da issue (esqueleto). A issue continua aberta:
+os modulos de compute (NAT/networking, MSK, EMR, MWAA, Glue/Athena) e a
+portabilidade do codigo para a AWS vem nos proximos PRs.
+
+Decisoes de projeto (confirmadas com o usuario em 2026-09-23):
+  - Regiao: us-east-1 (nao sa-east-1, que custa ~1,6x mais).
+  - Orcamento: US$ 50/mes para a conta inteira. Consequencia: so S3, IAM, Glue,
+    Athena e o Budget ficam ligados (~US$ 7/mes); MWAA, MSK, EMR e NAT sao
+    temporarios (sobe -> testa -> derruba).
+  - Ambientes: existe SOMENTE o ambiente dev (decisao do usuario, 2026-09-23). O
+    texto original da issue previa dois ambientes; ele deve ser ajustado. Um teste
+    impede que outro diretorio de ambiente apareca sem revisar a decisao.
+  - Escopo da #17: IaC validada e planejada; o apply real fica para uma issue
+    seguinte, dentro do orcamento.
+  - Custos verificados na AWS Price List API (versao 2026-09-21), nao de memoria.
+    Achado que corrigiu uma afirmacao anterior: MSK Serverless cobra US$ 0,75/h
+    fixos (~US$ 560/mes) — NAO e mais barato que o provisionado (2 x
+    kafka.t3.small = US$ 0,09/h). Recurso escolhido: MSK provisionado.
+
+Arquivos criados:
+  - terraform/bootstrap/ (baseline da conta, state local: bucket de state
+    remoto, Budget mensal de US$ 50, OIDC do GitHub + role de plan somente-leitura)
+  - terraform/modules/s3 (buckets com bloqueio publico, versionamento, SSE-S3,
+    lifecycle, TLS-only), terraform/modules/iam (policies least-privilege por
+    camada: read/write de bronze/silver/gold/checkpoints), terraform/modules/budget
+  - terraform/environments/dev/ (backend s3 parcial, modulos s3 e iam,
+    outputs bucket_* alinhados com config.py)
+  - terraform/.tflint.hcl, .terraform.lock.hcl (3, com hashes linux_amd64 e
+    darwin_arm64), *.example (backend.hcl, terraform.tfvars)
+  - tests/unit/test_terraform_guardrails.py (36 testes, sem terraform/AWS)
+
+Arquivos modificados:
+  - Makefile (tf-fmt, tf-validate, tf-lint, tf-security, tf-check, tf-plan)
+  - .github/workflows/ci.yml (jobs terraform e terraform-plan)
+  - .gitignore (lock files agora VERSIONADOS; state, planos, *.tfvars e
+    backend.hcl ignorados), pyproject.toml (python-hcl2 no extra dev)
+  - README.md, CLAUDE.md, docs/architecture.md, docs/runbook.md (secao
+    "Infraestrutura AWS (Terraform)": ordem de provisionamento, custo, IAM
+    minimo, destruicao segura, rollback)
+
+================================================================================
+0. AMBIENTE — ferramentas instaladas nesta maquina
+================================================================================
+  - terraform 1.16.4 via `brew install hashicorp/tap/terraform` (o Homebrew core
+    nao tem mais o formula `terraform` por causa da licenca BUSL).
+  - tflint 0.64.0 (ruleset AWS 0.49.0): NAO existe no Homebrew; instalado a
+    partir do GitHub Releases com checagem de checksum SHA-256 (OK).
+  - checkov 3.3.19 e actionlint em venv isolado no scratchpad (nao poluem o
+    .venv do projeto). O AWS CLI ainda NAO esta instalado.
+
+================================================================================
+1. CHECAGENS ESTATICAS — executadas em 2026-09-23 (sem credenciais AWS)
+================================================================================
+  ID           Descricao                                       Resultado
+  -----------------------------------------------------------------------
+  17-STAT-01   terraform fmt -check -recursive                  OK
+  17-STAT-02   init -backend=false -lockfile=readonly +
+               validate em bootstrap e dev                      OK (2/2)
+  17-STAT-03   tflint --recursive --minimum-failure-severity=
+               notice (rules extras: required_version,
+               required_providers, documented_variables/
+               outputs)                                         OK, 0 achados
+  17-STAT-04   Sanidade do tflint: modulo propositalmente
+               ruim (variavel sem tipo/descricao/uso)           PEGOU 5 achados
+  17-STAT-05   checkov 3.3.19                                   153 passed,
+                                                                0 failed,
+                                                                16 skipped
+  17-STAT-06   make tf-check (fmt+validate+lint+security)       exit 0
+  17-STAT-07   actionlint no ci.yml + parse YAML (4 jobs)       OK
+
+1.1 PLAN OFFLINE — terraform plan de verdade, sem AWS
+Copia descartavel do terraform/ no scratchpad, com credenciais ficticias,
+skip_credentials_validation e o account id fixo em 123456789012 (so na copia;
+nada disso vai para o repositorio). `plan -refresh=false`, sem nenhuma chamada
+a AWS. Prova que a logica dos modulos gera o que o codigo promete.
+
+  ID           Descricao                                       Resultado
+  -----------------------------------------------------------------------
+  17-PLAN-01   Contagem de recursos a criar                     dev 36,
+                                                                bootstrap 11
+  17-PLAN-02   dev: 4 buckets (bronze/silver/gold/checkpoints)
+               nomeados <projeto>-dev-<account>-<camada>;
+               outputs bucket_* iguais aos que config.py espera OK
+  17-PLAN-03   Lifecycle do bucket checkpoints: versoes antigas
+               expiram em 3 dias; multipart abortado em 7;
+               delete markers limpos                            OK
+  17-PLAN-04   Policies IAM (modulo iam alimentado com ARNs
+               literais): por camada, List so no ARN do bucket,
+               Get/Put/Delete so em <bucket>/*; nenhuma acao
+               "*" nem resource "*"                             OK
+  17-PLAN-05   Budget: 50 USD, MONTHLY, creditos e reembolsos
+               excluidos; 4 alertas (ACTUAL 50/80/100% e
+               FORECASTED 100%)                                 OK
+  17-PLAN-06   bootstrap: bucket de state (7 recursos), budget,
+               OIDC provider, role e role policy do plan        11 recursos
+
+Limite deste teste: os JSON das policies do dev e do bootstrap so ficam
+conhecidos no apply (dependem do ARN do bucket, que a AWS gera). Por isso a
+17-PLAN-04 usa ARNs literais, e a role de plan e o trust do OIDC so foram
+verificados pelos guardrails (17-GUARD-04), nao renderizados. O trust e a
+policy da role de plan continuam sem execucao real (ver secao 4).
+
+Achados reais das checagens:
+  * tflint, por padrao, so falha em nivel "error": avisos e notices passavam
+    em silencio. O Makefile e o CI agora usam --minimum-failure-severity=notice.
+  * checkov acusou 36 falhas na 1a rodada. 15 eram FALSO POSITIVO (bloqueio
+    publico, versionamento e lifecycle EXISTIAM, mas o checkov nao seguia
+    `for_each = aws_s3_bucket.this`). O modulo s3 foi refatorado para
+    `for_each = var.buckets` + `aws_s3_bucket.this[each.key]`, o que eliminou os
+    falsos positivos em vez de silencia-los.
+  * As 16 restantes sao skips CONSCIENTES, com motivo inline no codigo:
+    CKV_AWS_18 (access logging) x5, CKV_AWS_144 (replicacao cross-region) x5,
+    CKV2_AWS_62 (event notifications) x5 — custo/escopo; CKV_AWS_356 x1
+    (resource "*" na role de plan, so em acoes Get/List/Describe/View).
+  * Criptografia e SSE-S3 (AES256): o checkov passou CKV_AWS_145 (KMS), mas
+    isso NAO significa que o bucket usa KMS. O modulo aceita kms_key_arn para
+    ligar quando o orcamento permitir (cada chave custa US$ 1/mes).
+
+================================================================================
+2. GUARDRAILS EM PYTEST — tests/unit/test_terraform_guardrails.py (36 testes)
+================================================================================
+Sem binario do Terraform e sem AWS (parseiam os .tf com python-hcl2 8.1.4),
+entao rodam em `make test-unit` e no CI.
+
+  ID           Descricao                                       Resultado
+  -----------------------------------------------------------------------
+  17-GUARD-01  Custo: limite 50 USD; alertas 50/80/100% ACTUAL
+               + 100% FORECASTED; creditos nao escondem o gasto;
+               e-mails sem default (nada versionado)           OK (5 testes)
+  17-GUARD-02  Segredos: sem AKIA/ASIA, chave estatica, senha
+               literal ou chave privada; .gitignore cobre
+               state/plan/tfvars/backend.hcl; lock versionado  OK
+  17-GUARD-03  S3: bloqueio publico total, versionamento,
+               TLS-only, force_destroy=false, SSE-S3 sem KMS
+               pago por padrao                                 OK
+  17-GUARD-04  IAM: nenhum Allow com acao "*"/"servico:*";
+               resource "*" so em Get/List/Describe/View; role
+               de plan somente-leitura; trust do OIDC fixado no
+               repositorio, sem curinga; sem policy admin      OK
+  17-GUARD-05  Ambiente unico: so existe environments/dev;
+               nenhuma referencia a outro ambiente na arvore;
+               `environment` e a constante dev (nao variavel);
+               backend parcial com key dev/...; us-east-1;
+               AWS_REGION do .env.example                       OK
+  17-GUARD-06  App: cada bucket_* de MinIOSettings tem output
+               correspondente no Terraform e a mesma camada no
+               modulo s3 (bronze/silver/gold/checkpoints)      OK
+
+Teste de mutacao (os guardrails pegam regressao de verdade?): 24 quebras
+propositais no Terraform, uma por vez, com o original restaurado a cada uma:
+orcamento 50->500, threshold do forecast, include_credit, e-mail com default,
+chave AKIA, access_key=, IAM Allow s3:*, escrita na role de plan, trust com
+curinga, AdministratorAccess, force_destroy=true, versionamento suspenso, public
+access block afrouxado, output removido, regiao errada no dev, backend com
+bucket fixo, lock no .gitignore, camada do app divergente — e 6 que tentam
+reintroduzir um segundo ambiente ou desviar o unico: diretorio de outro ambiente,
+referencia a ele num comentario .tf, variavel `environment` reintroduzida,
+constante `environment` diferente de dev, key do state errada no
+backend.hcl.example e no output do bootstrap.
+  Resultado: 24/24 PEGAS. Baseline restaurado: 36 passed, arvore identica ao backup.
+
+================================================================================
+3. SUITE COMPLETA E LINT — executados em 2026-09-23
+================================================================================
+  ID           Descricao                                       Resultado
+  -----------------------------------------------------------------------
+  17-SUITE-01  make test-unit (com gate de cobertura 70%)       387 PASSED,
+                                                                cobertura 83,40%
+  17-SUITE-02  make lint (ruff + mypy)                          OK
+  17-SUITE-03  Nenhum arquivo de state/plan/.terraform no git   OK (git status)
+
+================================================================================
+4. NAO EXECUTADO — depende da conta AWS (checklist para o usuario)
+================================================================================
+Nada abaixo foi executado: nao ha credenciais AWS nesta maquina. O CI so roda o
+job terraform-plan depois do passo 4.2 (variaveis de repositorio). Ordem completa
+em docs/runbook.md, secao "Infraestrutura AWS (Terraform)".
+
+4.1 Pre-requisitos
+  [ ] Instalar o AWS CLI v2 e configurar um usuario administrativo com MFA (nao
+      usar o root). `aws sts get-caller-identity` retorna a conta esperada.
+
+4.2 Bootstrap (uma vez por conta)
+  [ ] cd terraform/bootstrap && cp terraform.tfvars.example terraform.tfvars
+      (editar budget_alert_emails) && terraform init && terraform plan
+  [ ] O plan mostra: 1 bucket (tfstate) + configuracoes, 1 budget, 1 OIDC
+      provider, 1 role + 1 role policy — e nada alem disso.
+  [ ] terraform apply. Anotar state_bucket_name e github_plan_role_arn.
+  [ ] Console AWS > Budgets: budget "data-master-std-fraud-monthly" com limite
+      US$ 50 e 4 alertas (50/80/100% real, 100% previsto). Confirmar que o
+      e-mail de alerta chega (ex.: criar um budget de teste com limite baixo).
+  [ ] Guardar o terraform.tfstate do bootstrap (local) ou migrar para o bucket.
+  [ ] GitHub > Settings > Variables: criar AWS_PLAN_ROLE_ARN e TF_STATE_BUCKET.
+
+4.3 Endurecimento do S3 na conta real
+  [ ] `aws s3api get-public-access-block --bucket <state_bucket>`: 4 flags true.
+  [ ] `aws s3api get-bucket-versioning` = Enabled;
+      `get-bucket-encryption` = AES256; `get-bucket-policy` nega aws:SecureTransport=false.
+  [ ] `aws s3 cp` via http (sem TLS) e negado.
+
+4.4 Plan do ambiente dev
+  [ ] cp backend.hcl.example backend.hcl (bucket do bootstrap) em
+      terraform/environments/dev; `make tf-plan`: 36 recursos a criar (4 buckets
+      x 7 recursos + 8 policies IAM), sem erro — mesmo numero do plan offline
+      (17-PLAN-01).
+  [ ] O job terraform-plan do CI (dev) passa via OIDC. Se falhar com
+      AccessDenied, estender a statement ReadInfrastructureConfig da role de plan
+      (bootstrap/github_oidc.tf) — o job NUNCA foi executado, esta e a parte do
+      esqueleto com maior risco de precisar de ajuste.
+  [ ] PR de fork nao tenta assumir a role (job pulado).
+
+4.5 Apply em dev e destruicao (dentro do orcamento)
+  [ ] terraform apply em dev cria os 4 buckets; `terraform output` traz os 4
+      bucket_* e as policies.
+  [ ] terraform destroy falha se os buckets tiverem objetos (force_destroy=false).
+  [ ] Apos o destroy, `aws resourcegroupstaggingapi get-resources --tag-filters
+      Key=Project,Values=data-master-std-fraud` lista so recursos do bootstrap.
+
+================================================================================
+5. PROXIMOS PASSOS — para retomar nos proximos dias
+================================================================================
+Estado ao parar (2026-09-23):
+  - Branch feat/issue-17-terraform-skeleton, base main (164a493). NADA foi
+    commitado nem enviado ao GitHub: o esqueleto esta so na arvore de trabalho
+    (terraform/, tests/unit/test_terraform_guardrails.py, este arquivo e as
+    edicoes em Makefile, ci.yml, .gitignore, pyproject.toml, CLAUDE.md, README.md,
+    docs/architecture.md, docs/runbook.md). Nao apagar a branch/arvore.
+  - Tudo verde localmente (secoes 1 a 3). Nada foi aplicado na AWS.
+  - A issue #17 ja foi atualizada no GitHub (escopo, decisoes, andamento).
+  - Decisoes fechadas: us-east-1; US$ 50/mes; so o ambiente dev; compute caro
+    temporario atras de flags enable_*; #17 = IaC validada e planejada.
+
+Passo A — commitar e abrir o PR do esqueleto (quando o usuario pedir)
+  [ ] Rodar de novo: make tf-check, make lint, make test-unit.
+  [ ] Commit na branch feat/issue-17-terraform-skeleton e PR para main. O CI
+      roda o job terraform; terraform-plan fica PULADO ate o passo B.
+
+Passo B — com a conta AWS (bloqueia so o apply; depende do usuario)
+  [ ] Secao 4 deste checklist, em ordem: AWS CLI + usuario admin com MFA,
+      apply do bootstrap, variaveis AWS_PLAN_ROLE_ARN e TF_STATE_BUCKET no
+      GitHub, make tf-plan.
+  [ ] Ao rodar o job terraform-plan pela primeira vez, esperar ajuste na role de
+      plan (statement ReadInfrastructureConfig em bootstrap/github_oidc.tf): e a
+      parte nunca executada do esqueleto.
+
+Passo C — portabilidade do codigo para a AWS (NAO precisa de conta; testavel
+com MinIO + unitarios). Issue de acompanhamento a abrir.
+  [ ] src/common/spark_session.py:45-54 — endpoint MinIO, chaves estaticas,
+      path-style, SSL off e SimpleAWSCredentialsProvider fixos; na AWS: sem
+      endpoint, credencial por instance profile/role, SSL on. Avaliar s3://
+      (EMRFS + committer otimizado) em vez de s3a://: partitionOverwriteMode=
+      dynamic sobre S3 sem committer e lento e nao atomico.
+  [ ] src/common/storage.py:26-32 e 152-157 — chaves estaticas, us-east-1 e
+      scheme=http fixos no pyarrow FS.
+  [ ] great_expectations/datasets.py:46-48 e data_catalog/validator.py — mesma
+      dependencia de chave/endpoint estatico.
+  [ ] Kafka sem auth: stream_processor.py:160 e :296, producer_config.py:38,
+      validator.py:78. MSK exige TLS + IAM (jar aws-msk-iam-auth no Spark).
+      config.py:20 replication_factor=1 nao serve no MSK; criacao de topicos hoje
+      e scripts/setup_local.sh via docker compose exec.
+  [ ] config.py sem AWSSettings; .env.example tem AWS_ACCESS_KEY_ID/SECRET como
+      placeholders (contradizem "sem credencial estatica"); senhas default no
+      codigo (datamaster123, change-me-in-production).
+  [ ] DAGs (dag_batch_transformation.py): SparkSubmitOperator + spark_default +
+      /opt/airflow/... nao existem no MWAA -> operadores EMR/EMR Serverless, com
+      variante por ENVIRONMENT para manter o local funcionando. Nao ha teste de
+      DAG (DagBag) no repositorio: criar.
+  [ ] Revalidar na AWS a idempotencia do foreachBatch (#36), validada so no MinIO.
+
+Passo D — modulos Terraform, um PR por modulo, nesta ordem
+  [ ] networking (VPC, subnets privadas, S3 gateway endpoint, NAT atras de
+      enable_nat)  ->  msk (provisionado, 2 x kafka.t3.small, enable_msk)
+      ->  emr (EMR Serverless p/ batch + EMR EC2 1+1 p/ streaming com
+      auto_termination_policy, enable_emr)  ->  mwaa (classe micro, plano B
+      small, enable_mwaa)  ->  glue + Athena (workgroup, tabelas via Terraform,
+      sem crawler).
+  Regras para CADA modulo novo:
+    - flag enable_* = false por padrao; atualizar a conta de horas no runbook;
+    - estender ReadInfrastructureConfig da role de plan com as acoes Get/List/
+      Describe do servico;
+    - estender os guardrails (IAM sem curinga, flag desligada, sem segredo);
+    - checkov: skip so com motivo inline; tflint estrito;
+    - repetir o plan offline (secao 1.1) e atualizar este checklist e o runbook.
+
+Passo E — issues de acompanhamento (fora da #17)
+  [ ] apply real + deploy dos jobs no EMR + paridade de dados local x AWS;
+      Lambda + EventBridge; QuickSight; CD (cd_deploy_aws.yml); load test.
+
+Pendencias em aberto
+  - Limites da classe MWAA micro NAO verificados (se nao servir, small: US$ 0,49/h,
+    ~30 h/mes de stack completa dentro de 80% do teto).
+  - Preco do plano Author comum do QuickSight nao apareceu na Price List
+    (so Author Pro e Reader): confirmar no console antes de planejar o fim.
+  - Local: checkov e o actionlint rodaram num venv temporario do scratchpad; para
+    `make tf-security` ou `make tf-check` e preciso `pip install checkov`.
+  - O AWS CLI ainda nao esta instalado.

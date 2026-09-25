@@ -319,13 +319,96 @@ Edite `CHARTS` em `src/serving/dashboards/charts.py` (cada `ChartDef` tem
 usado pelo smoke test do `--verify` — mantenha os dois coerentes) e rode
 `pytest tests/unit/test_dashboards.py`, depois `make dashboards`.
 
+## Infraestrutura AWS (Terraform)
+
+V2 (issue #17). Decisões fixas: região **us-east-1** e teto de **US$ 50/mês** para a conta inteira. Estado atual: esqueleto (`bootstrap`, módulos `s3`, `iam` e `budget`, ambiente `dev`). NAT, MSK, EMR, MWAA e Glue/Athena entram nos próximos PRs, cada um atrás de uma flag `enable_*` desligada por padrão.
+
+```
+terraform/
+├── bootstrap/      # baseline da conta (state local): bucket de state, Budget, OIDC do CI
+├── modules/        # s3, iam, budget (msk, emr, mwaa, glue... nos próximos PRs)
+└── environments/dev/  # único ambiente: backend remoto + os módulos
+```
+
+Existe **um único ambiente, `dev`**: o orçamento de US$ 50/mês não comporta um segundo. Um teste (`test_no_other_environment_directory_exists`) impede que outro apareça sem que essa decisão seja revista.
+
+### Orçamento: o que fica ligado e o que é temporário
+
+Só S3, IAM, Glue, Athena e o Budget ficam ligados o mês todo (cerca de US$ 7/mês). MWAA, MSK, EMR e NAT são temporários: sobe → testa → derruba.
+
+| Sessão | O que sobe | US$/hora | Horas até 80% do teto (US$ 40) |
+|---|---|---|---|
+| Batch | MWAA `micro` + NAT + EMR Serverless | 0,49 | 67 |
+| Streaming | MSK 2×`t3.small` + EMR EC2 (1+1) + NAT | 0,62 | 53 |
+| Ponta a ponta | Tudo | 0,91 | 36 |
+
+Preços de tabela us-east-1 (AWS Price List, 2026-09). Criar e destruir MWAA/MSK leva dezenas de minutos e já é cobrado. **Esquecer a stack completa ligada custa cerca de US$ 22 em 24 h e US$ 43 em 48 h** — dois dias consomem o orçamento.
+
+O Budget (`bootstrap`) alerta por e-mail em 50%, 80% e 100% do gasto real e em 100% da previsão. **Ele só avisa, não bloqueia**, e os dados de cobrança atrasam algumas horas: a proteção de verdade é derrubar a stack ao fim de cada sessão.
+
+### Ordem de provisionamento
+
+Pré-requisitos: `terraform` ≥ 1.10 (`brew install hashicorp/tap/terraform`), AWS CLI v2 e credenciais de um usuário administrativo com MFA (IAM Identity Center ou usuário IAM — nunca o root, nunca chaves no repositório). Confirme com `aws sts get-caller-identity`.
+
+1. **Bootstrap** (uma vez por conta):
+   ```bash
+   cd terraform/bootstrap
+   cp terraform.tfvars.example terraform.tfvars   # edite budget_alert_emails
+   terraform init && terraform plan && terraform apply
+   ```
+   Anote os outputs `state_bucket_name`, `github_plan_role_arn` e `backend_config_example`. O state do bootstrap é **local** (`terraform.tfstate`, ignorado pelo git): guarde o arquivo, ou migre-o para o bucket criado adicionando `backend "s3" {}` ao `versions.tf` e rodando `terraform init -migrate-state -backend-config=...` com `key = "bootstrap/terraform.tfstate"`.
+2. **CI**: em GitHub → Settings → Secrets and variables → Actions → *Variables*, crie `AWS_PLAN_ROLE_ARN` e `TF_STATE_BUCKET` (não são segredos). Sem elas o job `terraform-plan` é pulado.
+3. **Ambiente**:
+   ```bash
+   cd terraform/environments/dev
+   cp backend.hcl.example backend.hcl             # troque <ACCOUNT_ID> pelo bucket do bootstrap
+   terraform init -backend-config=backend.hcl
+   terraform plan && terraform apply
+   ```
+
+### Verificar sem AWS
+
+```bash
+make tf-check                                      # fmt + validate + tflint + checkov (as mesmas do CI)
+pytest tests/unit/test_terraform_guardrails.py     # custo, segredos, IAM, ambiente único, alinhamento com config.py
+make tf-plan                                       # plan real do dev (exige credenciais AWS e backend.hcl)
+```
+
+`make tf-security` exige `pip install checkov`. Use `export TF_PLUGIN_CACHE_DIR=~/.terraform.d/plugin-cache` para baixar o provider AWS uma vez só entre os três diretórios.
+
+### IAM: permissões mínimas
+
+| Principal | Onde | Pode | Não pode |
+|---|---|---|---|
+| Role `data-master-std-fraud-github-plan` | `bootstrap/github_oidc.tf` | Ler o state (`s3:GetObject`/`ListBucket` só no bucket de state) e ler a configuração da infra (`s3:GetBucket*`, `iam:Get*`/`List*`, `budgets:ViewBudget`, `resource "*"` porque APIs de leitura não aceitam restrição por resource) | Escrever qualquer coisa, ler objetos do data lake. Só é assumível por PRs e pela `main` deste repositório, via OIDC. O CI usa `plan -lock=false` justamente para não precisar escrever o lock |
+| Policies `<prefixo>-datalake-<camada>-read` / `-write` | `modules/iam` | Listar o bucket da camada e ler (read) ou ler/gravar/apagar (write) os objetos dela | Ação `*`, resource `*`, outras camadas. Cada job recebe só o que usa (ex.: `bronze_to_silver` = read `bronze` + write `silver`) |
+| Bucket policy dos buckets | `modules/s3` | — | Qualquer acesso sem TLS (`Deny` em `aws:SecureTransport = false`) |
+
+Regras verificadas por teste: nenhum statement Allow com ação `*` ou `serviço:*`; `resource "*"` só em ações Get/List/Describe/View; nenhuma policy administrativa; trust do OIDC fixado no repositório; nenhuma chave ou senha nos `.tf`. Cada módulo novo estende a statement `ReadInfrastructureConfig` da role de plan com as ações de leitura do seu serviço — senão o plan do CI falha com `AccessDenied`. Segurança de rede (VPC, security groups) será documentada aqui junto com o módulo `networking`.
+
+### Destruição segura e rollback
+
+- **Recursos temporários**: quando os módulos de compute existirem, `terraform apply -var enable_msk=false ...` derruba só o que é caro e preserva os dados no S3.
+- **`terraform destroy` em dev**: falha de propósito se algum bucket tiver objetos (`force_destroy_buckets = false`). Esvazie conscientemente (inclusive versões antigas) ou defina `force_destroy_buckets = true`, rode `apply` e só então `destroy`.
+- **Nunca destrua o `bootstrap`** enquanto houver ambientes usando o bucket de state. O Budget mora lá de propósito, para não ser derrubado junto com a stack de teste.
+- **Rollback**: `git revert` da mudança + `terraform apply`. O bucket de state é versionado (versões antigas expiram em 90 dias): para restaurar um state corrompido, recupere a versão anterior do objeto `dev/terraform.tfstate`. Lock preso: `terraform force-unlock <ID>`.
+- **Conferir órfãos depois de derrubar**: `aws resourcegroupstaggingapi get-resources --tag-filters Key=Project,Values=data-master-std-fraud --region us-east-1` deve listar só recursos do bootstrap e do data lake.
+
+### Diagnosticar
+
+1. **`terraform init` reclama de checksum do provider**: o `.terraform.lock.hcl` versionado tem hashes para `linux_amd64` e `darwin_arm64`. Em outra plataforma: `terraform providers lock -platform=<os_arch>` e commite o arquivo.
+2. **`tflint --init` falha com rate limit**: `export GITHUB_TOKEN=$(gh auth token)` (o CI já faz isso).
+3. **`plan` do CI com `AccessDenied`**: falta uma ação de leitura na statement `ReadInfrastructureConfig` de `bootstrap/github_oidc.tf`; adicione e rode `terraform apply` no bootstrap.
+4. **Guardrail falhou**: a mensagem do teste aponta a regra (custo, segredo, IAM, ambiente único ou alinhamento com `config.py`). Corrija o `.tf`, não o teste — a não ser que a decisão do projeto tenha mudado.
+
 ## CI (GitHub Actions)
 
-`.github/workflows/ci.yml` roda em todo push/PR para `main`: job `lint` (`ruff check` + `mypy`) e job `test` (`pytest tests/unit/`, Java 17 + Python 3.11, gate de cobertura ≥70%). Reproduza o gate localmente antes de abrir PR:
+`.github/workflows/ci.yml` roda em todo push/PR para `main`: job `lint` (`ruff check` + `mypy`), job `test` (`pytest tests/unit/`, Java 17 + Python 3.11, gate de cobertura ≥70%) e job `terraform` (`make tf-check`: fmt, validate, tflint e checkov, sem credenciais AWS). O job `terraform-plan` (`plan` somente-leitura do dev via OIDC) só roda depois do bootstrap, quando as variáveis de repositório `AWS_PLAN_ROLE_ARN` e `TF_STATE_BUCKET` existem; sem elas é pulado. Reproduza os gates localmente antes de abrir PR:
 
 ```bash
 make lint
 make test-unit
+make tf-check
 ```
 
 Só `tests/unit/` roda no CI — testes de integração (`tests/integration/`) exigem o stack Docker completo e continuam rodando só localmente (`make up && make setup && make test-integration`).
