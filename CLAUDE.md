@@ -58,7 +58,8 @@ make producer-transactions     # Start Kafka transaction producer
 make producer-market           # Start Kafka market data producer
 make api                       # Start FastAPI dev server at :8000
 make catalog                   # Generate docs/data_catalog.md + docs/images/data_lineage.svg, validate datasets against live infra
-make fraud-eval                # Evaluate the fraud detector (Precision/Recall/FPR, local Spark, no Docker) and generate docs/fraud_evaluation.md
+make fraud-eval                # Evaluate the fraud detectors (V1 Z-Score vs V2 multi-signal; Precision/Recall/FPR, local Spark, no Docker) and generate docs/fraud_evaluation.md
+make fraud-calibrate           # Recalibrate the V2 weights/threshold on the validation seed and write src/transformation/fraud/weights.py
 make dashboards                # Provision Superset dashboard (KPIs), smoke-test against live infra
 make dashboards-export         # Snapshot the provisioned dashboard to dashboards/superset/dashboard_configs/
 ```

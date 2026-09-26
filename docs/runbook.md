@@ -103,27 +103,47 @@ Limitação conhecida: o roubo de identidade mira contas abertas nos últimos 30
 conta vem de `account_opening_date` no momento em que os clientes foram gerados. Se o `seed-data`
 foi rodado há semanas, essas contas já não são "novas" para o stream.
 
-### Avaliar o detector de fraude (issue #44)
+### Avaliar os detectores de fraude (issues #44 e #45)
 
 ```bash
-make fraud-eval        # ~5 min, Spark local: não precisa de Docker (mas de Java, como os testes)
+make fraud-eval        # ~50 s, Spark local: não precisa de Docker (mas de Java, como os testes)
+make fraud-calibrate   # ~15 s: recalibra os pesos e o limiar do V2 (só quando o gerador ou os sinais mudam)
 ```
 
-Gera `docs/fraud_evaluation.md` (documento versionado, sem data/hora: a mesma configuração e as
-mesmas seeds geram o mesmo texto; não edite à mão). Mede o detector de streaming atual
-(`zscore-v1`, a mesma função `_enrich_and_score` de produção) contra o ground truth do gerador:
-Precision, Recall, F1, FPR, FNR, PR-AUC, alertas por 1.000 transações, Recall por tipo e por
-variante stealth, FPR por tipo de hard negative e *time-to-detect* por episódio.
+`make fraud-eval` gera `docs/fraud_evaluation.md` (documento versionado, sem data/hora: a mesma
+configuração e as mesmas seeds geram o mesmo texto; não edite à mão). Mede **dois detectores nos
+mesmos datasets**, com comparação pareada por seed:
+
+- `zscore-v1`: o detector de streaming atual (a mesma `_enrich_and_score` de produção).
+- `multisignal-v2`: o Fraud Engine (`src/transformation/fraud/`): 10 sinais (perfil do batch: valor,
+  device, rede, destinatário, hora, local e idade da conta; janela curta: velocidade, viagem impossível
+  e concentração de destinatários) combinados por noisy-OR, com o tipo de fraude **inferido** pelos
+  sinais. Nunca lê o rótulo do evento.
+
+O relatório traz Precision, Recall, F1, FPR, FNR, PR-AUC, alertas por 1.000 transações, Recall por
+tipo e por variante stealth, FPR por tipo de hard negative, *time-to-detect* por episódio, a matriz de
+confusão do tipo inferido, a tabela dos sinais (peso, frequência no legítimo e na fraude) e uma
+análise de sensibilidade do V2 sem o sinal que o gerador injeta em toda a fraude (`NEW_DESTINATION`).
 
 O protocolo usa um **replay de stream** (`TransactionStream` em tempo simulado, 1.000 clientes a
 10 TPS), não o dataset do `make seed-data`: a janela do Z-Score é de 1 h por cliente, e com ~50
-eventos por cliente em 180 dias o baseline existe em menos de 1% dos eventos. A linha "Densidade do
-`make seed-data`" do relatório mostra isso. O limiar da regra de operação (*recall máximo com FPR
-≤ 1%*) é calibrado numa seed de validação e aplicado em 5 seeds de teste com clientes diferentes.
+eventos por cliente em 180 dias o baseline existe em menos de 1% dos eventos. O V2 também recebe um
+histórico de batch dos mesmos clientes (60 mil transações em 180 dias), de onde sai o perfil. O
+limiar de cada detector (*recall máximo com FPR ≤ 1%*) é calibrado numa seed de validação e aplicado
+em 5 seeds de teste com clientes diferentes.
 
-Opções úteis: `--test-seeds 1 2`, `--duration-minutes 90`, `--customers 300`, `--skip-batch-density`,
-`--profile-until <ISO>` (corte: antes dele os eventos só alimentam a janela do detector) e
-`--output <arquivo>` para não sobrescrever o documento versionado num teste rápido.
+**Calibração do V2.** Os pesos e o limiar do alerta ficam em `src/transformation/fraud/weights.py`,
+arquivo **gerado** por `make fraud-calibrate` (busca por coordenadas na seed de validação; nunca nas
+de teste). Se você mudar o gerador (`data_generator.py`, `fraud_scenarios.py`) ou os sinais
+(`signals.py`, `profile.py`), rode a calibração de novo, depois `make fraud-eval`, e commite os dois
+arquivos. Um teste garante que o `weights.py` versionado tem o formato do gerador.
+
+Opções úteis (as duas CLIs): `--test-seeds 1 2`, `--duration-minutes 90`, `--customers 300`,
+`--skip-batch-density`, `--profile-until <ISO>` (corte: antes dele os eventos só alimentam o estado do
+detector), `--detectors zscore-v1` (só um), `--diurnal` com um `--start` noturno (exercita o sinal
+`UNUSUAL_HOUR`, que a janela padrão de 4 h ao meio-dia não exercita) e `--output <arquivo>` para não
+sobrescrever o documento versionado num teste rápido. Uma calibração com `--diurnal` deve usar as
+mesmas opções da avaliação.
 
 ### Resetar ambiente completo
 ```bash
