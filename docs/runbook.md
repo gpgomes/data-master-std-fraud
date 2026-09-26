@@ -103,6 +103,28 @@ Limitação conhecida: o roubo de identidade mira contas abertas nos últimos 30
 conta vem de `account_opening_date` no momento em que os clientes foram gerados. Se o `seed-data`
 foi rodado há semanas, essas contas já não são "novas" para o stream.
 
+### Avaliar o detector de fraude (issue #44)
+
+```bash
+make fraud-eval        # ~5 min, Spark local: não precisa de Docker (mas de Java, como os testes)
+```
+
+Gera `docs/fraud_evaluation.md` (documento versionado, sem data/hora: a mesma configuração e as
+mesmas seeds geram o mesmo texto; não edite à mão). Mede o detector de streaming atual
+(`zscore-v1`, a mesma função `_enrich_and_score` de produção) contra o ground truth do gerador:
+Precision, Recall, F1, FPR, FNR, PR-AUC, alertas por 1.000 transações, Recall por tipo e por
+variante stealth, FPR por tipo de hard negative e *time-to-detect* por episódio.
+
+O protocolo usa um **replay de stream** (`TransactionStream` em tempo simulado, 1.000 clientes a
+10 TPS), não o dataset do `make seed-data`: a janela do Z-Score é de 1 h por cliente, e com ~50
+eventos por cliente em 180 dias o baseline existe em menos de 1% dos eventos. A linha "Densidade do
+`make seed-data`" do relatório mostra isso. O limiar da regra de operação (*recall máximo com FPR
+≤ 1%*) é calibrado numa seed de validação e aplicado em 5 seeds de teste com clientes diferentes.
+
+Opções úteis: `--test-seeds 1 2`, `--duration-minutes 90`, `--customers 300`, `--skip-batch-density`,
+`--profile-until <ISO>` (corte: antes dele os eventos só alimentam a janela do detector) e
+`--output <arquivo>` para não sobrescrever o documento versionado num teste rápido.
+
 ### Resetar ambiente completo
 ```bash
 make clean

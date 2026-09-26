@@ -527,3 +527,242 @@ class TestTransactionStream:
 
 def _customer_of(customers: list[dict], tx: dict) -> dict:
     return next(c for c in customers if c["customer_id"] == tx["customer_id"])
+
+
+# ── Clientes reproduzíveis (reference_date) ────────────────────────────────────
+
+
+class TestCustomersReferenceDate:
+    def test_default_is_identical_to_using_today(self) -> None:
+        from datetime import date
+
+        a = DataGenerator(seed=42).generate_customers(n=200)
+        b = DataGenerator(seed=42).generate_customers(n=200, reference_date=date.today())
+        assert a == b
+
+    def test_fixed_reference_date_anchors_opening_dates_and_recent_accounts(self) -> None:
+        from datetime import date, timedelta
+
+        ref = date(2026, 3, 2)
+        customers = DataGenerator(seed=42).generate_customers(n=2_000, reference_date=ref)
+        openings = [datetime.fromisoformat(c["account_opening_date"]).date() for c in customers]
+        assert max(openings) <= ref
+        assert min(openings) >= ref - timedelta(days=3653)
+        recent = [o for o in openings if (ref - o).days <= NEW_ACCOUNT_DAYS]
+        assert 0.02 <= len(recent) / len(customers) <= 0.07
+
+    def test_same_fixed_date_gives_the_same_customers_any_day(self) -> None:
+        from datetime import date
+
+        ref = date(2026, 3, 2)
+        a = DataGenerator(seed=9).generate_customers(n=100, reference_date=ref)
+        b = DataGenerator(seed=9).generate_customers(n=100, reference_date=ref)
+        assert a == b
+
+    def test_history_constant_matches_fakers_relative_ten_years(self) -> None:
+        """Trava `ACCOUNT_HISTORY_DAYS`: mantém as datas iguais às do `date_between('-10y')`."""
+        from datetime import date, timedelta
+
+        from faker import Faker
+
+        from src.common.data_generator import ACCOUNT_HISTORY_DAYS
+
+        relative, explicit = Faker("pt_BR"), Faker("pt_BR")
+        relative.seed_instance(3)
+        explicit.seed_instance(3)
+        today = date.today()
+        for _ in range(100):
+            assert relative.date_between(start_date="-10y", end_date="today") == (
+                explicit.date_between_dates(
+                    date_start=today - timedelta(days=ACCOUNT_HISTORY_DAYS), date_end=today
+                )
+            )
+
+
+# ── Ground truth do streaming (opt-in) ─────────────────────────────────────────
+
+
+class TestStreamGroundTruth:
+    @pytest.fixture(scope="class")
+    def setup(self):
+        gen = DataGenerator(seed=5)
+        customers = gen.generate_customers(n=200, reference_date=datetime(2026, 3, 2).date())
+        return gen, customers
+
+    def test_off_by_default(self, setup) -> None:
+        gen, customers = setup
+        stream = TransactionStream(gen, customers, fraud_rate=0.5)
+        now = datetime(2026, 3, 2, 15, tzinfo=UTC)
+        for _ in range(100):
+            stream.next_events(now)
+        assert stream.ground_truth == []
+
+    def test_every_fraud_event_is_recorded_once_with_its_episode(self, setup) -> None:
+        gen, customers = setup
+        stream = TransactionStream(gen, customers, fraud_rate=0.4, record_ground_truth=True)
+        now = datetime(2026, 3, 2, 15, tzinfo=UTC)
+        emitted = [tx for _ in range(600) for _, tx in stream.next_events(now)]
+        fraud_ids = {t["transaction_id"] for t in emitted if t["is_fraud"]}
+        rows = [r for r in stream.ground_truth if r["scenario"]]
+        assert {r["transaction_id"] for r in rows} == fraud_ids
+        assert len(rows) == len(fraud_ids)
+        assert all(r["episode_id"].startswith("ep-") for r in rows)
+        by_id = {t["transaction_id"]: t for t in emitted}
+        assert all(by_id[r["transaction_id"]]["fraud_type"] == r["scenario"] for r in rows)
+
+    def test_events_of_one_episode_share_the_episode_id(self, setup) -> None:
+        gen, customers = setup
+        stream = TransactionStream(gen, customers, fraud_rate=0.4, record_ground_truth=True)
+        now = datetime(2026, 3, 2, 15, tzinfo=UTC)
+        episodes: dict[str, set[str]] = {}
+        for _ in range(600):
+            stream.next_events(now)
+        for row in stream.ground_truth:
+            if row["episode_id"]:
+                episodes.setdefault(row["episode_id"], set()).add(row["scenario"])
+        assert episodes
+        assert all(len(scenarios) == 1 for scenarios in episodes.values())  # um tipo por episódio
+
+    def test_hard_negatives_only_on_legitimate_events(self, setup) -> None:
+        gen, customers = setup
+        stream = TransactionStream(gen, customers, fraud_rate=0.2, record_ground_truth=True)
+        noon = datetime(2026, 3, 2, 15, tzinfo=UTC)  # 12h local: todos os clientes ativos
+        night = datetime(2026, 3, 2, 7, tzinfo=UTC)  # 04h local: ninguém ativo
+        emitted = [
+            tx for now in (noon, night) for _ in range(1_500) for _, tx in stream.next_events(now)
+        ]
+        by_id = {t["transaction_id"]: t for t in emitted}
+        rows = [r for r in stream.ground_truth if r["hard_negative"]]
+        assert rows
+        assert all(not by_id[r["transaction_id"]]["is_fraud"] for r in rows)
+        kinds = {k for r in rows for k in r["hard_negative"].split(";")}
+        assert {"new_device", "new_ip", "off_hours"} <= kinds
+
+    def test_recording_does_not_change_the_events(self) -> None:
+        def run(record: bool) -> list[str]:
+            gen = DataGenerator(seed=5)
+            customers = gen.generate_customers(n=100, reference_date=datetime(2026, 3, 2).date())
+            stream = TransactionStream(gen, customers, record_ground_truth=record)
+            now = datetime(2026, 3, 2, 15, tzinfo=UTC)
+            return [tx["transaction_id"] for _ in range(300) for _, tx in stream.next_events(now)]
+
+        assert run(True) == run(False)
+
+
+# ── Viagens legítimas no streaming ─────────────────────────────────────────────
+
+
+class TestStreamTravel:
+    """No stream cada cliente transaciona a cada ~100 s; sem fases de trânsito nenhuma viagem
+    aconteceria (o intervalo nunca cobre o deslocamento)."""
+
+    @pytest.fixture(scope="class")
+    def run(self):
+        gen = DataGenerator(seed=1)
+        customers = gen.generate_customers(n=500, reference_date=datetime(2026, 3, 2).date())
+        stream = TransactionStream(gen, customers, record_ground_truth=True)
+        t0 = datetime(2026, 3, 2, 12, tzinfo=UTC)
+        events = [
+            tx
+            for i in range(30_000)
+            for _, tx in stream.next_events(t0 + timedelta(seconds=i / 10))
+        ]
+        return stream, events
+
+    def test_legit_travel_exists_in_the_stream(self, run) -> None:
+        stream, events = run
+        travel = [r for r in stream.ground_truth if "travel" in r["hard_negative"]]
+        assert travel
+        assert 0.001 <= len(travel) / len(events) <= 0.03
+
+    def test_travel_events_are_legitimate_and_in_another_city(self, run) -> None:
+        stream, events = run
+        by_id = {t["transaction_id"]: t for t in events}
+        for row in stream.ground_truth:
+            if "travel" in row["hard_negative"]:
+                assert not by_id[row["transaction_id"]]["is_fraud"]
+
+    def test_legit_traffic_never_implies_impossible_travel(self, run) -> None:
+        _, events = run
+        legit: dict[str, list[dict]] = defaultdict(list)
+        for tx in events:
+            if not tx["is_fraud"]:
+                legit[tx["customer_id"]].append(tx)
+        pairs = impossible = 0
+        for evs in legit.values():
+            for prev, cur in zip(evs, evs[1:], strict=False):
+                hours = (_epoch(cur) - _epoch(prev)) / 3600
+                km = haversine_km(
+                    prev["latitude"], prev["longitude"], cur["latitude"], cur["longitude"]
+                )
+                pairs += 1
+                impossible += km > 100 and (hours <= 0 or km / hours > 900)
+        assert pairs > 5_000
+        assert impossible / pairs <= 0.001
+
+    def test_trip_phases(self) -> None:
+        from src.common.data_generator import _StreamTravel
+
+        gen = DataGenerator(seed=2)
+        profile = gen.profile_for(gen.generate_customers(n=1)[0])
+        travel = _StreamTravel()
+        city = {"city": "Elsewhere", "lat": 0.0, "lon": 0.0}
+        travel._trips[profile.customer_id] = (city, 1_000, 5_000, 6_000)  # chega, sai, volta
+        cid = profile.customer_id
+        assert travel.in_transit(cid, 500) and travel.away(cid, 500)  # a caminho
+        assert not travel.in_transit(cid, 2_000) and travel.away(cid, 2_000)  # lá
+        assert travel.in_transit(cid, 5_500) and travel.away(cid, 5_500)  # voltando
+        assert not travel.in_transit(cid, 6_000) and not travel.away(cid, 6_000)  # em casa
+        assert cid not in travel._trips  # limpo
+
+    def test_departure_event_is_at_home_and_arrival_respects_the_speed(self, monkeypatch) -> None:
+        from src.common import data_generator as dg
+        from src.common.customer_profile import city_distance_km
+
+        monkeypatch.setattr(dg, "TRIP_MEAN_INTERVAL_H", 1e-9)  # começa viagem em qualquer intervalo
+        gen = DataGenerator(seed=3)
+        profile = gen.profile_for(gen.generate_customers(n=1)[0])
+        travel = dg._StreamTravel()
+        rng = gen.rng
+        travel.locate(profile, 1_000, rng)  # 1º evento só registra o último instante
+        lat, lon, traveling = travel.locate(profile, 1_100, rng)  # partida
+        assert traveling is False
+        assert haversine_km(lat, lon, profile.city["lat"], profile.city["lon"]) < 30  # em casa
+        city, arrive, _, _ = travel._trips[profile.customer_id]
+        needed = city_distance_km(profile.city, city) / dg.TRAVEL_SPEED_KMH * 3600
+        assert arrive - 1_100 == pytest.approx(needed, abs=1)
+        assert travel.in_transit(profile.customer_id, 1_101)
+        assert not travel.in_transit(profile.customer_id, arrive)
+        lat, lon, traveling = travel.locate(profile, arrive, rng)
+        assert traveling is True
+        assert haversine_km(lat, lon, city["lat"], city["lon"]) < 30
+
+    def test_steady_state_puts_a_small_fraction_of_customers_away(self) -> None:
+        from src.common.data_generator import _StreamTravel
+
+        gen = DataGenerator(seed=4)
+        profiles = [gen.profile_for(c) for c in gen.generate_customers(n=2_000)]
+        travel = _StreamTravel()
+        travel.seed_steady_state(profiles, 1_000_000, gen.rng)
+        away = sum(travel.away(p.customer_id, 1_000_000) for p in profiles)
+        assert 0.004 <= away / len(profiles) <= 0.025
+
+    def test_customers_in_transit_emit_nothing_and_are_not_fraud_victims(self) -> None:
+        gen = DataGenerator(seed=5)
+        customers = gen.generate_customers(n=3, reference_date=datetime(2026, 3, 2).date())
+        stream = TransactionStream(gen, customers, fraud_rate=0.3)
+        now = datetime(2026, 3, 2, 15, tzinfo=UTC)
+        epoch = int(now.timestamp())
+        stream._travel.seeded = True  # sem o estado inicial aleatório
+        city = {"city": "Elsewhere", "lat": 0.0, "lon": 0.0}
+        away_ids = [customers[0]["customer_id"], customers[1]["customer_id"]]
+        for cid in away_ids:  # em trânsito durante toda a janela
+            stream._travel._trips[cid] = (city, epoch + 10**6, epoch + 2 * 10**6, epoch + 3 * 10**6)
+        free = customers[2]["customer_id"]
+
+        emitted = [tx for _ in range(300) for _, tx in stream.next_events(now)]
+        legit = [tx for tx in emitted if not tx["is_fraud"]]
+        assert legit and all(tx["customer_id"] == free for tx in legit)
+        # o mesmo vale para a vítima do episódio (os cúmplices da lavagem podem ser outros clientes)
+        victims = {tx["customer_id"] for tx in emitted if tx["fraud_type"] != "MONEY_LAUNDERING"}
+        assert victims <= {free}

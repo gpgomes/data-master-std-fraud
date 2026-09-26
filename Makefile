@@ -2,6 +2,7 @@
         spark-submit-batch spark-submit-stream spark-submit-silver-gold spark-submit-gold-postgres \
         spark-submit-stream-postgres \
         seed-data producer-transactions producer-market api catalog dashboards dashboards-export \
+        fraud-eval \
         clean clean-data logs ps help
 
 # ── Variáveis ──────────────────────────────────────────────────────────────────
@@ -117,6 +118,9 @@ catalog: ## Gera docs/data_catalog.md e a imagem da linhagem, e valida os datase
 	$(PYTHON) -m scripts.build_data_catalog --strict
 
 # ── Dashboards ─────────────────────────────────────────────────────────────────
+fraud-eval: ## Avalia o detector de fraude (Precision/Recall/FPR) e gera docs/fraud_evaluation.md (Spark local, sem Docker)
+	$(PYTHON) -m src.transformation.fraud.evaluate
+
 dashboards: ## Provisiona o dashboard Superset de KPIs de fraude/transações (requer make up + dados no Postgres)
 	$(PYTHON) -m scripts.provision_superset_dashboards --verify --strict
 

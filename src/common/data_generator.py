@@ -17,7 +17,7 @@ import math
 import random
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import numpy as np
@@ -93,6 +93,7 @@ FRAUD_RATE = 0.025  # fração de eventos fraudulentos
 # Comportamento legítimo com ruído (hard negatives). As taxas de device/IP valem entre os eventos
 # em que o campo está presente.
 RECENT_ACCOUNT_RATE = 0.04  # clientes com conta aberta nos últimos NEW_ACCOUNT_DAYS dias
+ACCOUNT_HISTORY_DAYS = 3653  # "-10y" do Faker: mantém as datas idênticas às da versão relativa
 NEW_DEVICE_RATE = 0.03  # troca de celular
 NEW_IP_RATE = 0.05  # rede nova (viagem curta, Wi-Fi público)
 NEW_DESTINATION_RATE = 0.20  # destinatário fora dos frequentes
@@ -173,6 +174,83 @@ class _TravelTracker:
         return lat, lon, traveling
 
 
+class _StreamTravel:
+    """Viagens legítimas no streaming, onde cada cliente transaciona a cada poucos minutos.
+
+    O `_TravelTracker` do batch só inicia uma viagem se o intervalo desde o último evento do cliente
+    cobre o deslocamento. No streaming esse intervalo quase nunca existe (~100 s entre eventos, contra
+    pelo menos ~30 min de viagem), então nenhuma viagem legítima aconteceria. Aqui a viagem tem fases
+    explícitas: o cliente parte (o último evento é em casa), fica **em trânsito sem emitir nada** até
+    chegar, transaciona na cidade da viagem, e volta (de novo em trânsito). Chegada e retorno
+    respeitam `TRAVEL_SPEED_KMH`, então uma viagem legítima nunca parece "viagem impossível".
+    """
+
+    def __init__(self) -> None:
+        # cliente → (cidade, chegada, saída, volta), em epoch: em trânsito antes da chegada e entre
+        # a saída e a volta; na cidade da viagem entre a chegada e a saída.
+        self._trips: dict[str, tuple[dict[str, Any], int, int, int]] = {}
+        self._last: dict[str, int] = {}
+        self.seeded = False
+
+    def seed_steady_state(
+        self, profiles: list[CustomerProfile], epoch: int, rng: random.Random
+    ) -> None:
+        """Estado inicial estacionário: a fração de clientes que já estaria fora num stream longo."""
+        self.seeded = True
+        p_away = TRIP_MEAN_DURATION_H / (TRIP_MEAN_INTERVAL_H + TRIP_MEAN_DURATION_H)
+        for profile in profiles:
+            if rng.random() < p_away:
+                city = rng.choice(
+                    [c for c in BRAZILIAN_CITIES if c["city"] != profile.city["city"]]
+                )
+                needed = int(city_distance_km(profile.city, city) / TRAVEL_SPEED_KMH * 3600)
+                leave = epoch + int(rng.uniform(0, 48 * 3600))
+                self._trips[profile.customer_id] = (city, epoch - 1, leave, leave + needed)
+
+    def _trip(self, customer_id: str, epoch: int) -> tuple[dict[str, Any], int, int, int] | None:
+        trip = self._trips.get(customer_id)
+        if trip is not None and epoch >= trip[3]:  # já voltou para casa
+            del self._trips[customer_id]
+            return None
+        return trip
+
+    def away(self, customer_id: str, epoch: int) -> bool:
+        """Cliente em viagem (na cidade destino ou nos deslocamentos)."""
+        return self._trip(customer_id, epoch) is not None
+
+    def in_transit(self, customer_id: str, epoch: int) -> bool:
+        """Cliente se deslocando: não pode emitir evento (não está em nenhuma das duas cidades)."""
+        trip = self._trip(customer_id, epoch)
+        return trip is not None and (epoch < trip[1] or epoch >= trip[2])
+
+    def locate(
+        self, profile: CustomerProfile, epoch: int, rng: random.Random
+    ) -> tuple[float, float, bool]:
+        """(latitude, longitude, em_viagem). Só chamar para cliente fora de trânsito."""
+        cid = profile.customer_id
+        trip = self._trip(cid, epoch)
+        if trip is not None:
+            lat, lon = jitter_location(rng, trip[0])
+            self._last[cid] = epoch
+            return lat, lon, True
+
+        last = self._last.get(cid)
+        if last is not None:
+            gap_h = (epoch - last) / 3600
+            # Início por tempo (1 viagem a cada ~90 dias): a soma dos intervalos é o tempo total.
+            if gap_h > 0 and rng.random() < 1 - math.exp(-gap_h / TRIP_MEAN_INTERVAL_H):
+                city = rng.choice(
+                    [c for c in BRAZILIAN_CITIES if c["city"] != profile.city["city"]]
+                )
+                needed = int(city_distance_km(profile.city, city) / TRAVEL_SPEED_KMH * 3600)
+                arrive = epoch + needed
+                leave = arrive + int(rng.uniform(6, 48) * 3600)
+                self._trips[cid] = (city, arrive, leave, leave + needed)
+        self._last[cid] = epoch
+        lat, lon = jitter_location(rng, profile.city)  # o evento da partida ainda é em casa
+        return lat, lon, False
+
+
 def episode_probability(fraud_rate: float = FRAUD_RATE) -> float:
     """Probabilidade de um sorteio do streaming abrir um episódio de fraude.
 
@@ -232,8 +310,17 @@ class DataGenerator:
 
     # ── Customers ──────────────────────────────────────────────────────────────
 
-    def generate_customers(self, n: int = 10_000) -> list[dict[str, Any]]:
-        """Gera n registros de clientes (tabela dimensional)."""
+    def generate_customers(
+        self, n: int = 10_000, reference_date: date | None = None
+    ) -> list[dict[str, Any]]:
+        """Gera n registros de clientes (tabela dimensional).
+
+        `reference_date` é o "hoje" das datas relativas (abertura da conta: até 10 anos atrás, ou
+        nos últimos `NEW_ACCOUNT_DAYS` dias nas contas recentes). O padrão é a data de hoje; fixe-o
+        para gerar clientes reproduzíveis independentemente do dia da execução (avaliação do
+        detector, issue #44). Com o padrão o resultado é idêntico ao de antes.
+        """
+        ref = reference_date or date.today()
         customers = []
         genders = ["M", "F"]
         segments = [s.value for s in CustomerSegment]
@@ -243,11 +330,13 @@ class DataGenerator:
             city_info = self.rng.choice(BRAZILIAN_CITIES)
             gender = self.rng.choice(genders)
             birth_date = self.fake.date_of_birth(minimum_age=18, maximum_age=75)
-            opening_date = self.fake.date_between(start_date="-10y", end_date="today")
+            opening_date = self.fake.date_between_dates(
+                date_start=ref - timedelta(days=ACCOUNT_HISTORY_DAYS), date_end=ref
+            )
             if self.rng.random() < RECENT_ACCOUNT_RATE:
                 # Contas recentes: alvo do cenário de roubo de identidade (ACCOUNT_AGE_LOW).
-                opening_date = self.fake.date_between(
-                    start_date=f"-{NEW_ACCOUNT_DAYS}d", end_date="today"
+                opening_date = self.fake.date_between_dates(
+                    date_start=ref - timedelta(days=NEW_ACCOUNT_DAYS), date_end=ref
                 )
 
             # CPF mascarado: formato ***.***.***-XX (só os 2 últimos dígitos visíveis)
@@ -343,7 +432,10 @@ class DataGenerator:
         for _ in range(max(count, 0)):
             profile = rng.choice(profiles)
             lo = start_epoch
-            if profile.opening_epoch is not None and start_epoch < profile.opening_epoch < end_epoch:
+            if (
+                profile.opening_epoch is not None
+                and start_epoch < profile.opening_epoch < end_epoch
+            ):
                 lo = profile.opening_epoch  # não há transação antes de a conta existir
             epoch = rng.randint(lo, end_epoch) if end_epoch > lo else lo
             if rng.random() >= OFF_HOURS_RATE:
@@ -431,9 +523,7 @@ class DataGenerator:
 
     def _pick_scenario(self, has_new_accounts: bool) -> str:
         scenarios = [
-            s
-            for s in SCENARIO_WEIGHTS
-            if has_new_accounts or s != FraudType.IDENTITY_THEFT.value
+            s for s in SCENARIO_WEIGHTS if has_new_accounts or s != FraudType.IDENTITY_THEFT.value
         ]
         weights = [SCENARIO_WEIGHTS[s] for s in scenarios]
         return self.rng.choices(scenarios, weights=weights, k=1)[0]
@@ -653,7 +743,8 @@ class TransactionStream:
     A cada `next_events(now)` devolve uma lista de `(atraso_em_segundos, transação)`: um evento
     legítimo com atraso 0, ou um episódio de fraude cujos follow-ups saem com atraso > 0 (o
     producer os mantém num heap e emite na hora certa). O evento legítimo vem de um cliente ativo
-    naquela hora local, e as viagens seguem o mesmo `_TravelTracker` do batch.
+    naquela hora local. As viagens legítimas têm fases (`_StreamTravel`): quem viaja fica em trânsito,
+    sem emitir nada, entre a partida e a chegada.
 
     Diferenças conscientes em relação ao batch: o streaming acontece "agora", então a hora de
     início do episódio de account takeover (madrugada no batch) não é imposta; e, por padrão, o
@@ -668,47 +759,89 @@ class TransactionStream:
         customers: list[dict[str, Any]],
         fraud_rate: float = FRAUD_RATE,
         diurnal: bool = False,
+        record_ground_truth: bool = False,
     ) -> None:
         self._gen = generator
         self._profiles = [generator.profile_for(c) for c in customers]
-        self._tracker = _TravelTracker()
+        self._travel = _StreamTravel()
         self._episode_prob = episode_probability(fraud_rate)
         self._diurnal = diurnal
+        # Ground truth por evento (mesmo formato de `DataGenerator.last_ground_truth`). Opt-in: o
+        # producer roda por dias e a lista cresceria sem limite; só a avaliação (issue #44) usa.
+        self._record = record_ground_truth
+        self.ground_truth: list[dict[str, Any]] = []
+        self._episode_seq = 0
 
     def next_events(self, now: datetime) -> list[tuple[float, dict[str, Any]]]:
         """Eventos deste instante como `(atraso_s, transação)`; vazio no modo diurno fora de hora."""
         epoch = int(now.timestamp())
+        if not self._travel.seeded:
+            self._travel.seed_steady_state(self._profiles, epoch, self._gen.rng)
         if self._gen.rng.random() < self._episode_prob:
             return self._episode_events(epoch)
         event = self._legit_event(epoch)
         return [(0.0, event)] if event is not None else []
 
     def _pick_active(self, epoch: int) -> CustomerProfile:
+        """Cliente ativo nesta hora local e em casa (fraude não mira quem está viajando)."""
         rng = self._gen.rng
         hour = local_hour(epoch)
         profile = rng.choice(self._profiles)
         for _ in range(20):
-            if hour in profile.active_hours:
+            if hour in profile.active_hours and not self._travel.away(profile.customer_id, epoch):
                 break
             profile = rng.choice(self._profiles)
         return profile
 
     def _pick_victim(self, epoch: int) -> CustomerProfile:
-        return self._pick_active(epoch) if self._diurnal else self._gen.rng.choice(self._profiles)
+        if self._diurnal:
+            return self._pick_active(epoch)
+        # Vítima em casa: o evento legítimo de contexto do clone de cartão é em casa.
+        rng = self._gen.rng
+        profile = rng.choice(self._profiles)
+        for _ in range(20):
+            if not self._travel.away(profile.customer_id, epoch):
+                break
+            profile = rng.choice(self._profiles)
+        return profile
 
     def _legit_event(self, epoch: int) -> dict[str, Any] | None:
         gen = self._gen
-        profile = gen.rng.choice(self._profiles)
+        # Quem está em trânsito não emite nada: sorteia outro cliente.
+        profile = None
+        for _ in range(20):
+            candidate = gen.rng.choice(self._profiles)
+            if not self._travel.in_transit(candidate.customer_id, epoch):
+                profile = candidate
+                break
+        if profile is None:
+            return None
         if (
             self._diurnal
             and local_hour(epoch) not in profile.active_hours
             and gen.rng.random() >= OFF_HOURS_RATE
         ):
             return None
-        fields, _ = gen._draft_legit(profile)
-        lat, lon, _ = self._tracker.locate(profile, epoch, gen.rng)
+        fields, hard_negatives = gen._draft_legit(profile)
+        lat, lon, traveling = self._travel.locate(profile, epoch, gen.rng)
         fields["latitude"], fields["longitude"] = lat, lon
-        return gen._to_transaction(_Row(fields=fields, epoch=epoch))
+        tx = gen._to_transaction(_Row(fields=fields, epoch=epoch))
+        if self._record:
+            if traveling:
+                hard_negatives.append("travel")
+            if local_hour(epoch) not in profile.active_hours:
+                hard_negatives.append("off_hours")
+            if hard_negatives:
+                self.ground_truth.append(
+                    {
+                        "transaction_id": tx["transaction_id"],
+                        "episode_id": "",
+                        "scenario": "",
+                        "stealth": False,
+                        "hard_negative": ";".join(hard_negatives),
+                    }
+                )
+        return tx
 
     def _episode_events(self, epoch: int) -> list[tuple[float, dict[str, Any]]]:
         gen = self._gen
@@ -729,6 +862,8 @@ class TransactionStream:
             stealth=rng.random() < STEALTH_PROBABILITY,
             accomplices=gen._accomplices_for(scenario, self._profiles, victim, epoch),
         )
+        self._episode_seq += 1
+        episode_id = f"ep-{self._episode_seq:06d}"
         events = []
         for event in sorted(episode.events, key=lambda e: e.delay_s):
             row = _Row(
@@ -738,5 +873,16 @@ class TransactionStream:
                 fraud_type=event.fraud_type,
                 fixed_location=True,
             )
-            events.append((event.delay_s, gen._to_transaction(row)))
+            tx = gen._to_transaction(row)
+            events.append((event.delay_s, tx))
+            if self._record and event.is_fraud:
+                self.ground_truth.append(
+                    {
+                        "transaction_id": tx["transaction_id"],
+                        "episode_id": episode_id,
+                        "scenario": event.fraud_type,
+                        "stealth": episode.stealth,
+                        "hard_negative": "",
+                    }
+                )
         return events
