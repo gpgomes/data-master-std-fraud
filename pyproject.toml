@@ -101,8 +101,9 @@ known-first-party = ["src"]
 # schemas.py precisa continuar importável no Python 3.8 do container Spark
 # (issue #11) — StrEnum tem shim condicional e os campos opcionais usam
 # `Optional[X]` (não `X | None`, que quebra a resolução de tipos do Pydantic
-# em runtimes < 3.10) de propósito, não por desatualização.
-"src/common/schemas.py" = ["UP036", "UP007"]
+# em runtimes < 3.10) de propósito, não por desatualização. Pelo mesmo motivo os campos de lista
+# usam `List[X]` (`list[X]` só resolve no Python 3.9+): UP006/UP035.
+"src/common/schemas.py" = ["UP036", "UP007", "UP006", "UP035"]
 
 [tool.mypy]
 python_version = "3.11"

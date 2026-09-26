@@ -4,7 +4,7 @@ import re
 import sys
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -199,17 +199,25 @@ class MarketOHLCV(BaseModel):
 
 
 class FraudAlert(BaseModel):
-    """Alerta de fraude detectado no streaming."""
+    """Alerta de fraude detectado no streaming (issue #46).
+
+    O detector que alerta é o Fraud Engine multi-signal (`detector_version`). O `fraud_type` é
+    **inferido pelos sinais** (nunca copiado do rótulo) e é nulo quando nenhuma regra de tipo casa.
+    O `z_score` é o do detector antigo, que segue calculado em paralelo (shadow scoring) só para
+    comparação; pode ser nulo (sem baseline).
+    """
 
     alert_id: str
     transaction_id: str
     customer_id: str
     timestamp: datetime
     amount: float
-    fraud_type: FraudType
+    fraud_type: Optional[FraudType] = None
     fraud_score: float = Field(ge=0.0, le=1.0)
     z_score: Optional[float] = None
     alert_reason: str
+    signals: List[str] = Field(default_factory=list)
+    detector_version: str = "multisignal-v2"
     processed_at: datetime = Field(default_factory=datetime.utcnow)
 
     model_config = {"use_enum_values": True}

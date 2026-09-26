@@ -1,7 +1,8 @@
 """Job PySpark: transformação Silver → Gold para a plataforma de dados financeiros.
 
-Constrói um star schema (dim_customers, dim_date, fact_transactions) e uma
-tabela de agregação diária de métricas de fraude, a partir da camada Silver.
+Constrói um star schema (dim_customers, dim_date, fact_transactions), uma tabela de
+agregação diária de métricas de fraude e o perfil de comportamento por cliente
+(customer_behavior_profile, lido pelo detector de fraude do streaming), a partir da camada Silver.
 
 Execução via CLI:
     python -m src.transformation.batch.silver_to_gold
@@ -20,6 +21,7 @@ from pyspark.sql import functions as F
 from src.common.config import settings
 from src.common.logger import get_logger
 from src.common.spark_session import create_spark_session
+from src.transformation.fraud.profile import build_profiles
 
 logger = get_logger("silver_to_gold")
 
@@ -281,15 +283,70 @@ class SilverToGoldTransformer:
             df = df.filter(F.col(date_col) <= F.lit(self.end_date))
         return df
 
+    # ── customer_behavior_profile ───────────────────────────────────────────────
+
+    def transform_customer_behavior_profile(self) -> dict[str, int]:
+        """Perfil de comportamento por cliente, para o detector de fraude do streaming (issue #46).
+
+        Aprende do histórico Silver o que é "normal" para cada cliente (valor típico, devices,
+        redes, destinatários frequentes, horário, local) e grava uma linha por cliente em
+        `gold/customer_behavior_profile/`, que o job de streaming lê por broadcast. É a camada
+        "longa" da arquitetura Lambda: cara de calcular (varre meses de dados), estável, e só
+        recalculada aqui no batch. Usa só as linhas legítimas do histórico (rótulos históricos
+        existem após a confirmação da fraude); o streaming nunca lê o rótulo do evento.
+
+        Sempre usa todo o Silver (ignora `start_date`/`end_date`): um perfil parcial, de um
+        intervalo, esconderia devices e destinatários que o cliente já usa há meses. Lê o
+        `dim_customers` do Gold, então roda depois de `transform_dim_customers`.
+
+        Returns:
+            Dicionário com contadores: rows_read (transações do histórico), rows_written (clientes)
+            e customers_with_profile (clientes com histórico suficiente para o perfil valer).
+        """
+        silver_path = f"{self._silver}/transactions/"
+        dim_path = f"{self._gold}/dim_customers/"
+        logger.info("Construindo perfil de comportamento", silver=silver_path, dim_customers=dim_path)
+
+        history = self.spark.read.parquet(silver_path)
+        profile = self._build_customer_behavior_profile(history, self.spark.read.parquet(dim_path))
+
+        gold_path = f"{self._gold}/customer_behavior_profile/"
+        profile.write.format("parquet").mode("overwrite").save(gold_path)
+
+        written = self.spark.read.parquet(gold_path)
+        metrics = {
+            "rows_read": history.count(),
+            "rows_written": written.count(),
+            "customers_with_profile": written.filter(F.col("has_profile")).count(),
+        }
+        logger.info(
+            "transform_customer_behavior_profile concluído", **metrics, gold_path=gold_path
+        )
+        return metrics
+
+    @staticmethod
+    def _build_customer_behavior_profile(history: DataFrame, dim_customers: DataFrame) -> DataFrame:
+        """Junta a dimensão de clientes ao histórico e delega o cálculo a `build_profiles`.
+
+        `account_opening_date` chega como texto do Silver de clientes; o perfil precisa de data.
+        """
+        customers = dim_customers.select(
+            F.col("customer_key").alias("customer_id"),
+            "segment",
+            F.to_date("account_opening_date").alias("account_opening_date"),
+        )
+        return build_profiles(history, customers)
+
     # ── Execução completa ────────────────────────────────────────────────────────
 
     def run_all(self) -> dict[str, dict[str, int]]:
-        """Executa dimensões, fato e agregação, retornando métricas consolidadas."""
+        """Executa dimensões, fato, agregação e o perfil de comportamento, retornando métricas."""
         return {
             "dim_customers": self.transform_dim_customers(),
             "dim_date": self.transform_dim_date(),
             "fact_transactions": self.transform_fact_transactions(),
             "agg_daily_fraud_metrics": self.transform_agg_daily_fraud_metrics(),
+            "customer_behavior_profile": self.transform_customer_behavior_profile(),
         }
 
 
@@ -308,6 +365,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "dim_date",
             "fact_transactions",
             "agg_daily_fraud_metrics",
+            "customer_behavior_profile",
         ],
         default="all",
         help="Dataset a transformar (padrão: all).",
@@ -356,6 +414,8 @@ def main(argv: list[str] | None = None) -> None:
         metrics = {"dim_date": transformer.transform_dim_date()}
     elif dataset == "fact_transactions":
         metrics = {"fact_transactions": transformer.transform_fact_transactions()}
+    elif dataset == "customer_behavior_profile":
+        metrics = {"customer_behavior_profile": transformer.transform_customer_behavior_profile()}
     else:
         metrics = {"agg_daily_fraud_metrics": transformer.transform_agg_daily_fraud_metrics()}
 

@@ -10,12 +10,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from functools import reduce
+from typing import TYPE_CHECKING
 
-import numpy as np
 from pyspark.sql import Column
 from pyspark.sql import functions as F
 
 from src.transformation.fraud.signals import SIGNALS, signal_column
+
+if TYPE_CHECKING:  # numpy só é importado dentro de `noisy_or_np` (ver abaixo)
+    import numpy as np
 
 SIGNAL_ACTIVE = (
     0.5  # um sinal graduado conta como "ativo" (aparece em `fraud_signals`) a partir daqui
@@ -40,7 +43,14 @@ def active_signals() -> Column:
 def noisy_or_np(
     matrix: np.ndarray, weights: Mapping[str, float] | Sequence[float] | np.ndarray
 ) -> np.ndarray:
-    """O mesmo score, em numpy: `matrix` é (n_eventos × n_sinais) na ordem de `SIGNALS`."""
+    """O mesmo score, em numpy: `matrix` é (n_eventos × n_sinais) na ordem de `SIGNALS`.
+
+    O numpy é importado aqui dentro de propósito: este módulo é carregado pelo job de streaming,
+    que roda no container do Spark (Python 3.8, **sem numpy**). Só a calibração e o avaliador,
+    que rodam fora do container, chamam esta função.
+    """
+    import numpy as np
+
     w = (
         np.array([weights[s] for s in SIGNALS], dtype=float)
         if isinstance(weights, Mapping)

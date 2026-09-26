@@ -17,6 +17,7 @@ import pytest
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import (
+    ArrayType,
     BooleanType,
     DoubleType,
     StringType,
@@ -41,9 +42,16 @@ _SCORED_SCHEMA = StructType(
         StructField("merchant_category", StringType(), True),
         StructField("is_fraud", BooleanType(), True),
         StructField("fraud_type", StringType(), True),
-        StructField("z_score", DoubleType(), True),
+        # Fraud Engine (V2, quem alerta) e Z-Score antigo em paralelo (shadow), issue #46
         StructField("fraud_score", DoubleType(), True),
+        StructField("is_fraud_predicted", BooleanType(), True),
+        StructField("fraud_signals", ArrayType(StringType()), True),
+        StructField("fraud_type_predicted", StringType(), True),
+        StructField("detector_version", StringType(), True),
+        StructField("z_score", DoubleType(), True),
         StructField("is_anomaly", BooleanType(), True),
+        StructField("fraud_score_v1", DoubleType(), True),
+        StructField("shadow_detector_version", StringType(), True),
         StructField("produced_at", TimestampType(), True),
         StructField("processing_timestamp", TimestampType(), True),
         # Campos que NÃO devem chegar à serving layer:
@@ -80,9 +88,15 @@ def _row(**overrides) -> dict:
         "merchant_category": "ALIMENTACAO",
         "is_fraud": False,
         "fraud_type": None,
+        "fraud_score": 0.0,
+        "is_fraud_predicted": False,
+        "fraud_signals": [],
+        "fraud_type_predicted": None,
+        "detector_version": "multisignal-v2",
         "z_score": None,
-        "fraud_score": None,
         "is_anomaly": False,
+        "fraud_score_v1": None,
+        "shadow_detector_version": "zscore-v1",
         "produced_at": "2026-09-23T10:00:00Z",
         "processing_timestamp": "2026-09-23T10:00:05Z",
         "device_id": "dev-1",
@@ -142,9 +156,18 @@ class TestScoredTable:
         assert row["event_time"] is not None
 
     def test_null_score_has_null_bucket(self, spark):
-        row = StreamToPostgresLoader._to_scored_table(_df(spark, [_row()])).first()
+        row = StreamToPostgresLoader._to_scored_table(
+            _df(spark, [_row(fraud_score=None)])
+        ).first()
         assert row["fraud_score"] is None
         assert row["fraud_score_bucket"] is None
+
+    def test_the_score_column_is_the_engines_and_the_zscore_stays_as_shadow(self, spark):
+        row = StreamToPostgresLoader._to_scored_table(
+            _df(spark, [_row(fraud_score=0.975, z_score=2.0, fraud_score_v1=0.33)])
+        ).first()
+        assert row["fraud_score"] == pytest.approx(0.975)
+        assert row["z_score"] == pytest.approx(2.0)
 
     def test_drops_sensitive_source_columns(self, spark):
         columns = set(StreamToPostgresLoader._to_scored_table(_df(spark, [_row()])).columns)
@@ -161,18 +184,30 @@ class TestScoredTable:
 class TestAlertsTable:
     _ROWS = [
         _row(transaction_id="tx-normal"),
+        _row(transaction_id="tx-only-zscore", is_anomaly=True, z_score=8.0, fraud_score_v1=1.0),
         _row(
             transaction_id="tx-alert",
-            is_anomaly=True,
+            is_fraud=True,
+            fraud_type="CARD_CLONING",  # rótulo do gerador: não pode virar o tipo do alerta
+            is_fraud_predicted=True,
+            fraud_score=0.975,
+            fraud_signals=["NEW_DESTINATION", "AMOUNT_ANOMALY"],
+            fraud_type_predicted="SOCIAL_ENGINEERING",
             z_score=8.5,
-            fraud_score=1.0,
+            is_anomaly=True,
             processing_timestamp="2026-09-23T10:00:07Z",
         ),
     ]
 
-    def test_only_anomalies_become_alerts(self, spark):
+    def test_only_the_engines_predictions_become_alerts(self, spark):
         alerts = StreamToPostgresLoader._to_alerts_table(_df(spark, self._ROWS))
         assert [r["transaction_id"] for r in alerts.collect()] == ["tx-alert"]
+
+    def test_the_alert_type_is_the_predicted_one_never_the_label(self, spark):
+        alert = StreamToPostgresLoader._to_alerts_table(_df(spark, self._ROWS)).first()
+        assert alert["fraud_type"] == "SOCIAL_ENGINEERING"
+        assert alert["fraud_score"] == pytest.approx(0.975)
+        assert "NEW_DESTINATION" in alert["alert_reason"]
 
     def test_alert_id_is_deterministic_and_matches_kafka_alert_id(self, spark):
         first = StreamToPostgresLoader._to_alerts_table(_df(spark, self._ROWS)).first()
@@ -185,6 +220,8 @@ class TestAlertsTable:
         assert alert["processed_at"].second == 7  # 10:00:07, não a hora da carga
 
     def test_columns_match_the_postgres_table(self, spark):
+        """A tabela ainda não tem `signals` nem `detector_version` (issue #47): o JDBC não grava
+        coluna que ela não tem, então o loader as deixa de fora."""
         columns = StreamToPostgresLoader._to_alerts_table(_df(spark, self._ROWS)).columns
         ddl = _SCHEMA_SQL_PATH.read_text(encoding="utf-8")
         table_sql = ddl.split("fraud_alerts (")[1].split(");")[0]
@@ -228,7 +265,12 @@ class TestLoad:
             spark, tmp_path, "query-A",
             [
                 _row(transaction_id="tx-1"),
-                _row(transaction_id="tx-2", is_anomaly=True, z_score=5.0, fraud_score=0.83),
+                _row(
+                    transaction_id="tx-2",
+                    is_fraud_predicted=True,
+                    fraud_signals=["NEW_DESTINATION"],
+                    fraud_score=0.97,
+                ),
             ],
         )
         loader = _loader(spark, tmp_path)
