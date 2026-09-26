@@ -1,13 +1,52 @@
-"""Gerador de dados sintéticos para transações financeiras e dados de mercado."""
+"""Gerador de dados sintéticos para transações financeiras e dados de mercado.
 
+Transações (issue #43): cada cliente tem um perfil de comportamento determinístico
+(`customer_profile.py`) e a fraude é gerada como **episódio** coerente com o tipo
+(`fraud_scenarios.py`), em vez de linhas independentes. O tráfego legítimo carrega ruído
+deliberado (troca de celular, rede nova, viagem, compra grande) para que nenhum sinal isolado
+separe perfeitamente fraude de legítimo — os *hard negatives*.
+
+Dois modos:
+  - batch (`generate_transactions`): dataset com timestamps espalhados em [start, end] e um sidecar
+    de ground truth em `last_ground_truth` (episódio, cenário, stealth, hard negatives);
+  - streaming (`TransactionStream`): eventos "agora", com os follow-ups de cada episódio devolvidos
+    com um atraso, para o producer emitir na hora certa.
+"""
+
+import math
 import random
 import uuid
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import numpy as np
 from faker import Faker
 
+from src.common.customer_profile import (
+    BRAZILIAN_BANKS,
+    BRAZILIAN_CITIES,
+    NEW_ACCOUNT_DAYS,
+    PHYSICAL_CHANNELS,
+    CustomerProfile,
+    build_profile,
+    city_distance_km,
+    jitter_location,
+    local_hour,
+    random_account,
+    random_device,
+    random_ip,
+    random_ip_prefix,
+    set_local_hour,
+)
+from src.common.fraud_scenarios import (
+    MEAN_FRAUD_EVENTS,
+    PRECURSOR_EVENTS,
+    SCENARIO_WEIGHTS,
+    STEALTH_PROBABILITY,
+    EpisodeEvent,
+    build_episode,
+)
 from src.common.schemas import (
     Channel,
     Currency,
@@ -18,32 +57,6 @@ from src.common.schemas import (
 )
 
 # ── Constantes ─────────────────────────────────────────────────────────────────
-
-BRAZILIAN_BANKS = [
-    "Banco do Brasil",
-    "Itaú",
-    "Bradesco",
-    "Caixa Econômica",
-    "Santander",
-    "Nubank",
-    "Inter",
-    "C6 Bank",
-    "BTG Pactual",
-    "Sicredi",
-]
-
-BRAZILIAN_CITIES: list[dict[str, Any]] = [
-    {"city": "São Paulo", "state": "SP", "lat": -23.5505, "lon": -46.6333},
-    {"city": "Rio de Janeiro", "state": "RJ", "lat": -22.9068, "lon": -43.1729},
-    {"city": "Brasília", "state": "DF", "lat": -15.7801, "lon": -47.9292},
-    {"city": "Salvador", "state": "BA", "lat": -12.9714, "lon": -38.5014},
-    {"city": "Fortaleza", "state": "CE", "lat": -3.7319, "lon": -38.5267},
-    {"city": "Curitiba", "state": "PR", "lat": -25.4290, "lon": -49.2671},
-    {"city": "Manaus", "state": "AM", "lat": -3.1190, "lon": -60.0217},
-    {"city": "Recife", "state": "PE", "lat": -8.0476, "lon": -34.8770},
-    {"city": "Porto Alegre", "state": "RS", "lat": -30.0346, "lon": -51.2177},
-    {"city": "Belo Horizonte", "state": "MG", "lat": -19.9167, "lon": -43.9345},
-]
 
 MARKET_SYMBOLS = [
     "PETR4.SA",
@@ -70,6 +83,108 @@ CHANNEL_WEIGHTS = [0.50, 0.25, 0.05, 0.10, 0.10]
 # Pesos para currency (80% BRL)
 CURRENCY_WEIGHTS = [0.80, 0.12, 0.08]
 
+_TRANSACTION_TYPES = [t.value for t in TransactionType]
+_MERCHANT_CATEGORIES = [m.value for m in MerchantCategory]
+_CHANNELS = [c.value for c in Channel]
+_CURRENCIES = [c.value for c in Currency]
+
+FRAUD_RATE = 0.025  # fração de eventos fraudulentos
+
+# Comportamento legítimo com ruído (hard negatives). As taxas de device/IP valem entre os eventos
+# em que o campo está presente.
+RECENT_ACCOUNT_RATE = 0.04  # clientes com conta aberta nos últimos NEW_ACCOUNT_DAYS dias
+NEW_DEVICE_RATE = 0.03  # troca de celular
+NEW_IP_RATE = 0.05  # rede nova (viagem curta, Wi-Fi público)
+NEW_DESTINATION_RATE = 0.20  # destinatário fora dos frequentes
+BIG_PURCHASE_RATE = 0.01  # compra grande legítima (×5–10 do valor típico)
+OFF_HOURS_RATE = 0.03  # evento legítimo fora do horário habitual do cliente
+MISSING_DEVICE_RATE = 0.10
+MISSING_IP_RATE = 0.05
+
+# Viagens legítimas: o cliente fica numa outra cidade por 6–48h. Início por tempo (1 viagem a cada
+# ~90 dias), não por evento, para valer igual no batch (eventos esparsos) e no streaming (densos).
+TRIP_MEAN_INTERVAL_H = 24 * 90
+TRIP_MEAN_DURATION_H = 27  # duração média (6–48h)
+TRAVEL_SPEED_KMH = 700  # abaixo do limiar de "viagem impossível" (900 km/h) usado na detecção
+
+
+# ── Estruturas internas ────────────────────────────────────────────────────────
+
+
+@dataclass(slots=True)
+class _Row:
+    """Transação em construção: campos ainda sem id/timestamp e metadados de ground truth."""
+
+    fields: dict[str, Any]
+    epoch: int
+    is_fraud: bool = False
+    fraud_type: str | None = None
+    hard_negatives: list[str] = field(default_factory=list)
+    fixed_location: bool = False  # coordenadas definidas pelo cenário (não passam pelo tracker)
+    episode_id: str = ""
+    stealth: bool = False
+
+
+class _TravelTracker:
+    """Localização de cada cliente ao longo do tempo, incluindo viagens legítimas.
+
+    Consumido em ordem de tempo por cliente. Garante que o intervalo entre a última transação em
+    casa e a primeira na cidade da viagem (e o inverso) seja compatível com `TRAVEL_SPEED_KMH`,
+    para uma viagem legítima nunca parecer "viagem impossível".
+    """
+
+    def __init__(self) -> None:
+        self._trip: dict[str, tuple[dict[str, Any], int]] = {}  # cliente → (cidade, até quando)
+        self._last: dict[str, int] = {}
+
+    def locate(
+        self, profile: CustomerProfile, epoch: int, rng: random.Random
+    ) -> tuple[float, float, bool]:
+        """(latitude, longitude, em_viagem) do cliente no instante `epoch`."""
+        cid, home = profile.customer_id, profile.city
+        last = self._last.get(cid)
+        city, traveling = home, False
+
+        trip = self._trip.get(cid)
+        if trip is not None:
+            trip_city, until = trip
+            needed = city_distance_km(trip_city, home) / TRAVEL_SPEED_KMH * 3600
+            if epoch < until or (last is not None and epoch - last < needed):
+                city, traveling = trip_city, True
+            else:
+                del self._trip[cid]
+        elif last is not None:
+            gap = epoch - last
+            gap_h = gap / 3600
+            # P(uma viagem começou no intervalo) × P(o evento cai dentro dela). Com eventos
+            # esparsos (batch) a maior parte das viagens termina antes do próximo evento e não
+            # aparece; sem o segundo fator, a fração de eventos em viagem sairia inflada.
+            p_start = 1 - math.exp(-gap_h / TRIP_MEAN_INTERVAL_H)
+            p_observed = min(1.0, TRIP_MEAN_DURATION_H / gap_h) if gap_h > 0 else 1.0
+            if rng.random() < p_start * p_observed:
+                trip_city = rng.choice([c for c in BRAZILIAN_CITIES if c["city"] != home["city"]])
+                needed = city_distance_km(home, trip_city) / TRAVEL_SPEED_KMH * 3600
+                if gap >= needed:
+                    self._trip[cid] = (trip_city, epoch + int(rng.uniform(6, 48) * 3600))
+                    city, traveling = trip_city, True
+
+        self._last[cid] = epoch
+        lat, lon = jitter_location(rng, city)
+        return lat, lon, traveling
+
+
+def episode_probability(fraud_rate: float = FRAUD_RATE) -> float:
+    """Probabilidade de um sorteio do streaming abrir um episódio de fraude.
+
+    Calibrada para que a fração de *eventos* fraudulentos seja ~`fraud_rate`, considerando que um
+    episódio traz vários eventos (e, no clone de cartão, um evento legítimo de contexto).
+    """
+    fraud_per_episode = sum(w * MEAN_FRAUD_EVENTS[s] for s, w in SCENARIO_WEIGHTS.items())
+    total_per_episode = fraud_per_episode + sum(
+        w * PRECURSOR_EVENTS.get(s, 0.0) for s, w in SCENARIO_WEIGHTS.items()
+    )
+    return fraud_rate / (fraud_per_episode - fraud_rate * (total_per_episode - 1))
+
 
 # ── DataGenerator ──────────────────────────────────────────────────────────────
 
@@ -78,16 +193,42 @@ class DataGenerator:
     """Gera datasets sintéticos realistas de transações financeiras."""
 
     def __init__(self, seed: int = 42) -> None:
+        # `seed` define clientes e perfis (estáveis entre batch e streaming); `rng`/`np_rng`
+        # geram os eventos e podem ser reiniciados à parte com `reseed_events`.
         self.seed = seed
         # Instâncias isoladas de RNG para garantir reprodutibilidade
         self.rng = random.Random(seed)
         self.np_rng = np.random.RandomState(seed)
         self.fake = Faker("pt_BR")
-        Faker.seed(seed)
+        # Por instância: `Faker.seed` é global à classe, e dois geradores na mesma execução
+        # (ex.: testes, ou batch + producer) se atrapalhariam nos nomes e datas dos clientes.
+        self.fake.seed_instance(seed)
+        self._profiles: dict[str, CustomerProfile] = {}
+        # Sidecar de ground truth da última chamada de `generate_transactions`.
+        self.last_ground_truth: list[dict[str, Any]] = []
 
     def _uuid(self) -> str:
         """Gera UUID determinístico usando a instância de RNG."""
         return str(uuid.UUID(int=self.rng.getrandbits(128), version=4))
+
+    def reseed_events(self, seed: int) -> None:
+        """Reinicia só o RNG dos eventos, sem mexer em `self.seed` (clientes e perfis).
+
+        O producer de streaming precisa dos mesmos clientes do `make seed-data` (seed 42) mas de
+        eventos diferentes a cada execução: com a seed toda fixa, um reinício reproduziria os
+        mesmos `transaction_id`.
+        """
+        self.rng = random.Random(seed)
+        self.np_rng = np.random.RandomState(seed)
+
+    def profile_for(self, customer: dict[str, Any]) -> CustomerProfile:
+        """Perfil de comportamento do cliente (determinístico por seed + customer_id)."""
+        customer_id = customer["customer_id"]
+        profile = self._profiles.get(customer_id)
+        if profile is None:
+            profile = build_profile(self.seed, customer)
+            self._profiles[customer_id] = profile
+        return profile
 
     # ── Customers ──────────────────────────────────────────────────────────────
 
@@ -103,6 +244,11 @@ class DataGenerator:
             gender = self.rng.choice(genders)
             birth_date = self.fake.date_of_birth(minimum_age=18, maximum_age=75)
             opening_date = self.fake.date_between(start_date="-10y", end_date="today")
+            if self.rng.random() < RECENT_ACCOUNT_RATE:
+                # Contas recentes: alvo do cenário de roubo de identidade (ACCOUNT_AGE_LOW).
+                opening_date = self.fake.date_between(
+                    start_date=f"-{NEW_ACCOUNT_DAYS}d", end_date="today"
+                )
 
             # CPF mascarado: formato ***.***.***-XX (só os 2 últimos dígitos visíveis)
             cpf_digits = "".join([str(self.rng.randint(0, 9)) for _ in range(11)])
@@ -126,7 +272,7 @@ class DataGenerator:
 
         return customers
 
-    # ── Transactions ───────────────────────────────────────────────────────────
+    # ── Transactions (batch) ───────────────────────────────────────────────────
 
     def generate_transactions(
         self,
@@ -135,137 +281,285 @@ class DataGenerator:
         start_date: datetime | None = None,
         end_date: datetime | None = None,
     ) -> list[dict[str, Any]]:
-        """Gera n transações financeiras realistas com ~2-3% de fraude."""
+        """Gera n transações realistas com ~2,5% de eventos fraudulentos.
+
+        A fraude vem em episódios (1–6 eventos coerentes com o tipo) e o tráfego legítimo segue o
+        perfil de cada cliente, com ruído. O resultado sai ordenado por timestamp. O ground truth
+        por evento (episódio, cenário, stealth, hard negatives) fica em `self.last_ground_truth`,
+        fora do `TransactionEvent` de propósito: nenhum contrato de dados muda.
+        """
         if start_date is None:
             end_date = datetime.now(tz=UTC)
             start_date = end_date - timedelta(days=180)
         elif end_date is None:
             end_date = datetime.now(tz=UTC)
 
-        total_seconds = int((end_date - start_date).total_seconds())
-        transactions = []
+        self.last_ground_truth = []
+        if n <= 0 or not customers:
+            return []
 
-        transaction_types = [t.value for t in TransactionType]
-        merchant_categories = [m.value for m in MerchantCategory]
-        channels = [c.value for c in Channel]
-        currencies = [c.value for c in Currency]
+        start_epoch, end_epoch = int(start_date.timestamp()), int(end_date.timestamp())
+        profiles = [self.profile_for(c) for c in customers]
+        by_id = {p.customer_id: p for p in profiles}
 
-        # Parâmetros log-normal calibrados para BRL (média ~R$500, mediana ~R$150)
-        lognormal_mean = 5.0
-        lognormal_sigma = 1.2
+        rows = self._build_episode_rows(profiles, n, start_epoch, end_epoch)
+        rows.extend(self._build_legit_rows(profiles, n - len(rows), start_epoch, end_epoch))
+        self._apply_trips(rows, by_id)
+        rows.sort(key=lambda r: r.epoch)
 
-        fraud_rate = 0.025  # 2.5%
-
-        customer_ids = [c["customer_id"] for c in customers]
-        # Mapa rápido de customer_id → city info (para geoloc impossível)
-        customer_cities = {
-            c["customer_id"]: next(
-                (loc for loc in BRAZILIAN_CITIES if loc["city"] == c["city"]),
-                BRAZILIAN_CITIES[0],
-            )
-            for c in customers
-        }
-
-        # Pré-gera valores aleatórios em batch para performance
-        amounts_raw = self.np_rng.lognormal(lognormal_mean, lognormal_sigma, n)
-        fraud_flags = self.np_rng.random(n) < fraud_rate
-        time_offsets = self.np_rng.randint(0, total_seconds, n)
-
-        for i in range(n):
-            customer_id = self.rng.choice(customer_ids)
-            city_info = customer_cities[customer_id]
-
-            ts = start_date + timedelta(seconds=int(time_offsets[i]))
-            is_fraud = bool(fraud_flags[i])
-
-            tx_type = self.rng.choices(transaction_types, weights=TRANSACTION_TYPE_WEIGHTS, k=1)[0]
-            merchant_cat = self.rng.choices(
-                merchant_categories, weights=MERCHANT_CATEGORY_WEIGHTS, k=1
-            )[0]
-            channel = self.rng.choices(channels, weights=CHANNEL_WEIGHTS, k=1)[0]
-            currency = self.rng.choices(currencies, weights=CURRENCY_WEIGHTS, k=1)[0]
-
-            amount = round(float(amounts_raw[i]), 2)
-            amount = max(1.0, min(amount, 500_000.0))
-
-            origin_bank = self.rng.choice(BRAZILIAN_BANKS)
-            dest_bank = self.rng.choice(BRAZILIAN_BANKS)
-
-            lat = city_info["lat"] + self.rng.uniform(-0.5, 0.5)
-            lon = city_info["lon"] + self.rng.uniform(-0.5, 0.5)
-            fraud_type = None
-
-            if is_fraud:
-                ts, amount, lat, lon, fraud_type, merchant_cat = self._apply_fraud_pattern(
-                    ts, amount, lat, lon, city_info, merchant_categories
+        transactions: list[dict[str, Any]] = []
+        truth: list[dict[str, Any]] = []
+        for row in rows:
+            tx = self._to_transaction(row)
+            transactions.append(tx)
+            if row.is_fraud:
+                truth.append(
+                    {
+                        "transaction_id": tx["transaction_id"],
+                        "episode_id": row.episode_id,
+                        "scenario": row.fraud_type,
+                        "stealth": row.stealth,
+                        "hard_negative": "",
+                    }
                 )
-
-            dev_hex = f"{self.rng.getrandbits(48):012x}"
-            transactions.append(
-                {
-                    "transaction_id": self._uuid(),
-                    "customer_id": customer_id,
-                    "timestamp": ts.isoformat(),
-                    "amount": amount,
-                    "currency": currency,
-                    "transaction_type": tx_type,
-                    "merchant_category": merchant_cat,
-                    "origin_account": self._gen_account(),
-                    "destination_account": self._gen_account(),
-                    "origin_bank": origin_bank,
-                    "destination_bank": dest_bank,
-                    "channel": channel,
-                    "device_id": f"dev-{dev_hex}" if self.rng.random() > 0.1 else None,
-                    "ip_address": self.fake.ipv4() if self.rng.random() > 0.05 else None,
-                    "latitude": round(lat, 6),
-                    "longitude": round(lon, 6),
-                    "is_fraud": is_fraud,
-                    "fraud_type": fraud_type,
-                }
-            )
-
+            elif row.hard_negatives:
+                truth.append(
+                    {
+                        "transaction_id": tx["transaction_id"],
+                        "episode_id": "",
+                        "scenario": "",
+                        "stealth": False,
+                        "hard_negative": ";".join(row.hard_negatives),
+                    }
+                )
+        self.last_ground_truth = truth
         return transactions
 
-    def _apply_fraud_pattern(
+    def _build_legit_rows(
+        self, profiles: list[CustomerProfile], count: int, start_epoch: int, end_epoch: int
+    ) -> list[_Row]:
+        rows: list[_Row] = []
+        rng = self.rng
+        for _ in range(max(count, 0)):
+            profile = rng.choice(profiles)
+            lo = start_epoch
+            if profile.opening_epoch is not None and start_epoch < profile.opening_epoch < end_epoch:
+                lo = profile.opening_epoch  # não há transação antes de a conta existir
+            epoch = rng.randint(lo, end_epoch) if end_epoch > lo else lo
+            if rng.random() >= OFF_HOURS_RATE:
+                moved = set_local_hour(epoch, rng.choice(profile.active_hours))
+                if lo <= moved <= end_epoch:
+                    epoch = moved
+            fields, hard_negatives = self._draft_legit(profile)
+            if local_hour(epoch) not in profile.active_hours:
+                hard_negatives.append("off_hours")
+            rows.append(_Row(fields=fields, epoch=epoch, hard_negatives=hard_negatives))
+        return rows
+
+    def _build_episode_rows(
+        self, profiles: list[CustomerProfile], n: int, start_epoch: int, end_epoch: int
+    ) -> list[_Row]:
+        rng = self.rng
+        target = int(n * FRAUD_RATE + rng.random())  # arredondamento probabilístico
+        recent = [
+            p
+            for p in profiles
+            if p.opening_epoch is not None and start_epoch <= p.opening_epoch <= end_epoch
+        ]
+        rows: list[_Row] = []
+        fraud_rows = 0
+        episode_seq = 0
+        while fraud_rows < target and len(rows) < n:
+            scenario = self._pick_scenario(has_new_accounts=bool(recent))
+            stealth = rng.random() < STEALTH_PROBABILITY
+            is_identity = scenario == FraudType.IDENTITY_THEFT.value
+            victim = rng.choice(recent if is_identity else profiles)
+            episode = build_episode(
+                scenario,
+                rng,
+                victim,
+                stealth=stealth,
+                accomplices=self._accomplices_for(scenario, profiles, victim, start_epoch),
+            )
+
+            lo = start_epoch
+            if victim.opening_epoch is not None and start_epoch < victim.opening_epoch < end_epoch:
+                lo = victim.opening_epoch
+            hi = end_epoch - int(episode.span_s)
+            if is_identity and victim.opening_epoch is not None:
+                hi = min(hi, victim.opening_epoch + NEW_ACCOUNT_DAYS * 86400)
+            hi = max(hi, lo)
+            t0 = rng.randint(lo, hi)
+            if episode.start_hour_local is not None:
+                moved = set_local_hour(t0, episode.start_hour_local)
+                if lo <= moved <= hi:
+                    t0 = moved
+
+            episode_seq += 1
+            episode_id = f"ep-{episode_seq:06d}"
+            for event in episode.events[: n - len(rows)]:
+                rows.append(
+                    _Row(
+                        fields=self._episode_event_fields(event),
+                        epoch=min(t0 + int(event.delay_s), end_epoch),
+                        is_fraud=event.is_fraud,
+                        fraud_type=event.fraud_type,
+                        fixed_location=True,
+                        episode_id=episode_id if event.is_fraud else "",
+                        stealth=episode.stealth,
+                    )
+                )
+                fraud_rows += event.is_fraud
+        return rows
+
+    def _apply_trips(self, rows: list[_Row], by_id: dict[str, CustomerProfile]) -> None:
+        """Define a localização dos eventos legítimos, com as viagens de cada cliente."""
+        tracker = _TravelTracker()
+        legit = sorted(
+            (r for r in rows if not r.fixed_location),
+            key=lambda r: (r.fields["customer_id"], r.epoch),
+        )
+        for row in legit:
+            lat, lon, traveling = tracker.locate(
+                by_id[row.fields["customer_id"]], row.epoch, self.rng
+            )
+            row.fields["latitude"], row.fields["longitude"] = lat, lon
+            if traveling:
+                row.hard_negatives.append("travel")
+
+    # ── Composição de eventos ──────────────────────────────────────────────────
+
+    def _pick_scenario(self, has_new_accounts: bool) -> str:
+        scenarios = [
+            s
+            for s in SCENARIO_WEIGHTS
+            if has_new_accounts or s != FraudType.IDENTITY_THEFT.value
+        ]
+        weights = [SCENARIO_WEIGHTS[s] for s in scenarios]
+        return self.rng.choices(scenarios, weights=weights, k=1)[0]
+
+    def _accomplices_for(
         self,
-        ts: datetime,
-        amount: float,
-        lat: float,
-        lon: float,
-        city_info: dict[str, Any],
-        merchant_categories: list[str],
-    ) -> tuple[datetime, float, float, float, str, str]:
-        """Aplica um padrão de fraude realista à transação."""
-        fraud_types = [f.value for f in FraudType]
-        fraud_type = self.rng.choice(fraud_types)
+        scenario: str,
+        profiles: list[CustomerProfile],
+        victim: CustomerProfile,
+        not_after: int,
+    ) -> list[CustomerProfile]:
+        """Remetentes adicionais da mesma conta-mula (só na lavagem de dinheiro).
 
-        pattern = self.rng.randint(1, 4)
+        Só entram contas abertas até `not_after`: o episódio pode cair em qualquer instante a
+        partir daí, e uma conta não transaciona antes de existir.
+        """
+        if scenario != FraudType.MONEY_LAUNDERING.value:
+            return []
+        others = [
+            p
+            for p in profiles
+            if p is not victim and (p.opening_epoch is None or p.opening_epoch <= not_after)
+        ]
+        return self.rng.sample(others, min(5, len(others)))
 
-        if pattern == 1:
-            # Madrugada (00h-05h) + valor alto
-            ts = ts.replace(hour=self.rng.randint(0, 4), minute=self.rng.randint(0, 59))
-            amount = round(self.rng.uniform(5_000, 50_000), 2)
+    def _draft_legit(self, profile: CustomerProfile) -> tuple[dict[str, Any], list[str]]:
+        """Campos de uma transação legítima do cliente (sem id, timestamp nem coordenadas).
 
-        elif pattern == 2:
-            # Valor alto e redondo em categoria incomum
-            amount = float(self.rng.choice([5000, 10000, 15000, 20000, 25000, 50000]))
-            merchant_cat = self.rng.choice(["SAQUE", "TRANSFERENCIA"])
-            return ts, amount, lat, lon, fraud_type, merchant_cat
+        Devolve também os hard negatives aplicados (`new_device`, `new_ip`, `big_purchase`).
+        """
+        rng = self.rng
+        tx_type = rng.choices(_TRANSACTION_TYPES, weights=TRANSACTION_TYPE_WEIGHTS, k=1)[0]
+        merchant = rng.choices(_MERCHANT_CATEGORIES, weights=MERCHANT_CATEGORY_WEIGHTS, k=1)[0]
+        channel = rng.choices(_CHANNELS, weights=CHANNEL_WEIGHTS, k=1)[0]
+        currency = rng.choices(_CURRENCIES, weights=CURRENCY_WEIGHTS, k=1)[0]
+        hard_negatives: list[str] = []
 
-        elif pattern == 3:
-            # Geolocalização impossível: outra cidade distante
-            other_cities = [c for c in BRAZILIAN_CITIES if c["city"] != city_info["city"]]
-            other_city = self.rng.choice(other_cities)
-            lat = other_city["lat"] + self.rng.uniform(-0.2, 0.2)
-            lon = other_city["lon"] + self.rng.uniform(-0.2, 0.2)
-            amount = round(self.rng.uniform(1_000, 20_000), 2)
+        amount = rng.lognormvariate(profile.amount_mu, profile.amount_sigma)
+        if rng.random() < BIG_PURCHASE_RATE:
+            amount = profile.typical_amount * rng.uniform(5, 10)
+            hard_negatives.append("big_purchase")
+        amount = round(min(max(amount, 1.0), 500_000.0), 2)
 
+        if rng.random() < NEW_DESTINATION_RATE:
+            dest_account, dest_bank = random_account(rng), rng.choice(BRAZILIAN_BANKS)
         else:
-            # Valor alto genérico
-            amount = round(self.rng.uniform(8_000, 100_000), 2)
+            dest_account, dest_bank = rng.choice(profile.contacts)
 
-        merchant_cat = self.rng.choice(merchant_categories)
-        return ts, amount, lat, lon, fraud_type, merchant_cat
+        device, ip = None, None
+        if channel not in PHYSICAL_CHANNELS:  # cartão presente não traz device nem IP
+            if rng.random() >= MISSING_DEVICE_RATE:
+                if rng.random() < NEW_DEVICE_RATE:
+                    device = random_device(rng)
+                    hard_negatives.append("new_device")
+                else:
+                    device = rng.choice(profile.devices)
+            if rng.random() >= MISSING_IP_RATE:
+                if rng.random() < NEW_IP_RATE:
+                    ip = random_ip(rng, random_ip_prefix(rng, avoid=profile.ip_prefixes))
+                    hard_negatives.append("new_ip")
+                else:
+                    ip = random_ip(rng, rng.choice(profile.ip_prefixes))
+
+        fields = {
+            "customer_id": profile.customer_id,
+            "amount": amount,
+            "currency": currency,
+            "transaction_type": tx_type,
+            "merchant_category": merchant,
+            "channel": channel,
+            "destination_account": dest_account,
+            "destination_bank": dest_bank,
+            "device_id": device,
+            "ip_address": ip,
+        }
+        return fields, hard_negatives
+
+    def _episode_event_fields(self, event: EpisodeEvent) -> dict[str, Any]:
+        """Campos de um evento de episódio, com o mesmo ruído de campos ausentes do legítimo."""
+        rng = self.rng
+        device, ip = event.device_id, event.ip_address
+        if event.channel in PHYSICAL_CHANNELS:
+            device = ip = None
+        else:
+            if rng.random() < MISSING_DEVICE_RATE:
+                device = None
+            if rng.random() < MISSING_IP_RATE:
+                ip = None
+        return {
+            "customer_id": event.customer_id,
+            "amount": event.amount,
+            "currency": rng.choices(_CURRENCIES, weights=CURRENCY_WEIGHTS, k=1)[0],
+            "transaction_type": event.transaction_type,
+            "merchant_category": event.merchant_category,
+            "channel": event.channel,
+            "destination_account": event.destination_account,
+            "destination_bank": event.destination_bank,
+            "device_id": device,
+            "ip_address": ip,
+            "latitude": event.latitude,
+            "longitude": event.longitude,
+        }
+
+    def _to_transaction(self, row: _Row) -> dict[str, Any]:
+        f = row.fields
+        profile = self._profiles[f["customer_id"]]
+        return {
+            "transaction_id": self._uuid(),
+            "customer_id": f["customer_id"],
+            "timestamp": datetime.fromtimestamp(row.epoch, tz=UTC).isoformat(),
+            "amount": f["amount"],
+            "currency": f["currency"],
+            "transaction_type": f["transaction_type"],
+            "merchant_category": f["merchant_category"],
+            "origin_account": profile.own_account,
+            "destination_account": f["destination_account"],
+            "origin_bank": profile.own_bank,
+            "destination_bank": f["destination_bank"],
+            "channel": f["channel"],
+            "device_id": f["device_id"],
+            "ip_address": f["ip_address"],
+            "latitude": f["latitude"],
+            "longitude": f["longitude"],
+            "is_fraud": row.is_fraud,
+            "fraud_type": row.fraud_type,
+        }
 
     # ── Market Data ────────────────────────────────────────────────────────────
 
@@ -338,13 +632,6 @@ class DataGenerator:
 
     # ── Helpers ────────────────────────────────────────────────────────────────
 
-    def _gen_account(self) -> str:
-        """Gera número de conta bancária fictício."""
-        agency = f"{self.rng.randint(1, 9999):04d}"
-        account = f"{self.rng.randint(10000, 999999):06d}"
-        digit = self.rng.randint(0, 9)
-        return f"{agency}-{account}-{digit}"
-
     @staticmethod
     def _get_trading_days(end_date: datetime, n_days: int) -> list[datetime]:
         """Retorna lista de dias úteis (seg–sex) terminando em end_date."""
@@ -355,3 +642,101 @@ class DataGenerator:
                 days.append(current)
             current -= timedelta(days=1)
         return list(reversed(days))
+
+
+# ── Transactions (streaming) ───────────────────────────────────────────────────
+
+
+class TransactionStream:
+    """Fonte de eventos em tempo real para o producer de streaming.
+
+    A cada `next_events(now)` devolve uma lista de `(atraso_em_segundos, transação)`: um evento
+    legítimo com atraso 0, ou um episódio de fraude cujos follow-ups saem com atraso > 0 (o
+    producer os mantém num heap e emite na hora certa). O evento legítimo vem de um cliente ativo
+    naquela hora local, e as viagens seguem o mesmo `_TravelTracker` do batch.
+
+    Diferenças conscientes em relação ao batch: o streaming acontece "agora", então a hora de
+    início do episódio de account takeover (madrugada no batch) não é imposta; e, por padrão, o
+    ritmo é constante (o do producer) e qualquer cliente pode transacionar a qualquer hora. Com
+    `diurnal=True` o ritmo segue o horário ativo dos clientes: um sorteio de cliente inativo naquela
+    hora (fora dos `OFF_HOURS_RATE`) não emite nada, e o volume cai de madrugada como na vida real.
+    """
+
+    def __init__(
+        self,
+        generator: DataGenerator,
+        customers: list[dict[str, Any]],
+        fraud_rate: float = FRAUD_RATE,
+        diurnal: bool = False,
+    ) -> None:
+        self._gen = generator
+        self._profiles = [generator.profile_for(c) for c in customers]
+        self._tracker = _TravelTracker()
+        self._episode_prob = episode_probability(fraud_rate)
+        self._diurnal = diurnal
+
+    def next_events(self, now: datetime) -> list[tuple[float, dict[str, Any]]]:
+        """Eventos deste instante como `(atraso_s, transação)`; vazio no modo diurno fora de hora."""
+        epoch = int(now.timestamp())
+        if self._gen.rng.random() < self._episode_prob:
+            return self._episode_events(epoch)
+        event = self._legit_event(epoch)
+        return [(0.0, event)] if event is not None else []
+
+    def _pick_active(self, epoch: int) -> CustomerProfile:
+        rng = self._gen.rng
+        hour = local_hour(epoch)
+        profile = rng.choice(self._profiles)
+        for _ in range(20):
+            if hour in profile.active_hours:
+                break
+            profile = rng.choice(self._profiles)
+        return profile
+
+    def _pick_victim(self, epoch: int) -> CustomerProfile:
+        return self._pick_active(epoch) if self._diurnal else self._gen.rng.choice(self._profiles)
+
+    def _legit_event(self, epoch: int) -> dict[str, Any] | None:
+        gen = self._gen
+        profile = gen.rng.choice(self._profiles)
+        if (
+            self._diurnal
+            and local_hour(epoch) not in profile.active_hours
+            and gen.rng.random() >= OFF_HOURS_RATE
+        ):
+            return None
+        fields, _ = gen._draft_legit(profile)
+        lat, lon, _ = self._tracker.locate(profile, epoch, gen.rng)
+        fields["latitude"], fields["longitude"] = lat, lon
+        return gen._to_transaction(_Row(fields=fields, epoch=epoch))
+
+    def _episode_events(self, epoch: int) -> list[tuple[float, dict[str, Any]]]:
+        gen = self._gen
+        rng = gen.rng
+        recent = [
+            p
+            for p in self._profiles
+            if p.opening_epoch is not None
+            and 0 <= epoch - p.opening_epoch <= NEW_ACCOUNT_DAYS * 86400
+        ]
+        scenario = gen._pick_scenario(has_new_accounts=bool(recent))
+        is_identity = scenario == FraudType.IDENTITY_THEFT.value
+        victim = rng.choice(recent) if is_identity else self._pick_victim(epoch)
+        episode = build_episode(
+            scenario,
+            rng,
+            victim,
+            stealth=rng.random() < STEALTH_PROBABILITY,
+            accomplices=gen._accomplices_for(scenario, self._profiles, victim, epoch),
+        )
+        events = []
+        for event in sorted(episode.events, key=lambda e: e.delay_s):
+            row = _Row(
+                fields=gen._episode_event_fields(event),
+                epoch=epoch + int(event.delay_s),
+                is_fraud=event.is_fraud,
+                fraud_type=event.fraud_type,
+                fixed_location=True,
+            )
+            events.append((event.delay_s, gen._to_transaction(row)))
+        return events

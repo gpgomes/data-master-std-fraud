@@ -47,6 +47,8 @@ Z_SCORE_THRESHOLD = 3.0  # |z_score| > limiar => anomalia
 Z_SCORE_SCALE = 6.0  # mapeia |z_score| para [0,1]: |z|=6 => fraud_score=1.0
 WATERMARK_DELAY = "1 hour"
 DEFAULT_FRAUD_TYPE_FALLBACK = "MONEY_LAUNDERING"
+# Identifica o detector que gerou o score/alerta (comparação V1 × V2, issue #43 em diante).
+DETECTOR_VERSION = "zscore-v1"
 
 # Etapas de um micro-batch, na ordem em que rodam. Cada uma grava um marcador ao concluir
 # (ver `_run_stage`), para que o replay de um batch interrompido pule o que já foi feito.

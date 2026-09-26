@@ -29,6 +29,7 @@ from pyspark.sql.types import (
 from src.common.schemas import FraudAlert
 from src.transformation.streaming.stream_processor import (
     DEFAULT_FRAUD_TYPE_FALLBACK,
+    DETECTOR_VERSION,
     Z_SCORE_THRESHOLD,
     StreamProcessor,
 )
@@ -389,6 +390,64 @@ def _tx(**overrides) -> dict:
     base["timestamp"] = ts
     base.update(overrides)
     return base
+
+
+# ── TestNoLabelLeakage ──────────────────────────────────────────────────────────
+
+
+_LABELLED_TX_SCHEMA = StructType(
+    [
+        StructField("transaction_id", StringType(), True),
+        StructField("customer_id", StringType(), True),
+        StructField("timestamp", TimestampType(), True),
+        StructField("amount", DoubleType(), True),
+        StructField("is_fraud", BooleanType(), True),
+        StructField("fraud_type", StringType(), True),
+    ]
+)
+
+
+class TestNoLabelLeakage:
+    """O detector não pode olhar o rótulo de fraude do evento (issue #43, F0).
+
+    `is_fraud`/`fraud_type` são o ground truth do gerador: se o score ou a anomalia dependessem
+    deles, qualquer métrica de qualidade do detector seria vazamento.
+    """
+
+    _AMOUNTS = [100.0, 110.0, 105.0, 1000.0, 120.0]
+
+    def _rows(self, *, labelled: bool) -> list[dict]:
+        rows = []
+        for i, amount in enumerate(self._AMOUNTS):
+            is_fraud = amount > 500
+            rows.append(
+                {
+                    "transaction_id": f"tx-{i}",
+                    "customer_id": "cust-1",
+                    "timestamp": f"2024-06-15T10:{i * 10:02d}:00Z",
+                    "amount": amount,
+                    "is_fraud": is_fraud if labelled else None,
+                    "fraud_type": ("CARD_CLONING" if is_fraud else None) if labelled else None,
+                }
+            )
+        return rows
+
+    def _scored(self, spark, processor, *, labelled: bool):
+        df = _df_from_rows(spark, self._rows(labelled=labelled), _LABELLED_TX_SCHEMA)
+        scored = processor._enrich_and_score(df, _empty_history(spark))
+        return scored.orderBy("timestamp").select("z_score", "fraud_score", "is_anomaly").collect()
+
+    def test_scores_and_anomalies_do_not_depend_on_the_labels(
+        self, spark: SparkSession, processor: StreamProcessor
+    ):
+        with_labels = self._scored(spark, processor, labelled=True)
+        without_labels = self._scored(spark, processor, labelled=False)
+        assert with_labels == without_labels
+        # o teste não é vazio: o pico de valor é de fato sinalizado nas duas execuções
+        assert any(row["is_anomaly"] for row in with_labels)
+
+    def test_detector_version_identifies_the_zscore_detector(self):
+        assert DETECTOR_VERSION == "zscore-v1"
 
 
 # ── TestBuildFraudAlerts ─────────────────────────────────────────────────────────
