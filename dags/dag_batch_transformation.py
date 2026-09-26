@@ -125,7 +125,8 @@ with DAG(
         python_callable=_validate_silver_data,
     )
 
-    # 3. Silver → Gold (dim_customers, dim_date, fact_transactions, agg_daily_fraud_metrics)
+    # 3. Silver → Gold (dim_customers, dim_date, fact_transactions, agg_daily_fraud_metrics,
+    #    customer_behavior_profile: o perfil que o detector do streaming lê por broadcast)
     silver_to_gold = SparkSubmitOperator(
         task_id="silver_to_gold",
         application=f"{_SRC}/silver_to_gold.py",

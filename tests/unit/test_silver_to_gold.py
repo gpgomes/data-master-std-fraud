@@ -18,11 +18,13 @@ from pyspark.sql import SparkSession
 from pyspark.sql.types import (
     BooleanType,
     DateType,
+    DecimalType,
     DoubleType,
     IntegerType,
     StringType,
     StructField,
     StructType,
+    TimestampType,
 )
 
 from src.transformation.batch.silver_to_gold import SilverToGoldTransformer
@@ -491,3 +493,184 @@ class TestPublicMethodsMocked:
 
         assert metrics["rows_read"] == 3
         assert metrics["rows_written"] == 1  # mesma data + mesmo tipo => 1 grupo
+
+
+# ── TestCustomerBehaviorProfile (issue #46) ───────────────────────────────────
+
+# O Silver de transações que o perfil lê: `amount` é DECIMAL(18,2) (bronze_to_silver) e o restante
+# são as colunas que o detector usa. É o shape real, não o `_SILVER_TRANSACTION_SCHEMA` de fatos.
+_SILVER_EVENT_SCHEMA = StructType(
+    [
+        StructField("transaction_id", StringType(), True),
+        StructField("customer_id", StringType(), True),
+        StructField("timestamp", TimestampType(), True),
+        StructField("amount", DecimalType(18, 2), True),
+        StructField("device_id", StringType(), True),
+        StructField("ip_address", StringType(), True),
+        StructField("latitude", DoubleType(), True),
+        StructField("longitude", DoubleType(), True),
+        StructField("destination_account", StringType(), True),
+        StructField("is_fraud", BooleanType(), True),
+    ]
+)
+
+# `gold/dim_customers`: a chave é `customer_key` e a data de abertura ainda é texto.
+_DIM_CUSTOMERS_SCHEMA = StructType(
+    [
+        StructField("customer_key", StringType(), True),
+        StructField("segment", StringType(), True),
+        StructField("account_opening_date", StringType(), True),
+    ]
+)
+
+
+def _silver_event(i: int, customer: str = "cust-1", **overrides) -> dict:
+    base: dict = {
+        "transaction_id": f"tx-{customer}-{i}",
+        "customer_id": customer,
+        "timestamp": f"2026-01-{10 + i:02d}T15:00:00",
+        "amount": 100.0 + i,
+        "device_id": "dev-home",
+        "ip_address": "177.10.20.30",
+        "latitude": -23.55,
+        "longitude": -46.63,
+        "destination_account": "acc-mother",
+        "is_fraud": False,
+    }
+    base.update(overrides)
+    return base
+
+
+def _dim_row(customer: str, **overrides) -> dict:
+    base = {"customer_key": customer, "segment": "VAREJO", "account_opening_date": "2020-01-01"}
+    base.update(overrides)
+    return base
+
+
+class TestBuildCustomerBehaviorProfile:
+    @staticmethod
+    def _profile(spark, events, customers):
+        return SilverToGoldTransformer._build_customer_behavior_profile(
+            _df_from_rows(spark, events, _SILVER_EVENT_SCHEMA),
+            _df_from_rows(spark, customers, _DIM_CUSTOMERS_SCHEMA),
+        )
+
+    def test_one_row_per_customer_of_the_dimension(self, spark):
+        events = [_silver_event(i) for i in range(5)]
+        profile = self._profile(spark, events, [_dim_row("cust-1"), _dim_row("cust-2")])
+        assert sorted(r["customer_id"] for r in profile.collect()) == ["cust-1", "cust-2"]
+
+    def test_learns_what_is_normal_from_the_legitimate_history(self, spark):
+        events = [_silver_event(i) for i in range(5)]
+        row = self._profile(spark, events, [_dim_row("cust-1")]).first()
+        assert row["has_profile"] is True
+        assert row["n_history"] == 5
+        assert row["known_devices"] == ["dev-home"]
+        assert row["known_ip_prefixes"] == ["177.10.20"]
+        assert row["known_destinations"] == ["acc-mother"]
+        assert row["home_lat"] == pytest.approx(-23.55)
+        assert 4.4 < row["mu_log"] < 4.8  # ln(100..104) com o Silver em DECIMAL(18,2)
+
+    def test_fraud_rows_do_not_teach_the_profile(self, spark):
+        events = [
+            *[_silver_event(i) for i in range(5)],
+            _silver_event(
+                9, is_fraud=True, device_id="dev-thief", destination_account="acc-mule", amount=9000.0
+            ),
+        ]
+        row = self._profile(spark, events, [_dim_row("cust-1")]).first()
+        assert row["n_history"] == 5
+        assert row["known_devices"] == ["dev-home"]
+        assert row["mu_log"] < 5.0  # ln(9000) = 9,1 não entrou
+
+    def test_account_opening_date_becomes_a_date(self, spark):
+        events = [_silver_event(i) for i in range(5)]
+        row = self._profile(spark, events, [_dim_row("cust-1")]).first()
+        assert row["account_opening_date"] == date(2020, 1, 1)
+
+    def test_customer_without_history_still_gets_a_neutral_row(self, spark):
+        """Cliente novo (sem transação legítima) sai com `has_profile = false`, não some da tabela."""
+        events = [_silver_event(i) for i in range(5)]
+        rows = {
+            r["customer_id"]: r
+            for r in self._profile(spark, events, [_dim_row("cust-1"), _dim_row("new")]).collect()
+        }
+        assert rows["new"]["has_profile"] is False
+        assert rows["new"]["n_history"] in (0, None)
+
+    def test_columns_match_the_profile_schema_the_stream_reads(self, spark):
+        from src.transformation.fraud.profile import PROFILE_SCHEMA
+
+        profile = self._profile(spark, [_silver_event(0)], [_dim_row("cust-1")])
+        assert profile.columns == [f.name for f in PROFILE_SCHEMA.fields]
+
+
+class TestTransformCustomerBehaviorProfile:
+    """Lê `silver/transactions/` e `gold/dim_customers/` e grava `gold/customer_behavior_profile/`
+    de verdade (Parquet em diretório temporário), sem mocks de I/O."""
+
+    @staticmethod
+    def _transformer(spark, root) -> SilverToGoldTransformer:
+        t = SilverToGoldTransformer(spark=spark)
+        t._silver = f"{root.as_uri()}/silver"
+        t._gold = f"{root.as_uri()}/gold"
+        return t
+
+    @staticmethod
+    def _seed(spark, root, events, customers) -> None:
+        _df_from_rows(spark, events, _SILVER_EVENT_SCHEMA).write.parquet(
+            f"{root.as_uri()}/silver/transactions/"
+        )
+        _df_from_rows(spark, customers, _DIM_CUSTOMERS_SCHEMA).write.parquet(
+            f"{root.as_uri()}/gold/dim_customers/"
+        )
+
+    def test_writes_the_profile_to_gold_and_reports_metrics(self, spark, tmp_path):
+        events = [_silver_event(i) for i in range(5)]
+        self._seed(spark, tmp_path, events, [_dim_row("cust-1"), _dim_row("new")])
+
+        metrics = self._transformer(spark, tmp_path).transform_customer_behavior_profile()
+
+        assert metrics == {"rows_read": 5, "rows_written": 2, "customers_with_profile": 1}
+        written = spark.read.parquet(f"{tmp_path.as_uri()}/gold/customer_behavior_profile/")
+        assert sorted(r["customer_id"] for r in written.collect()) == ["cust-1", "new"]
+
+    def test_the_output_is_what_the_stream_processor_loads(self, spark, tmp_path):
+        """Fecha o ciclo: o que o batch grava é lido pelo `StreamProcessor` sem conversão."""
+        from src.transformation.streaming.stream_processor import StreamProcessor
+
+        self._seed(spark, tmp_path, [_silver_event(i) for i in range(5)], [_dim_row("cust-1")])
+        self._transformer(spark, tmp_path).transform_customer_behavior_profile()
+
+        stream = StreamProcessor(spark=spark, dim_customers=_df_from_rows(spark, [], _DIM_CUSTOMERS_SCHEMA))
+        stream._gold = f"{tmp_path.as_uri()}/gold"
+        stream._load_static_inputs()
+
+        assert stream._profile.first()["known_devices"] == ["dev-home"]
+
+    def test_ignores_the_date_range_and_uses_the_whole_history(self, spark, tmp_path):
+        """Um perfil parcial esconderia devices que o cliente usa há meses."""
+        events = [_silver_event(i) for i in range(5)]
+        self._seed(spark, tmp_path, events, [_dim_row("cust-1")])
+        t = self._transformer(spark, tmp_path)
+        t.start_date = t.end_date = "2026-01-14"
+
+        assert t.transform_customer_behavior_profile()["rows_read"] == 5
+
+    def test_is_part_of_run_all_and_runs_last(self, spark):
+        t = SilverToGoldTransformer(spark=spark)
+        order: list[str] = []
+        names = (
+            "transform_dim_customers",
+            "transform_dim_date",
+            "transform_fact_transactions",
+            "transform_agg_daily_fraud_metrics",
+            "transform_customer_behavior_profile",
+        )
+        with patch.multiple(
+            t, **{n: (lambda n=n: order.append(n) or {}) for n in names}
+        ):
+            result = t.run_all()
+
+        assert order == list(names)  # o perfil lê a dim_customers: depende dela
+        assert "customer_behavior_profile" in result

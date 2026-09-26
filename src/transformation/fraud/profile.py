@@ -19,6 +19,16 @@ from __future__ import annotations
 
 from pyspark.sql import Column, DataFrame, Window
 from pyspark.sql import functions as F
+from pyspark.sql.types import (
+    ArrayType,
+    BooleanType,
+    DateType,
+    DoubleType,
+    LongType,
+    StringType,
+    StructField,
+    StructType,
+)
 
 LOCAL_TZ = "America/Sao_Paulo"
 NIGHT_END_HOUR = 6  # madrugada = horas locais 0–5
@@ -53,6 +63,25 @@ PROFILE_COLUMNS = (
     "home_lat",
     "home_lon",
     "account_opening_date",
+)
+
+
+# Schema de `build_profiles` (e da tabela Gold `customer_behavior_profile`).
+PROFILE_SCHEMA = StructType(
+    [
+        StructField("customer_id", StringType(), True),
+        StructField("has_profile", BooleanType(), True),
+        StructField("n_history", LongType(), True),
+        StructField("mu_log", DoubleType(), True),
+        StructField("sigma_log", DoubleType(), True),
+        StructField("known_devices", ArrayType(StringType()), True),
+        StructField("known_ip_prefixes", ArrayType(StringType()), True),
+        StructField("known_destinations", ArrayType(StringType()), True),
+        StructField("night_share", DoubleType(), True),
+        StructField("home_lat", DoubleType(), True),
+        StructField("home_lon", DoubleType(), True),
+        StructField("account_opening_date", DateType(), True),
+    ]
 )
 
 

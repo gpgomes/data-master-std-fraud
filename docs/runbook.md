@@ -51,6 +51,8 @@ make spark-submit-stream
 
 Apagar `local/checkpoints/` também apaga os marcadores de progresso (`stream_processor_progress/`), que precisam ser resetados junto com os `batch_id`. A saída em `silver/transactions_stream/` fica separada por `query_id` (o id do checkpoint), então o novo stream não sobrescreve a saída de execuções anteriores.
 
+O **estado curto** do detector (`silver/_stream_state/recent_events/`, ver abaixo) não faz parte do checkpoint e sobrevive a esse reset. Para recomeçar do zero, apague-o também: `docker compose exec minio mc rm --recursive --force local/silver/_stream_state/`.
+
 ### Semântica de entrega do streaming (issue #36)
 
 Reiniciar ou derrubar o `spark-submit-stream` no meio de um micro-batch faz o Spark reexecutar aquele mesmo `batch_id`. O `_process_batch` trata isso por etapa:
@@ -58,7 +60,7 @@ Reiniciar ou derrubar o `spark-submit-stream` no meio de um micro-batch faz o Sp
 | Etapa | No replay |
 |-------|-----------|
 | Parquet em `silver/transactions_stream/query_id=<id>/batch_id=<n>/` | Sobrescreve a própria partição (overwrite dinâmico): sem linhas duplicadas |
-| Kafka `enriched-transactions`, Kafka `fraud-alerts`, histórico do Z-Score | Pulada se o marcador `checkpoints/stream_processor_progress/batch_<n>.<etapa>` existe; o histórico não é contado em dobro |
+| Kafka `enriched-transactions`, Kafka `fraud-alerts`, estado curto (`silver/_stream_state/recent_events/`) | Pulada se o marcador `checkpoints/stream_processor_progress/batch_<n>.<etapa>` existe; o estado não é contado em dobro |
 | `alert_id` | Derivado de `transaction_id`: o mesmo alerta mantém o mesmo id |
 
 Garantia: **sem duplicatas no Parquet**; **at-least-once nos tópicos Kafka** (o Kafka sink do Spark não é transacional, então cair entre o fim de uma etapa Kafka e a gravação do seu marcador ainda pode duplicar aquela mensagem). Consumidores de `enriched-transactions`/`fraud-alerts` devem deduplicar por `transaction_id` (ou `alert_id`).
@@ -72,6 +74,49 @@ docker compose exec -T kafka kafka-console-consumer --bootstrap-server kafka:909
 ```
 
 Layout novo: `silver/transactions_stream/` passou a ser particionado por `query_id` e `batch_id`. Saída gravada por versões anteriores fica solta na raiz do prefixo; apague `silver/transactions_stream/` antes de ler o conjunto todo.
+
+### Fraud Engine no streaming (issue #46)
+
+O `stream_processor.py` pontua cada micro-batch com o Fraud Engine (`multisignal-v2`, o mesmo
+`detect` que o `make fraud-eval` mede) e mantém o Z-Score antigo (`zscore-v1`) calculado em paralelo,
+só para comparação (*shadow scoring*). Quem decide o alerta é o V2.
+
+**Ordem de execução.** O V2 lê o perfil de comportamento dos clientes por broadcast, e o perfil é
+uma tabela Gold do batch. Sem ele o job **recusa iniciar** (`RuntimeError: Perfil de comportamento
+não encontrado`), porque um V2 sem perfil não conhece device, rede, destinatário nem valor típico
+de ninguém:
+
+```bash
+make spark-submit-batch        # Bronze → Silver
+make spark-submit-silver-gold  # Silver → Gold, inclui gold/customer_behavior_profile/ (~30 s, 500 mil transações)
+make spark-submit-stream       # só agora
+```
+
+Para refazer só o perfil: `docker compose exec spark-master spark-submit --master spark://localhost:7077
+src/transformation/batch/silver_to_gold.py --dataset customer_behavior_profile`. O perfil usa todo o
+Silver (ignora `--start-date/--end-date`) e só as linhas legítimas do histórico. Recalcule-o quando o
+Silver mudar; o stream só o lê na partida, então reinicie o job depois.
+
+**Estado curto.** Os sinais de janela (velocidade, viagem impossível, concentração de destinatários)
+precisam dos eventos anteriores, que o micro-batch sozinho não tem. Entre micro-batches o job grava as
+últimas **6 horas** de eventos (só as colunas que o detector enxerga, nunca o rótulo) em
+`silver/_stream_state/recent_events/`. Reiniciar o job continua desse estado. O caminho antigo
+(`silver/_stream_state/customer_amount_history/`, 3 colunas) ficou órfão e pode ser apagado.
+
+**Saída.**
+
+| Destino | O que mudou |
+|---|---|
+| `silver/transactions_stream/` (Parquet), `enriched-transactions` | Colunas novas do V2: `fraud_score`, `is_fraud_predicted`, `fraud_signals` (os sinais ativos), `fraud_type_predicted`, `detector_version`. O V1 segue em `z_score`, `is_anomaly`, `fraud_score_v1`, `shadow_detector_version`. **`fraud_score` agora é o do V2** |
+| `fraud-alerts` | Só o que o V2 marcou. `fraud_type` é o **inferido pelos sinais** (nulo se nenhuma regra casa; o fallback fixo `MONEY_LAUNDERING` acabou), `signals` e `detector_version` são novos, `z_score` é o do V1 e pode ser nulo. `alert_reason` lista os sinais |
+| Rótulos `is_fraud`/`fraud_type` | Continuam no payload e no Parquet (o gerador sintético os manda, e é com eles que se mede o detector online), mas são separados do DataFrame **antes** de qualquer detector e só voltam por `transaction_id` no fim |
+
+Saída de execuções anteriores (schema do V1) não tem as colunas novas: apague
+`silver/transactions_stream/` antes de ler o conjunto todo, como no aviso de layout acima.
+
+Loader do Postgres (`make spark-submit-stream-postgres`): `fraud_alerts` é montado do Parquet com o
+mesmo `build_fraud_alerts`. As colunas `signals` e `detector_version` ainda não existem na tabela
+(issue #47), e `is_anomaly` em `stream_scored_transactions` é o do V1.
 
 ### Dados sintéticos: perfis, fraude por episódio e ground truth (issue #43)
 

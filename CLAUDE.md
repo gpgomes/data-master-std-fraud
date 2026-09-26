@@ -50,8 +50,8 @@ make logs-kafka  # Tail specific service logs
 ### Pipeline Execution
 ```bash
 make spark-submit-batch        # Run Bronze→Silver PySpark batch job (Gold is a separate step below)
-make spark-submit-stream       # Start Spark Structured Streaming (Kafka consumer)
-make spark-submit-silver-gold  # Run Silver→Gold job
+make spark-submit-stream       # Start Spark Structured Streaming (Kafka consumer); needs gold/customer_behavior_profile/ (run spark-submit-silver-gold first, otherwise it refuses to start)
+make spark-submit-silver-gold  # Run Silver→Gold job (star schema + gold/customer_behavior_profile/, the per-customer profile the streaming fraud detector broadcasts)
 make spark-submit-gold-postgres # Load Gold (MinIO) into the Postgres serving layer
 make spark-submit-stream-postgres # Load streaming output (fraud_score + alerts) into Postgres (stop the stream first)
 make producer-transactions     # Start Kafka transaction producer
@@ -75,17 +75,21 @@ yfinance / CSV → Python Collector → MinIO bronze/ (JSON/CSV)
                                     MinIO silver/ (Parquet)
                                          ↓ PySpark (silver_to_gold.py)
                                     MinIO gold/ (Parquet) → PostgreSQL
+                                    (incl. gold/customer_behavior_profile/, read by the stream)
 ```
 
 **Streaming:**
 ```
 Python Simulator → Kafka raw-transactions → Spark Structured Streaming
-                                                    ↓ Z-Score anomaly detection
+                                                    ↓ Fraud Engine V2 (multi-signal, profile broadcast +
+                                                      6 h short state); Z-Score V1 runs in shadow
                           MinIO silver/transactions_stream/ (Parquet, distinct
                           from batch's silver/transactions/) + Kafka
                           enriched-transactions (all scored rows) + Kafka
-                          fraud-alerts (rows flagged anomalous)
+                          fraud-alerts (rows the V2 flagged)
 ```
+
+The fraud labels (`is_fraud`, `fraud_type`) travel in the Kafka payload but are split off inside `_score_batch` before any detector runs and re-joined by `transaction_id` at the end; the alert's `fraud_type` is the one **inferred from signals** (null when no rule matches), never the label. `is_fraud` is never renamed.
 
 ### Key Source Locations
 
@@ -94,7 +98,8 @@ Python Simulator → Kafka raw-transactions → Spark Structured Streaming
 | Centralized config (pydantic-settings) | `src/common/config.py` |
 | All Pydantic + PySpark schemas | `src/common/schemas.py` |
 | Batch PySpark jobs | `src/transformation/batch/` |
-| Streaming processor + anomaly detector | `src/transformation/streaming/` |
+| Streaming processor (V2 scoring, V1 shadow, alerts, idempotent micro-batches) | `src/transformation/streaming/` |
+| Fraud Engine (profile, 10 signals, noisy-OR score, type rules, weights, calibration, evaluation harness) | `src/transformation/fraud/` |
 | Kafka producers | `src/ingestion/streaming/` |
 | Batch data collectors | `src/ingestion/batch/` |
 | FastAPI app | `src/serving/api/main.py` |
@@ -132,8 +137,8 @@ Settings are grouped: `KafkaSettings`, `MinIOSettings`, `PostgresSettings`, `Spa
 |-------|---------|
 | `raw-transactions` | Raw financial transactions (input) |
 | `raw-market-data` | Market quotes (input) |
-| `enriched-transactions` | Transactions with fraud score (output) |
-| `fraud-alerts` | Confirmed fraud alerts (output) |
+| `enriched-transactions` | Transactions with the V2 fraud score/signals and the V1 Z-Score shadow (output) |
+| `fraud-alerts` | Fraud alerts from the V2 detector, with `signals` and `detector_version` (output) |
 
 ### Local Service URLs
 
@@ -155,7 +160,7 @@ Data catalog is not a web service — it's a generated, versioned document (`doc
 The project is being built in phases (see `CaseFinancialDataLakeHouse.md` — the original, frozen brief; it does not reflect current status). Status below reflects what's actually implemented and merged into `main`, not the original weekly schedule:
 
 - **Phase 1 — Local infra with Docker Compose:** ✅ Done
-- **Phase 2 — PySpark batch + streaming transformations:** ✅ Done (batch: `bronze_to_silver.py`/`silver_to_gold.py`; streaming: `stream_processor.py`, Z-Score anomaly detection, issue #11)
+- **Phase 2 — PySpark batch + streaming transformations:** ✅ Done (batch: `bronze_to_silver.py`/`silver_to_gold.py`; streaming: `stream_processor.py`, Z-Score anomaly detection, issue #11; the Fraud Engine V2 replaced the Z-Score as the alerting detector in issue #46, with the Z-Score kept as shadow)
 - **Phase 3 — Data governance:** ✅ Done, with two scope changes from the original plan: Great Expectations quality gates (issue #13); a lightweight, code-based data catalog (issue #14) instead of OpenMetadata — see `docs/architecture.md`'s "Decisões Arquiteturais" table; Delta Lake was evaluated and explicitly **not** adopted (issue #9) — the platform uses Parquet only, no time-travel/versioning layer exists
 - **Phase 4 — Serving layer:** ✅ Done — PostgreSQL loader (issue #10), FastAPI (issue #15), Superset dashboards (issue #16, Grafana descoped — see `docs/architecture.md`)
 - **Phase 5 — AWS migration via Terraform:** ⬜ Not started (issue #17, open)

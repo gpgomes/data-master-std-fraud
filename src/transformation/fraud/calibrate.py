@@ -85,6 +85,8 @@ Calibração: seed {cal.seed}, {cal.events:,} eventos avaliados ({cal.fraud:,} f
 (pesos iniciais uniformes de {INITIAL_WEIGHT}: recall {cal.initial_objective[0]:.4f}, PR-AUC {cal.initial_objective[1]:.4f}).
 """
 
+from __future__ import annotations
+
 WEIGHTS_VERSION = "seed-{cal.seed}"
 
 SIGNAL_WEIGHTS: dict[str, float] = {{

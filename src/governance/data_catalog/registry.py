@@ -118,11 +118,17 @@ CATALOG: tuple[CatalogEntry, ...] = (
         classification=("PII", "Confidencial"),
         glossary_terms=("Z-Score", "Fraud Score"),
         description=(
-            "Saída do detector de streaming (issue #11), particionada por query_id/batch_id: "
-            "transações com z_score, fraud_score e is_anomaly. Só existe depois que o job de "
-            "streaming rodou."
+            "Saída do detector de streaming, particionada por query_id/batch_id: transações com "
+            "o veredito do Fraud Engine (fraud_score, is_fraud_predicted, fraud_signals, "
+            "fraud_type_predicted, detector_version), o Z-Score antigo em paralelo (z_score, "
+            "is_anomaly, fraud_score_v1) e o rótulo do gerador (is_fraud, fraud_type). Só existe "
+            "depois que o job de streaming rodou (issues #11 e #46)."
         ),
-        upstream=("kafka_raw_transactions",),
+        upstream=(
+            "kafka_raw_transactions",
+            "gold_dim_customers",
+            "gold_customer_behavior_profile",
+        ),
         optional=True,
     ),
     # ── Gold (MinIO) ─────────────────────────────────────────────────────
@@ -173,6 +179,24 @@ CATALOG: tuple[CatalogEntry, ...] = (
         glossary_terms=("Fraud Score",),
         description="Agregação diária de volume e taxa de fraude por tipo de transação.",
         upstream=("gold_fact_transactions",),
+    ),
+    CatalogEntry(
+        key="gold_customer_behavior_profile",
+        name="Gold — Perfil de Comportamento do Cliente",
+        layer=DatasetLayer.GOLD,
+        kind=DatasetKind.MINIO_PREFIX,
+        location=f"s3://{settings.minio.bucket_gold}/customer_behavior_profile/",
+        owner="Fraud Analytics",
+        classification=("PII", "Confidencial"),
+        glossary_terms=("Fraud Score",),
+        description=(
+            "Perfil de comportamento por cliente, aprendido do histórico legítimo do Silver: "
+            "valor típico (μ/σ de ln(amount)), devices, redes /24 e destinatários conhecidos, "
+            "share noturno, centro geográfico e idade da conta. Grão: uma linha por cliente. É "
+            "a camada longa da arquitetura Lambda, lida por broadcast pelo detector do "
+            "streaming (issue #46)."
+        ),
+        upstream=("silver_transactions", "gold_dim_customers"),
     ),
     # ── Serving (Postgres) ───────────────────────────────────────────────
     CatalogEntry(
@@ -285,7 +309,11 @@ CATALOG: tuple[CatalogEntry, ...] = (
         owner="Data Engineering",
         classification=("PII", "Confidencial"),
         glossary_terms=("Z-Score", "Fraud Score"),
-        description="Transações com fraud_score anexado pelo StreamProcessor (issue #11).",
+        description=(
+            "Transações com o veredito do Fraud Engine anexado pelo StreamProcessor: fraud_score, "
+            "fraud_signals (o motivo), fraud_type_predicted; e o Z-Score antigo em paralelo "
+            "(issues #11 e #46)."
+        ),
         upstream=("kafka_raw_transactions",),
     ),
     CatalogEntry(
@@ -297,7 +325,10 @@ CATALOG: tuple[CatalogEntry, ...] = (
         owner="Fraud Analytics",
         classification=("PII", "Confidencial"),
         glossary_terms=("Z-Score", "Fraud Score", "Velocity Check"),
-        description="Alertas de fraude confirmados pelo detector Z-Score (issue #11).",
+        description=(
+            "Alertas do Fraud Engine multi-signal: tipo inferido pelos sinais (não o rótulo), "
+            "lista de sinais ativos e versão do detector (issues #11 e #46)."
+        ),
         upstream=("kafka_enriched_transactions",),
     ),
     # ── Dashboard (issue #16) ─────────────────────────────────────────────

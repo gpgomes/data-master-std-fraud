@@ -99,7 +99,13 @@ class StreamToPostgresLoader(GoldToPostgresLoader):
 
     @staticmethod
     def _to_alerts_table(df: DataFrame) -> DataFrame:
-        return build_fraud_alerts(df).withColumnRenamed("timestamp", "event_time")
+        # `signals` e `detector_version` (issue #46) ainda não têm coluna na tabela `fraud_alerts`
+        # (a #47 as cria); o JDBC não grava coluna que a tabela não tem.
+        return (
+            build_fraud_alerts(df)
+            .withColumnRenamed("timestamp", "event_time")
+            .drop("signals", "detector_version")
+        )
 
     # ── Carga ───────────────────────────────────────────────────────────────────
 

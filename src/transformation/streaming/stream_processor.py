@@ -1,17 +1,29 @@
-"""Job PySpark Structured Streaming: speed layer da arquitetura Lambda (issue #11).
+"""Job PySpark Structured Streaming: speed layer da arquitetura Lambda (issues #11 e #46).
 
-Consome `raw-transactions` do Kafka, enriquece com atributos de `dim_customers`
-(Gold) e detecta anomalias de valor via Z-Score numa janela deslizante de 1h por
-cliente. Publica o resultado em `enriched-transactions`, alertas em
-`fraud-alerts`, e persiste em `s3a://silver/transactions_stream/` (caminho
-separado de `silver/transactions/`, escrito pelo batch — evita conflito entre
-os overwrites por partição do batch e os appends contínuos do streaming).
+Consome `raw-transactions` do Kafka, enriquece com atributos de `dim_customers` (Gold) e detecta
+fraude com o **Fraud Engine multi-signal** (`src/transformation/fraud/`): 10 sinais (perfil de
+comportamento do cliente, calculado no batch e lido por broadcast, mais janelas curtas de
+velocidade, viagem impossível e concentração de destinatários) combinados por noisy-OR. O tipo de
+fraude do alerta é **inferido pelos sinais**, nunca copiado do rótulo, e o motivo do alerta é a lista
+de sinais ativos. Publica o resultado em `enriched-transactions`, os alertas em `fraud-alerts`, e
+persiste em `s3a://silver/transactions_stream/` (caminho separado de `silver/transactions/`,
+escrito pelo batch — evita conflito entre os overwrites por partição do batch e os appends
+contínuos do streaming).
 
-Limitação documentada: a detecção usa apenas Z-Score sobre o valor da
-transação (velocity/geo/pattern checks ficam fora do escopo desta issue), então
-o `fraud_type` do `FraudAlert` não é uma classificação real — reaproveita o
-`fraud_type` do evento de origem (rótulo sintético do gerador) quando presente;
-na ausência dele, usa um fallback fixo.
+**Shadow scoring:** o Z-Score do V1 (`z_score`, `is_anomaly`, `fraud_score_v1`) continua calculado
+nas mesmas linhas, com `shadow_detector_version = "zscore-v1"`. Só o V2 alerta. Isso permite comparar
+os dois detectores no mesmo tráfego.
+
+**Sem rótulo no detector (separação estrutural):** o payload do Kafka continua trazendo `is_fraud` e
+`fraud_type` (o rótulo do gerador sintético), mas o `_process_batch` os separa do DataFrame antes
+do scoring e os devolve por `transaction_id` no fim. Nenhum detector recebe uma coluna de rótulo.
+
+**Estado curto** (`_load_history`/`_persist_history`): os últimos `STATE_HORIZON_SECONDS` (6 h) de
+eventos, com as colunas que os sinais de janela precisam. Vai para um caminho novo
+(`_stream_state/recent_events/`) porque o Parquet antigo, de 3 colunas, é incompatível.
+
+**Python 3.8:** este módulo e os do Fraud Engine rodam no container do Spark (Python 3.8, sem
+numpy); `tests/unit/test_spark_container_compat.py` vigia isso.
 
 Execução via CLI:
     python -m src.transformation.streaming.stream_processor
@@ -26,6 +38,7 @@ import json
 import os
 import sys
 import tempfile
+from collections.abc import Mapping
 
 from pyspark.sql import Column, DataFrame, SparkSession, Window
 from pyspark.sql import functions as F
@@ -36,6 +49,9 @@ from src.common.config import settings
 from src.common.logger import get_logger
 from src.common.schemas import TRANSACTION_SPARK_SCHEMA
 from src.common.spark_session import create_spark_session
+from src.transformation.fraud.detector import detect
+from src.transformation.fraud.profile import PROFILE_SCHEMA
+from src.transformation.fraud.signals import EVENT_COLUMNS
 
 logger = get_logger("stream_processor")
 
@@ -46,22 +62,33 @@ Z_SCORE_MIN_TRANSACTIONS = 2  # mínimo de transações no histórico p/ calcula
 Z_SCORE_THRESHOLD = 3.0  # |z_score| > limiar => anomalia
 Z_SCORE_SCALE = 6.0  # mapeia |z_score| para [0,1]: |z|=6 => fraud_score=1.0
 WATERMARK_DELAY = "1 hour"
-DEFAULT_FRAUD_TYPE_FALLBACK = "MONEY_LAUNDERING"
-# Identifica o detector que gerou o score/alerta (comparação V1 × V2, issue #43 em diante).
+# Versão do detector antigo (Z-Score), que segue em paralelo como shadow (issue #46). O detector
+# que alerta é o `multisignal-v2` (`src.transformation.fraud.detector.DETECTOR_VERSION`).
 DETECTOR_VERSION = "zscore-v1"
+# Horizonte do estado curto: cobre a maior janela dos sinais (6 h da viagem impossível). O V1 usa 1 h.
+STATE_HORIZON_SECONDS = 6 * 3600
+# Rótulo do gerador sintético: viaja no payload, mas nunca entra no caminho de scoring.
+LABEL_COLUMNS = ("is_fraud", "fraud_type")
 
 # Etapas de um micro-batch, na ordem em que rodam. Cada uma grava um marcador ao concluir
 # (ver `_run_stage`), para que o replay de um batch interrompido pule o que já foi feito.
 _STAGES = ("parquet", "enriched", "alerts", "history")
 PROGRESS_RETENTION_BATCHES = 100  # marcadores de batches mais antigos que isto são apagados
 
-# Schema do estado persistido entre micro-batches (histórico de amount por
-# cliente, usado como baseline da janela deslizante — ver `_enrich_and_score`).
-_HISTORY_SCHEMA = StructType(
+# Schema do estado curto persistido entre micro-batches: as colunas que o detector enxerga
+# (`EVENT_COLUMNS`), dos últimos `STATE_HORIZON_SECONDS`. O Z-Score do V1 só usa customer_id,
+# timestamp e amount; os sinais de janela do V2 usam o resto.
+_STATE_SCHEMA = StructType(
     [
+        StructField("transaction_id", StringType(), True),
         StructField("customer_id", StringType(), True),
         StructField("timestamp", TimestampType(), True),
         StructField("amount", DoubleType(), True),
+        StructField("device_id", StringType(), True),
+        StructField("ip_address", StringType(), True),
+        StructField("latitude", DoubleType(), True),
+        StructField("longitude", DoubleType(), True),
+        StructField("destination_account", StringType(), True),
     ]
 )
 
@@ -81,58 +108,86 @@ def deterministic_alert_id(transaction_id: Column) -> Column:
 
 
 def build_fraud_alerts(scored_df: DataFrame) -> DataFrame:
-    """Constrói o payload de FraudAlert a partir das linhas anômalas de um DataFrame já
+    """Constrói o payload de FraudAlert a partir das linhas alertadas de um DataFrame já
     pontuado. Função pura: usada pelo streaming (`fraud-alerts`) e pelo loader da serving
     layer (`fraud_alerts` no Postgres), que reconstrói os alertas a partir do Parquet.
 
+    Alerta é o que o Fraud Engine (V2) marcou (`is_fraud_predicted`). O `fraud_type` é o **inferido
+    pelos sinais** (`fraud_type_predicted`, nulo se nenhuma regra casou): nunca o rótulo do
+    evento, e não há mais tipo de fallback. O motivo do alerta é a lista dos sinais ativos.
+    O `z_score` é o do detector antigo (shadow) e pode ser nulo.
+
     `processed_at` é o `processing_timestamp` da própria linha (quando existe), então o
     valor é o mesmo no Kafka e no Postgres e não muda com o momento da carga."""
-    anomalies = scored_df.filter(F.col("is_anomaly"))
+    alerted = scored_df.filter(F.col("is_fraud_predicted"))
     processed_at = (
         F.col("processing_timestamp")
         if "processing_timestamp" in scored_df.columns
         else F.current_timestamp()
     )
-    return anomalies.select(
+    signals = F.when(
+        F.size("fraud_signals") > 0, F.array_join("fraud_signals", ", ")
+    ).otherwise(F.lit("nenhum acima de 0,5 (combinação de sinais fracos)"))
+    reason = F.concat(
+        F.lit("Sinais: "),
+        signals,
+        F.lit(" | score "),
+        F.round("fraud_score", 3).cast("string"),
+        F.lit(" | "),
+        F.col("detector_version"),
+    )
+    return alerted.select(
         deterministic_alert_id(F.col("transaction_id")).alias("alert_id"),
         F.col("transaction_id"),
         F.col("customer_id"),
         F.col("timestamp"),
         F.col("amount"),
-        F.coalesce(F.col("fraud_type"), F.lit(DEFAULT_FRAUD_TYPE_FALLBACK)).alias("fraud_type"),
+        F.col("fraud_type_predicted").alias("fraud_type"),
         F.col("fraud_score"),
         F.col("z_score"),
-        F.concat(
-            F.lit("Z-Score "),
-            F.round(F.col("z_score"), 2).cast("string"),
-            F.lit(f" (limiar={Z_SCORE_THRESHOLD}) sobre janela de "),
-            F.lit(str(Z_SCORE_WINDOW_SECONDS // 60)),
-            F.lit(" min por cliente"),
-        ).alias("alert_reason"),
+        reason.alias("alert_reason"),
+        F.col("fraud_signals").alias("signals"),
+        F.col("detector_version"),
         processed_at.alias("processed_at"),
     )
 
 
 class StreamProcessor:
-    """Enriquece `raw-transactions` e detecta anomalias de valor via Z-Score.
+    """Enriquece `raw-transactions` e detecta fraude com o Fraud Engine multi-signal.
 
     Args:
         spark: SparkSession ativa (injetada externamente para facilitar testes).
         dim_customers: DataFrame estático de `gold/dim_customers` para o join de
             enriquecimento (injetado nos testes; carregado lazy em `run()`).
+        profile: DataFrame estático de `gold/customer_behavior_profile` (o perfil de
+            comportamento do batch), lido por broadcast (injetado nos testes; carregado em `run()`).
     """
 
-    def __init__(self, spark: SparkSession, dim_customers: DataFrame | None = None) -> None:
+    def __init__(
+        self,
+        spark: SparkSession,
+        dim_customers: DataFrame | None = None,
+        profile: DataFrame | None = None,
+        weights: Mapping[str, float] | None = None,
+        threshold: float | None = None,
+    ) -> None:
         self.spark = spark
         self._silver = f"s3a://{settings.minio.bucket_silver}"
         self._gold = f"s3a://{settings.minio.bucket_gold}"
         self._checkpoints = f"s3a://{settings.minio.bucket_checkpoints}"
-        self._history_path = f"{self._silver}/_stream_state/customer_amount_history/"
+        self._history_path = f"{self._silver}/_stream_state/recent_events/"
         # Marcadores de progresso ficam no bucket de checkpoints de propósito: apagar o
         # checkpoint (que zera os batch_id) apaga os marcadores junto.
         self._progress_path = f"{self._checkpoints}/stream_processor_progress"
         self._query_id: str | None = None
         self._dim_customers = dim_customers
+        # Perfil de comportamento dos clientes (Gold `customer_behavior_profile`, do batch), lido
+        # por broadcast como o `dim_customers`. `run()` o carrega; sem ele, o V2 fica cego para
+        # tudo que depende de "conhecido" (device, rede, destinatário, valor típico).
+        self._profile = profile
+        # Pesos e limiar do Fraud Engine: por padrão os versionados em `weights.py` (calibrados).
+        self._weights = weights
+        self._threshold = threshold
 
     # ── Leitura e parsing ────────────────────────────────────────────────────────
 
@@ -168,19 +223,18 @@ class StreamProcessor:
         parsed = self._parse_raw_kafka_batch(raw)
         return parsed.withWatermark("timestamp", WATERMARK_DELAY)
 
-    # ── Estado entre micro-batches (histórico de amount por cliente) ────────────
+    # ── Estado curto entre micro-batches (eventos das últimas 6 h) ──────────────
 
     def _load_history(self) -> DataFrame:
-        """Carrega o histórico de amount/timestamp por cliente persistido pelo
-        micro-batch anterior. Ausência do path (primeira execução, ou pós
-        replay do zero) é normal — retorna janela vazia."""
+        """Carrega o estado curto persistido pelo micro-batch anterior. Ausência do path
+        (primeira execução, ou pós replay do zero) é normal — retorna estado vazio."""
         try:
             return self.spark.read.parquet(self._history_path)
         except AnalysisException:
-            logger.info("Nenhum histórico anterior encontrado — janela vazia", path=self._history_path)
+            logger.info("Nenhum estado anterior encontrado — estado vazio", path=self._history_path)
             return self._empty_history_df()
 
-    def _empty_history_df(self) -> DataFrame:
+    def _empty_df(self, schema: StructType) -> DataFrame:
         # Via arquivo (não `spark.createDataFrame([], schema)`) — o caminho de
         # RDD local aciona uma serialização por cloudpickle da função de
         # conversão de linha que sofre de recursão infinita em Python 3.14+.
@@ -189,27 +243,28 @@ class StreamProcessor:
         ) as f:
             tmp_path = f.name
         try:
-            df = self.spark.read.schema(_HISTORY_SCHEMA).json(tmp_path).cache()
+            df = self.spark.read.schema(schema).json(tmp_path).cache()
             df.count()  # força materialização antes de apagar o arquivo (leitura é lazy)
             return df
         finally:
             os.unlink(tmp_path)
 
+    def _empty_history_df(self) -> DataFrame:
+        return self._empty_df(_STATE_SCHEMA)
+
     def _compute_pruned_history(self, current_batch: DataFrame, history: DataFrame) -> DataFrame:
-        """Funde o histórico anterior com o micro-batch atual, podando tudo
-        mais antigo que `Z_SCORE_WINDOW_SECONDS` em relação ao evento mais
-        recente já visto (tempo de evento, não wall-clock — segue correto
-        tanto em tempo real quanto em replay de dados antigos). Função pura:
-        o resultado é o que `_persist_history` grava para o próximo
+        """Funde o estado anterior com o micro-batch atual, podando tudo mais antigo que
+        `STATE_HORIZON_SECONDS` em relação ao evento mais recente já visto (tempo de evento, não
+        wall-clock — segue correto tanto em tempo real quanto em replay de dados antigos).
+        Guarda só as colunas que o detector enxerga (`EVENT_COLUMNS`): o rótulo nunca entra no
+        estado. Função pura: o resultado é o que `_persist_history` grava para o próximo
         micro-batch."""
-        combined = history.select("customer_id", "timestamp", "amount").unionByName(
-            current_batch.select("customer_id", "timestamp", "amount")
-        )
+        combined = history.select(*EVENT_COLUMNS).unionByName(current_batch.select(*EVENT_COLUMNS))
         max_row = combined.agg(F.max("timestamp")).first()
         max_ts = max_row[0] if max_row is not None else None
         if max_ts is None:
             return combined
-        cutoff = max_ts - F.expr(f"INTERVAL {Z_SCORE_WINDOW_SECONDS} SECONDS")
+        cutoff = max_ts - F.expr(f"INTERVAL {STATE_HORIZON_SECONDS} SECONDS")
         return combined.filter(F.col("timestamp") >= cutoff)
 
     def _persist_history(self, current_batch: DataFrame, history: DataFrame) -> None:
@@ -282,6 +337,45 @@ class StreamProcessor:
             df = df.join(F.broadcast(enrichment), on="customer_id", how="left")
 
         return df.withColumn("processing_timestamp", F.current_timestamp())
+
+    def _empty_profile(self) -> DataFrame:
+        return self._empty_df(PROFILE_SCHEMA)
+
+    def _score_batch(self, batch_df: DataFrame, history: DataFrame) -> DataFrame:
+        """Pontua o micro-batch: o Fraud Engine (V2) decide; o Z-Score (V1) segue em paralelo.
+
+        **Separação estrutural do rótulo:** `is_fraud`/`fraud_type` (o rótulo do gerador sintético)
+        saem do DataFrame antes de qualquer detector e só voltam, por `transaction_id`, no fim. Os
+        dois detectores trabalham sobre `features`, que não tem coluna de rótulo nenhuma.
+
+        `batch_df` deve ter `transaction_id` único (o `_process_batch` deduplica), para os joins
+        de volta serem 1:1.
+        """
+        labels_present = [c for c in LABEL_COLUMNS if c in batch_df.columns]
+        labels = batch_df.select("transaction_id", *labels_present)
+        # `fraud_score` do payload é sempre nulo (campo derivado); cada detector calcula o seu.
+        features = batch_df.drop(*labels_present, "fraud_score")
+
+        shadow = self._enrich_and_score(
+            features, history.select("customer_id", "timestamp", "amount")
+        ).withColumnRenamed("fraud_score", "fraud_score_v1")
+
+        profile = self._profile if self._profile is not None else self._empty_profile()
+        engine = detect(
+            features, profile, recent=history, weights=self._weights, threshold=self._threshold
+        ).select(
+            "transaction_id",
+            "fraud_score",
+            "is_fraud_predicted",
+            "fraud_signals",
+            "fraud_type_predicted",
+            "detector_version",
+        )
+        return (
+            shadow.join(F.broadcast(engine), "transaction_id", "left")
+            .join(F.broadcast(labels), "transaction_id", "left")
+            .withColumn("shadow_detector_version", F.lit(DETECTOR_VERSION))
+        )
 
     def _build_fraud_alerts(self, scored_df: DataFrame) -> DataFrame:
         return build_fraud_alerts(scored_df)
@@ -380,13 +474,19 @@ class StreamProcessor:
             logger.info("Micro-batch já concluído (replay após restart) — ignorado", batch_id=batch_id)
             return
 
-        batch_df = batch_df.cache()
+        # `transaction_id` único no micro-batch: o at-least-once do Kafka pode repetir um evento, e
+        # os joins de volta do scoring (V1, V2 e rótulo) precisam ser 1:1.
+        batch_df = batch_df.dropDuplicates(["transaction_id"]).cache()
+        cached = [batch_df]
         try:
             history = self._load_history().cache()
+            cached.append(history)
 
-            scored = self._enrich_and_score(batch_df, history).cache()
+            scored = self._score_batch(batch_df, history).cache()
+            cached.append(scored)
             rows = scored.count()
             alerts = self._build_fraud_alerts(scored).cache()
+            cached.append(alerts)
             alert_count = alerts.count()
 
             def write_alerts() -> None:
@@ -407,20 +507,36 @@ class StreamProcessor:
             self._run_stage(batch_id, "history", lambda: self._persist_history(batch_df, history))
 
             logger.info(
-                "Micro-batch processado", batch_id=batch_id, rows=rows, anomalies=alert_count
+                "Micro-batch processado", batch_id=batch_id, rows=rows, alerts=alert_count
             )
         except Exception:
             logger.exception("Falha ao processar micro-batch", batch_id=batch_id)
             raise
         finally:
-            batch_df.unpersist()
+            # O estado curto é 6 h de eventos: sem liberar o cache a cada trigger a memória cresceria.
+            for df in cached:
+                df.unpersist()
 
     # ── Execução ─────────────────────────────────────────────────────────────────
 
-    def run(self, starting_offsets: str = "latest", trigger_seconds: int = 10):
-        """Inicia a query de streaming. Bloqueia até a query terminar."""
+    def _load_static_inputs(self) -> None:
+        """Carrega as duas tabelas Gold que o detector lê por broadcast, se não foram injetadas."""
         if self._dim_customers is None:
             self._dim_customers = self.spark.read.parquet(f"{self._gold}/dim_customers/")
+        if self._profile is None:
+            path = f"{self._gold}/customer_behavior_profile/"
+            try:
+                self._profile = self.spark.read.parquet(path)
+            except AnalysisException as exc:
+                raise RuntimeError(
+                    f"Perfil de comportamento não encontrado em {path}. Rode o batch antes do "
+                    "streaming (`make spark-submit-silver-gold`): sem ele o detector não conhece "
+                    "device, rede, destinatário nem valor típico de nenhum cliente."
+                ) from exc
+
+    def run(self, starting_offsets: str = "latest", trigger_seconds: int = 10):
+        """Inicia a query de streaming. Bloqueia até a query terminar."""
+        self._load_static_inputs()
 
         stream = self.read_transactions_stream(starting_offsets=starting_offsets)
         query = (

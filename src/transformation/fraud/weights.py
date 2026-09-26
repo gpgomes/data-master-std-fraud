@@ -12,6 +12,8 @@ Calibração: seed 1000, 109,613 eventos avaliados (2,751 fraudes). Objetivo
 (pesos iniciais uniformes de 0.3: recall 0.7605, PR-AUC 0.7632).
 """
 
+from __future__ import annotations
+
 WEIGHTS_VERSION = "seed-1000"
 
 SIGNAL_WEIGHTS: dict[str, float] = {

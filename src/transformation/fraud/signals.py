@@ -126,8 +126,9 @@ def _geo_velocity() -> Column:
         available.append(has)
         impossible.append(has & unreachable)
     any_previous = reduce(lambda a, b: a | b, available)
+    # Sem `zip(..., strict=True)`: o container do Spark roda Python 3.8. Os dois têm o mesmo tamanho.
     all_unreachable = reduce(
-        lambda a, b: a & b, [~has | imp for has, imp in zip(available, impossible, strict=True)]
+        lambda a, b: a & b, [~available[i] | impossible[i] for i in range(GEO_LOOKBACK)]
     )
     return (any_previous & all_unreachable).cast("double")
 
