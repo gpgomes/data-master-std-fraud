@@ -399,10 +399,10 @@ def _limitations() -> str:
             "- **Regime.** Replay com ritmo constante e qualquer cliente pode transacionar a qualquer "
             "hora (`diurnal=False`); o detector V1 não usa hora, então isso não o afeta, mas afeta "
             "sinais como `UNUSUAL_HOUR` no V2.",
-            "- **Viagens legítimas.** Cerca de 1% dos clientes já começa o replay viajando (estado "
+            "- **Viagens legítimas.** Cerca de 1,2% dos clientes já começa o replay viajando (estado "
             "estacionário). Quem viaja fica em trânsito, sem emitir eventos, durante o "
-            "deslocamento, e transaciona na cidade destino por 6 a 48 h; a fração de eventos "
-            "`travel` fica por isso abaixo de 1%.",
+            "deslocamento, e transaciona na cidade destino por 6 a 48 h; a quantidade de eventos "
+            "`travel` está na tabela de hard negatives.",
             "- **Um detector.** Só o V1 é medido aqui. O V2 entra na #45 pela mesma interface "
             "(`Detector`), no mesmo protocolo.",
             "- **Reprodutibilidade.** Mesma configuração e mesmas seeds geram o mesmo documento. "
