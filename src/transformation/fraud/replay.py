@@ -33,6 +33,13 @@ class ReplayConfig:
     # Z-Score; o perfil, na #45). A avaliação usa só o que vem depois.
     warmup_minutes: int = 60
     start: datetime = datetime(2026, 3, 2, 12, 0, tzinfo=UTC)
+    # Ritmo diurno: o volume segue o horário ativo dos clientes. Precisa de uma janela que passe
+    # pela madrugada para exercitar o `UNUSUAL_HOUR` (a padrão, 4 h ao meio-dia, não passa).
+    diurnal: bool = False
+    # Histórico de batch (o que alimenta o perfil), da mesma seed e dos mesmos clientes: só os
+    # detectores com perfil (V2) o usam. ~60 eventos por cliente em 180 dias, como o seed-data.
+    history_transactions: int = 60_000
+    history_days: int = 180
 
     @property
     def cutoff(self) -> datetime:
@@ -48,7 +55,9 @@ class ReplayDataset:
     truth: dict[str, dict[str, Any]]
     cutoff: datetime
     label: str = ""
-    extra: dict[str, Any] = field(default_factory=dict)
+    # Clientes do dataset e o histórico de batch deles (vazio até `attach_history`).
+    customers: list[dict[str, Any]] = field(default_factory=list)
+    history: list[dict[str, Any]] = field(default_factory=list)
 
 
 def simulate_stream(seed: int, cfg: ReplayConfig) -> ReplayDataset:
@@ -60,7 +69,7 @@ def simulate_stream(seed: int, cfg: ReplayConfig) -> ReplayDataset:
     """
     gen = DataGenerator(seed=seed)
     customers = gen.generate_customers(cfg.n_customers, reference_date=cfg.start.date())
-    stream = TransactionStream(gen, customers, record_ground_truth=True)
+    stream = TransactionStream(gen, customers, diurnal=cfg.diurnal, record_ground_truth=True)
 
     step = 1.0 / cfg.rate_tps
     events: list[dict[str, Any]] = []
@@ -71,7 +80,25 @@ def simulate_stream(seed: int, cfg: ReplayConfig) -> ReplayDataset:
     # Ordem estável por timestamp ISO (formato uniforme "+00:00": lexicográfica = cronológica).
     events.sort(key=lambda e: e["timestamp"])
     truth = {row["transaction_id"]: row for row in stream.ground_truth}
-    return ReplayDataset(seed, events, truth, cfg.cutoff, label="stream")
+    return ReplayDataset(seed, events, truth, cfg.cutoff, label="stream", customers=customers)
+
+
+def simulate_history(seed: int, cfg: ReplayConfig) -> list[dict[str, Any]]:
+    """Histórico de batch dos mesmos clientes do replay (mesma seed), até o início do replay.
+
+    Os clientes e seus perfis de comportamento são determinísticos por `seed + customer_id`, então
+    o histórico e o replay descrevem as mesmas pessoas. O RNG dos eventos é reiniciado com outra
+    seed para os `transaction_id` do histórico não colidirem com os do replay.
+    """
+    gen = DataGenerator(seed=seed)
+    customers = gen.generate_customers(cfg.n_customers, reference_date=cfg.start.date())
+    gen.reseed_events(seed + 500_000)
+    return gen.generate_transactions(
+        customers,
+        n=cfg.history_transactions,
+        start_date=cfg.start - timedelta(days=cfg.history_days),
+        end_date=cfg.start,
+    )
 
 
 def simulate_batch(
@@ -83,4 +110,4 @@ def simulate_batch(
     start = end - timedelta(days=days)
     events = gen.generate_transactions(customers, n=n_transactions, start_date=start, end_date=end)
     truth = {row["transaction_id"]: row for row in gen.last_ground_truth}
-    return ReplayDataset(seed, events, truth, start, label="batch")
+    return ReplayDataset(seed, events, truth, start, label="batch", customers=customers)
