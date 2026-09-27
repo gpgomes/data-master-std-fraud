@@ -28,6 +28,10 @@ CONTAINER_MODULES = [
     "src/transformation/fraud/detector.py",
     "src/transformation/fraud/weights.py",
     "src/transformation/streaming/stream_processor.py",
+    "src/transformation/streaming/metrics_listener.py",
+    "src/observability/__init__.py",
+    "src/observability/store.py",
+    "src/common/config.py",
     "src/transformation/batch/silver_to_gold.py",
 ]
 HEAVY_PACKAGES = {"numpy", "pandas", "scipy", "sklearn", "matplotlib"}

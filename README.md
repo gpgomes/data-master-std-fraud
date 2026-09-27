@@ -215,6 +215,9 @@ make fraud-eval                # Avaliar Z-Score V1 × Fraud Engine V2 offline (
 make fraud-calibrate           # Recalibrar pesos e limiar do V2 na seed de validação → src/transformation/fraud/weights.py
 make fraud-online-eval         # Benchmark online V1 × V2 (SQL sobre stream_scored_transactions, com o streaming já carregado no Postgres)
 
+# Observabilidade
+make slo-report                # SLOs das últimas 24 h (stream, DAGs, quality gates, API): OK / VIOLADO / SEM DADOS
+
 # Limpeza
 make clean                     # Limpar volumes Docker, dados temporários e artefatos de build
 make clean-data                # Limpar só os dados gerados (mantém os containers)
@@ -255,6 +258,14 @@ O detector do streaming é o **Fraud Engine** (`src/transformation/fraud/`): dez
 | **Fraud Engine V2, online (18.170 eventos)** | 60,0% | 91,3% | 72,4% | 1,10% |
 
 Latência evento → processamento no V2: p50 6,0 s, p95 10,5 s (o teto é o trigger de 10 s). **Ressalva:** o dado é sintético e o gerador injeta as assinaturas que o detector procura (toda a fraude vai para um destinatário novo); o número que importa é o relativo, e o relatório dimensiona a circularidade. Reprodução: `make fraud-eval` (offline, [`docs/fraud_evaluation.md`](docs/fraud_evaluation.md)) e `make fraud-online-eval` (online). Como cada parte funciona: [`docs/architecture.md`](docs/architecture.md#detecção-de-fraude-fraud-engine); perguntas de banca respondidas com esses números: [`docs/fraud_engine_perguntas_banca.md`](docs/fraud_engine_perguntas_banca.md).
+
+## Observabilidade da plataforma
+
+Além do dashboard de negócio, a plataforma registra a própria saúde (issue #55): o stream grava uma linha por
+micro-batch (latência, duração, throughput, lag do Kafka, tamanho do estado), as DAGs uma por execução, o Great
+Expectations uma por gate e a API uma por request, em tabelas do mesmo Postgres. Um segundo dashboard no Superset,
+**Platform Health**, mostra as séries, e `make slo-report` diz se cada SLO está dentro da meta. Sem Prometheus nem
+Grafana: nenhum container novo. Detalhes e metas: [`docs/runbook.md`](docs/runbook.md#observabilidade-e-slos-issue-55).
 
 ## Detalhamento dos Dados
 

@@ -17,12 +17,44 @@ from src.common.config import settings
 from src.common.logger import get_logger
 from src.serving.dashboards.charts import CHARTS, DATASETS, ChartDef
 from src.serving.dashboards.client import SupersetClient
+from src.serving.dashboards.platform_charts import (
+    PLATFORM_CHARTS,
+    PLATFORM_DASHBOARD_SLUG,
+    PLATFORM_DASHBOARD_TITLE,
+    PLATFORM_DATASETS,
+    PLATFORM_ROW_SIZES,
+)
 
 logger = get_logger("superset_dashboards")
 
 DASHBOARD_TITLE = "Fraude e Transacoes - Visao Geral"
 DASHBOARD_SLUG = "fraude-transacoes-visao-geral"
 DATABASE_NAME = "fraud_analytics"
+# 4 KPIs, 2 séries temporais, a pizza, e as 2 linhas do streaming (issue #38)
+FRAUD_ROW_SIZES = (4, 2, 1, 2, 2)
+
+
+@dataclass(frozen=True)
+class DashboardSpec:
+    title: str
+    slug: str
+    charts: tuple
+    datasets: tuple
+    row_sizes: tuple
+    native_filters: bool  # os filtros de período/tipo de transação só valem no dashboard de fraude
+
+
+DASHBOARDS = (
+    DashboardSpec(DASHBOARD_TITLE, DASHBOARD_SLUG, CHARTS, DATASETS, FRAUD_ROW_SIZES, True),
+    DashboardSpec(
+        PLATFORM_DASHBOARD_TITLE,
+        PLATFORM_DASHBOARD_SLUG,
+        PLATFORM_CHARTS,
+        PLATFORM_DATASETS,
+        PLATFORM_ROW_SIZES,
+        False,
+    ),
+)
 
 
 @dataclass
@@ -59,11 +91,13 @@ def ensure_dataset(client: SupersetClient, database_id: int, table_name: str) ->
     return dataset_id
 
 
-def ensure_dashboard(client: SupersetClient) -> int:
-    existing = client.find_one("/api/v1/dashboard/", {"dashboard_title": DASHBOARD_TITLE})
+def ensure_dashboard(
+    client: SupersetClient, title: str = DASHBOARD_TITLE, slug: str = DASHBOARD_SLUG
+) -> int:
+    existing = client.find_one("/api/v1/dashboard/", {"dashboard_title": title})
     if existing:
         return int(existing["id"])
-    resp = client.post("/api/v1/dashboard/", {"dashboard_title": DASHBOARD_TITLE, "slug": DASHBOARD_SLUG})
+    resp = client.post("/api/v1/dashboard/", {"dashboard_title": title, "slug": slug})
     dashboard_id = int(resp.json()["id"])
     logger.info("Dashboard Superset criado", id=dashboard_id)
     return dashboard_id
@@ -92,11 +126,10 @@ def ensure_chart(client: SupersetClient, chart_def: ChartDef, dataset_id: int, d
     return chart_id
 
 
-def _build_position_json(chart_ids: list[int]) -> dict:
-    """Layout simples: 4 KPIs numa linha, os 2 gráficos de série temporal
-    numa segunda, a pizza de distribuição numa terceira e, abaixo, os 2 KPIs e os
-    2 gráficos do streaming (issue #38)."""
-    sizes = (4, 2, 1, 2, 2)
+def _build_position_json(chart_ids: list[int], sizes: tuple = FRAUD_ROW_SIZES) -> dict:
+    """Layout em linhas: `sizes` diz quantos charts vão em cada linha, na ordem. No dashboard de
+    fraude: 4 KPIs, as 2 séries temporais, a pizza e, abaixo, os 2 KPIs e os 2 gráficos do
+    streaming (issue #38)."""
     rows, start = [], 0
     for size in sizes:
         rows.append(chart_ids[start : start + size])
@@ -172,13 +205,19 @@ def _build_native_filters(dataset_ids: dict[str, int]) -> list[dict]:
 
 
 def finalize_dashboard(
-    client: SupersetClient, dashboard_id: int, chart_ids: list[int], dataset_ids: dict[str, int]
+    client: SupersetClient,
+    dashboard_id: int,
+    chart_ids: list[int],
+    dataset_ids: dict[str, int],
+    sizes: tuple = FRAUD_ROW_SIZES,
+    native_filters: bool = True,
 ) -> None:
     import json as json_module
 
-    metadata = {"native_filter_configuration": _build_native_filters(dataset_ids)}
+    filters = _build_native_filters(dataset_ids) if native_filters else []
+    metadata = {"native_filter_configuration": filters}
     payload = {
-        "position_json": json_module.dumps(_build_position_json(chart_ids)),
+        "position_json": json_module.dumps(_build_position_json(chart_ids, sizes)),
         "json_metadata": json_module.dumps(metadata),
         "published": True,  # sem isto o Superset exibe o selo "Draft" no dashboard
     }
@@ -215,36 +254,49 @@ def verify_chart(client: SupersetClient, chart_def: ChartDef, dataset_id: int) -
     return VerificationResult(chart_def.slice_name, True, f"{result['rowcount']} linha(s), ex.: {result['data'][0]}")
 
 
-def provision_all(verify: bool = False) -> dict:
-    client = SupersetClient()
-
-    database_id = ensure_database(client)
-    dataset_ids = {table: ensure_dataset(client, database_id, table) for table in DATASETS}
-    dashboard_id = ensure_dashboard(client)
+def _provision_dashboard(
+    client: SupersetClient, database_id: int, spec: DashboardSpec, verify: bool
+) -> dict:
+    dataset_ids = {table: ensure_dataset(client, database_id, table) for table in spec.datasets}
+    dashboard_id = ensure_dashboard(client, spec.title, spec.slug)
 
     chart_ids: list[int] = []
-    chart_ids_by_dataset: dict[str, int] = {}
-    for chart_def in CHARTS:
-        dataset_id = dataset_ids[chart_def.dataset_table]
-        chart_id = ensure_chart(client, chart_def, dataset_id, dashboard_id)
-        chart_ids.append(chart_id)
-        chart_ids_by_dataset[chart_def.slice_name] = dataset_id
-
-    finalize_dashboard(client, dashboard_id, chart_ids, dataset_ids)
+    for chart_def in spec.charts:
+        chart_ids.append(
+            ensure_chart(client, chart_def, dataset_ids[chart_def.dataset_table], dashboard_id)
+        )
+    finalize_dashboard(
+        client, dashboard_id, chart_ids, dataset_ids, spec.row_sizes, spec.native_filters
+    )
 
     verification: list[VerificationResult] = []
     if verify:
-        for chart_def in CHARTS:
-            result = verify_chart(client, chart_def, chart_ids_by_dataset[chart_def.slice_name])
+        for chart_def in spec.charts:
+            result = verify_chart(client, chart_def, dataset_ids[chart_def.dataset_table])
             verification.append(result)
             log = logger.info if result.ok else logger.error
             log("Verificacao de chart", slice_name=result.slice_name, ok=result.ok, detail=result.detail)
 
     return {
-        "database_id": database_id,
         "dataset_ids": dataset_ids,
         "dashboard_id": dashboard_id,
         "chart_ids": chart_ids,
-        "dashboard_url": f"{client.base_url}/superset/dashboard/{DASHBOARD_SLUG}/",
+        "dashboard_url": f"{client.base_url}/superset/dashboard/{spec.slug}/",
         "verification": verification,
+    }
+
+
+def provision_all(verify: bool = False) -> dict:
+    """Provisiona os dois dashboards: KPIs de fraude (issue #16) e Platform Health (issue #55)."""
+    client = SupersetClient()
+    database_id = ensure_database(client)
+    results = [_provision_dashboard(client, database_id, spec, verify) for spec in DASHBOARDS]
+    return {
+        "database_id": database_id,
+        "dataset_ids": {k: v for r in results for k, v in r["dataset_ids"].items()},
+        "dashboard_id": results[0]["dashboard_id"],
+        "chart_ids": [c for r in results for c in r["chart_ids"]],
+        "dashboard_url": results[0]["dashboard_url"],
+        "dashboard_urls": [r["dashboard_url"] for r in results],
+        "verification": [v for r in results for v in r["verification"]],
     }

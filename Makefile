@@ -2,7 +2,7 @@
         spark-submit-batch spark-submit-stream spark-submit-silver-gold spark-submit-gold-postgres \
         spark-submit-stream-postgres \
         seed-data producer-transactions producer-market api catalog dashboards dashboards-export \
-        fraud-eval fraud-calibrate fraud-online-eval \
+        fraud-eval fraud-calibrate fraud-online-eval slo-report \
         clean clean-data logs ps help
 
 # ── Variáveis ──────────────────────────────────────────────────────────────────
@@ -129,6 +129,9 @@ fraud-calibrate: ## Calibra os pesos e o limiar do detector multi-signal na seed
 
 fraud-online-eval: ## Benchmark online V1 x V2 (SQL sobre stream_scored_transactions; requer o streaming rodado e make spark-submit-stream-postgres)
 	$(COMPOSE) exec -T postgres psql -U $(POSTGRES_USER) -d $(POSTGRES_DB) -v ON_ERROR_STOP=1 < src/serving/queries/fraud_online_benchmark.sql
+
+slo-report: ## Relatório de SLOs da plataforma nas últimas 24 h (stream, pipeline, gates e API; issue #55)
+	$(COMPOSE) exec -T postgres psql -U $(POSTGRES_USER) -d $(POSTGRES_DB) -v ON_ERROR_STOP=1 < src/serving/queries/slo_report.sql
 
 dashboards: ## Provisiona o dashboard Superset de KPIs de fraude/transações (requer make up + dados no Postgres)
 	$(PYTHON) -m scripts.provision_superset_dashboards --verify --strict

@@ -239,6 +239,39 @@ peso calibrado em `src/transformation/fraud/weights.py`. Aparece em `fraud_signa
 | `GEO_VELOCITY` | nenhum dos últimos 5 eventos (6 h) é uma origem plausível (≤ 900 km/h ou ≤ 100 km) | Janela curta |
 | `RECIPIENT_CONCENTRATION` | 3 ou mais remetentes para a mesma conta em 1 h | Janela curta |
 
+## Observabilidade da plataforma (issue #55)
+
+Tabelas **append-only** no Postgres da serving layer (`src/observability/schema.sql`), criadas na primeira
+gravação. Timestamps em UTC, sem fuso. Não é dado de negócio: é o que responde "a plataforma está saudável?".
+
+### stream_batch_metrics
+Uma linha por micro-batch do stream (PK `query_id`, `batch_id`: o replay reescreve a linha).
+
+| Coluna | Tipo | Descrição |
+|--------|------|-----------|
+| query_id, run_id | string | Id do checkpoint e da execução (um `run_id` novo a cada reinício) |
+| batch_id, batch_timestamp | long, timestamp | Micro-batch e quando começou (Spark) |
+| num_input_rows | long | Linhas lidas do Kafka |
+| input_rows_per_second, processed_rows_per_second | double | Taxa de chegada × taxa de processamento |
+| batch_duration_ms, add_batch_ms, get_offset_ms | long | Duração total, do `foreachBatch` e da consulta de offsets |
+| kafka_lag | long | Soma, por partição, de (último offset disponível − offset processado) |
+| rows_scored, alerts | long | Linhas pontuadas (após deduplicar por `transaction_id`) e alertas do V2 |
+| state_rows | long | Linhas do estado curto de 6 h lidas no micro-batch |
+| latency_p50_s, latency_p95_s, latency_max_s | double | Latência evento → processamento (`processing_timestamp − produced_at`) dentro do micro-batch |
+
+### pipeline_runs
+Uma linha por execução de DAG (PK `dag_id`, `run_id`): `state` (`success`/`failed`), `start_date`, `end_date`,
+`duration_seconds` e `failed_tasks` (lista separada por vírgula).
+
+### quality_gate_runs
+Uma linha por execução de gate do Great Expectations: `dataset`, `success`, `total_expectations`,
+`failed_expectations`, `optional` (gates de mercado) e `run_at`. Gate opcional sem dados aparece com
+`success = false` e contagens nulas.
+
+### api_requests
+Uma linha por request: `requested_at`, `method`, `route` (o template da rota, sem ids; `unmatched` para URL
+inexistente), `status_code` e `duration_ms`.
+
 ## Glossário de Negócio
 
 | Termo | Definição |
@@ -251,6 +284,7 @@ peso calibrado em `src/transformation/fraud/weights.py`. Aparece em `fraud_signa
 | **Perfil de Comportamento** | O que é "normal" para um cliente (valor típico, devices, redes, destinatários, horário, local), calculado pelo batch em `gold/customer_behavior_profile/` e lido por broadcast pelo streaming |
 | **Shadow Scoring** | Rodar um detector novo e o antigo sobre os mesmos eventos, com só o novo alertando, para comparar os dois online sem risco |
 | **Rótulo (ground truth)** | `is_fraud`/`fraud_type` do gerador sintético. Serve para medir o detector, que nunca o lê. Não é a decisão do detector: essa está em `is_fraud_predicted`/`fraud_type_predicted` |
+| **SLO** | *Service Level Objective*: meta mensurável de um indicador da plataforma numa janela (ex.: latência p95 do stream < 12 s nas últimas 24 h). No projeto: `make slo-report` (issue #55) |
 | **Velocity Check** | Verificação de frequência anormal de transações em curto intervalo |
 | **Account Takeover** | Acesso não autorizado e operações em conta alheia |
 | **Smurfing** | Fragmentação de grandes valores em transações menores para evitar detecção |

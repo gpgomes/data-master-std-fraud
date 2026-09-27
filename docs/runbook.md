@@ -474,6 +474,61 @@ Edite `CHARTS` em `src/serving/dashboards/charts.py` (cada `ChartDef` tem
 usado pelo smoke test do `--verify` — mantenha os dois coerentes) e rode
 `pytest tests/unit/test_dashboards.py`, depois `make dashboards`.
 
+## Observabilidade e SLOs (issue #55)
+
+O Superset do dashboard de fraude mostra o **negócio**. A saúde da **plataforma** fica em quatro tabelas
+append-only no mesmo Postgres (`src/observability/schema.sql`), num segundo dashboard e num relatório de
+SLOs:
+
+| Tabela | Quem grava | Uma linha por |
+|---|---|---|
+| `stream_batch_metrics` | `StreamMetricsListener` (um `StreamingQueryListener` no driver do stream) | micro-batch: linhas/s de entrada e processadas, duração total e do `foreachBatch`, lag do Kafka, linhas pontuadas, alertas, tamanho do estado curto, latência p50/p95/máx evento → processamento |
+| `pipeline_runs` | task `record_pipeline_run` das duas DAGs (`trigger_rule="all_done"`) | execução de DAG: estado, duração, tasks que falharam |
+| `quality_gate_runs` | `runner.run_gate` do Great Expectations | execução de gate: sucesso, expectativas avaliadas e com falha, se é opcional |
+| `api_requests` | middleware da FastAPI, **depois** de enviar a resposta | request: método, rota (o template, `/transactions/{transaction_id}`, sem ids), status, duração |
+
+As tabelas são criadas na primeira gravação de cada processo. **Métrica nunca derruba o pipeline:** Postgres
+fora ou credencial errada viram um warning `Métrica de plataforma não gravada` no log e o dado é descartado.
+Para desligar: `OBSERVABILITY_ENABLED=false` (os testes unitários desligam sozinhos). Timestamps em **UTC**
+(o Postgres do projeto roda em `America/Sao_Paulo`; os `DEFAULT` usam `now() AT TIME ZONE 'UTC'`).
+
+```bash
+make dashboards     # provisiona os dois dashboards; o novo é http://localhost:8088/superset/dashboard/platform-health/
+make slo-report     # SLOs das últimas 24 h: OK / VIOLADO / SEM DADOS
+```
+
+**SLOs** (metas para o ambiente local; a meta de latência mais agressiva, p95 < 5 s, é o alvo da #56):
+
+| SLO | Meta | Fonte |
+|---|---|---|
+| Stream: latência evento → processamento p95 | < 12 s (o trigger é 10 s) | `stream_batch_metrics.latency_p95_s` |
+| Stream: lag máximo do Kafka | < 10.000 eventos | `stream_batch_metrics.kafka_lag` |
+| Stream: duração do micro-batch p95 | < 10 s (acima disso o stream acumula atraso) | `stream_batch_metrics.batch_duration_ms` |
+| Pipeline: quality gates obrigatórios verdes | 100% | `quality_gate_runs` (opcionais fora) |
+| Pipeline: toda DAG executada tem ao menos um sucesso | 100% | `pipeline_runs` |
+| API: latência p95 | < 500 ms | `api_requests.duration_ms` |
+| API: erros 5xx | < 1% | `api_requests.status_code` |
+
+**Como ler:**
+
+- **SEM DADOS** não é OK: o componente não rodou na janela (stream parado, DAG pausada, API sem tráfego).
+- **Os primeiros micro-batches depois de subir o stream** processam o que se acumulou no Kafka enquanto ele
+  estava parado, e sua latência (e duração) é alta por construção. Com poucos micro-batches na janela, eles
+  dominam o p95. Para separar partida de regime:
+  `... row_number() OVER (PARTITION BY run_id ORDER BY batch_id) > 3` (cada reinício tem um `run_id` novo).
+- **Carga concorrente** no mesmo Docker (DAG de ingestão, jobs Spark, provisionamento do Superset) derruba a
+  latência do stream: o cluster local tem 4 cores. Meça o stream sozinho.
+- **Lag 0 com latência de 10 s** é o esperado: o Spark lê tudo o que chegou até o trigger; o lag só cresce
+  quando o micro-batch demora mais que o trigger.
+- **Gate que falhou e passou no retry:** as duas execuções ficam em `quality_gate_runs`; o SLO olha todas.
+- **`numInputRows` = `rows_scored`**: antes da #55 o `isEmpty()` no micro-batch cru relia o Kafka e o Spark
+  contava 1 linha a mais por batch; agora o micro-batch é cacheado antes do `isEmpty()`.
+
+**Tabelas criadas numa versão anterior desta issue** (só no ambiente de quem testou antes do merge) podem ter
+`DEFAULT now()` em hora local; `CREATE TABLE IF NOT EXISTS` não corrige. Ajuste com
+`ALTER TABLE ... ALTER <coluna> SET DEFAULT (now() AT TIME ZONE 'UTC')` ou apague as quatro tabelas (são só
+métricas).
+
 ## CI (GitHub Actions)
 
 `.github/workflows/ci.yml` roda em todo push/PR para `main`: job `lint` (`ruff check` + `mypy`) e job `test` (`pytest tests/unit/`, Java 17 + Python 3.11, gate de cobertura ≥70%). Reproduza o gate localmente antes de abrir PR:

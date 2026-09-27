@@ -60,6 +60,7 @@ make api                       # Start FastAPI dev server at :8000
 make catalog                   # Generate docs/data_catalog.md + docs/images/data_lineage.svg, validate datasets against live infra
 make fraud-eval                # Evaluate the fraud detectors (V1 Z-Score vs V2 multi-signal; Precision/Recall/FPR, local Spark, no Docker) and generate docs/fraud_evaluation.md
 make fraud-calibrate           # Recalibrate the V2 weights/threshold on the validation seed and write src/transformation/fraud/weights.py
+make slo-report                # Platform SLOs over the last 24 h (src/serving/queries/slo_report.sql over the observability tables): OK / VIOLATED / NO DATA
 make fraud-online-eval         # Online V1 vs V2 benchmark: SQL (src/serving/queries/fraud_online_benchmark.sql) over stream_scored_transactions; needs the stream run + make spark-submit-stream-postgres
 make dashboards                # Provision Superset dashboard (KPIs), smoke-test against live infra
 make dashboards-export         # Snapshot the provisioned dashboard to dashboards/superset/dashboard_configs/
@@ -105,7 +106,8 @@ The fraud labels (`is_fraud`, `fraud_type`) travel in the Kafka payload but are 
 | Batch data collectors | `src/ingestion/batch/` |
 | FastAPI app | `src/serving/api/main.py` |
 | Gold→Postgres loader | `src/serving/loaders/` |
-| Superset dashboard provisioning | `src/serving/dashboards/` |
+| Superset dashboard provisioning (fraud KPIs + Platform Health) | `src/serving/dashboards/` |
+| Platform metrics (MetricsStore, schema, DAG run recording); stream listener in `src/transformation/streaming/metrics_listener.py` | `src/observability/` |
 | Great Expectations suites | `src/governance/great_expectations/` |
 | Data catalog (registry, validation, render) | `src/governance/data_catalog/` |
 | Airflow DAGs | `dags/` |

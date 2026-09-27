@@ -25,6 +25,7 @@ from src.governance.great_expectations.checkpoints import (
 from src.governance.great_expectations.context import get_context
 from src.governance.great_expectations.datasets import DATASET_KEYS, load_dataframe
 from src.governance.great_expectations.suites import ensure_suites
+from src.observability.store import MetricsStore
 
 logger = get_logger("great_expectations")
 
@@ -93,6 +94,10 @@ def run_gate(
     result = checkpoint.run(batch_request=batch_request)
 
     metrics = _log_result(dataset_key, result)
+    # Histórico de gates para o dashboard de saúde e o `make slo-report` (#55); nunca bloqueia.
+    MetricsStore().record_quality_gate(
+        {**metrics, "optional": dataset_key in OPTIONAL_DATASETS}
+    )
 
     try:
         context.build_data_docs()
@@ -124,6 +129,10 @@ def run_gate_optional(
     try:
         return run_gate(dataset_key, df=df, context=context)
     except (QualityGateFailed, FileNotFoundError) as exc:
+        if isinstance(exc, FileNotFoundError):  # sem dados: o gate nem rodou, registra a ausência
+            MetricsStore().record_quality_gate(
+                {"dataset": dataset_key, "success": False, "optional": True}
+            )
         logger.warning(
             "Gate opcional falhou — não bloqueia o pipeline "
             "(enriquecimento via API de terceiros instável, fora do nosso controle)",

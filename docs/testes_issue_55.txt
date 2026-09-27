@@ -1,0 +1,111 @@
+================================================================================
+CHECKLIST DE TESTES — Observabilidade: métricas de plataforma, Platform Health e SLOs (issue #55)
+================================================================================
+
+Decisões (tomadas com o usuário durante a implementação):
+  1. Postgres + Superset, não Prometheus + Grafana: nenhum container novo.
+  2. Stream: StreamingQueryListener no driver → Postgres (1 linha por micro-batch).
+  3. Escopo: stream, pipeline (DAGs e gates do GX), API e SLOs com relatório.
+  4. SLOs "realistas para o local": stream p95 < 12 s, lag < 10.000, duração do
+     micro-batch p95 < 10 s, gates obrigatórios 100%, DAGs com sucesso, API p95 < 500 ms,
+     5xx < 1%. A meta de 5 s do expert fica como alvo da #56.
+  5. API: middleware que grava depois de enviar a resposta (BackgroundTask).
+  6. Dashboard novo ("Platform Health"), separado do de fraude.
+
+Arquivos novos:
+  src/observability/{__init__,store,pipeline}.py, src/observability/schema.sql
+  src/transformation/streaming/metrics_listener.py
+  src/serving/dashboards/platform_charts.py
+  src/serving/queries/slo_report.sql
+  tests/unit/test_observability.py (46 testes)
+
+Modificados: stream_processor.py (estatísticas por batch, listener, cache antes do isEmpty),
+runner.py do GX, as duas DAGs (task record_pipeline_run), api/main.py (middleware),
+dashboards/provision.py (dois dashboards), config.py (OBSERVABILITY_ENABLED), catálogo
+(5 entradas novas), Makefile (slo-report), docs.
+
+================================================================================
+1. TESTES UNITÁRIOS
+================================================================================
+
+  make lint        # ruff + mypy limpos
+  make test-unit   # 876 passed (810 + 66), cobertura 89,0%
+
+  - MetricsStore: desligado não conecta; cria o schema uma vez; ordem dos parâmetros;
+    upsert por (query_id, batch_id) e (dag_id, run_id); falha de conexão ou de insert
+    nunca levanta e fecha a conexão.
+  - Listener: lag por partição (nunca negativo; partição não processada ignorada; offsets
+    desconhecidos = nulo); progresso → linha; estatísticas consumidas por batch_id; progresso
+    malformado não levanta.
+  - DAGs (estático, sem Airflow no venv): record_pipeline_run é all_done e NÃO fica a jusante
+    do notify_completion (se ficasse, seria a única folha e uma DAG com falha terminaria como
+    sucesso).
+  - API: rota gravada como template (`/transactions/{transaction_id}`, sem o id), 404 e URL
+    inexistente (`unmatched`); desligado não grava.
+  - Stream: `_process_batch` deixa rows/alerts/state_rows por batch; latência com e sem
+    `produced_at`; o `isEmpty()` é chamado no DataFrame cacheado, não no cru.
+  - Dashboard: charts leem tabelas do schema de métricas, todos opcionais, nomes únicos entre
+    os dois dashboards; SLO report só lê e usa as metas escolhidas.
+  - conftest: fixture autouse desliga as métricas em todos os testes unitários.
+
+================================================================================
+2. VERIFICAÇÃO NO DOCKER
+================================================================================
+
+2.1 API (uvicorn no host, 200 requests em 5 rotas): 5 linhas agregadas em api_requests,
+    `/transactions/{transaction_id}` com 404, p95 de 0,9 ms (/health/live) a 93,9 ms
+    (/transactions).
+
+2.2 GX: gate do perfil pelo CLI no host e gates da DAG de ingestão gravados em
+    quality_gate_runs (34 expectativas no perfil; mercado como opcional sem dados).
+
+2.3 DAG batch_ingestion_pipeline disparada: `airflow tasks list` mostra
+    record_pipeline_run; duas execuções gravadas em pipeline_runs (success, 107 s e 389 s).
+
+2.4 Stream + producer em container: uma linha por micro-batch em stream_batch_metrics.
+
+2.5 `make dashboards`: 22 charts verificados (11 do Platform Health com dados reais: latência,
+    duração, lag, throughput, execuções de DAG, gates com falha, API p95, 5xx, requests/min).
+
+2.6 `make catalog`: exit 0, 26 datasets.
+
+================================================================================
+3. ACHADOS DURANTE A VALIDAÇÃO
+================================================================================
+
+3.1 numInputRows inflado em 1 por micro-batch. As métricas mostraram input = pontuadas + 1 em
+    todo batch. O Parquet tinha exatamente as pontuadas e o Kafka não tinha duplicatas nem
+    mensagens inválidas (600 mensagens conferidas). Causa: `isEmpty()` no DataFrame cru relia
+    o Kafka só para testar se havia dado, e o Spark somava essa leitura. Correção: cachear o
+    micro-batch (já deduplicado) antes do `isEmpty()`. Depois: 3.253 lidas = 3.253 pontuadas.
+
+3.2 Fuso horário: o Postgres roda em America/Sao_Paulo, então `DEFAULT now()` gravava hora
+    local enquanto o Spark e o Airflow gravam UTC. Todos os DEFAULT viraram
+    `now() AT TIME ZONE 'UTC'` e o relatório usa a mesma janela em UTC.
+
+3.3 Um gate `bronze_transactions` falhou (freshness) numa execução agendada. Causa: eu rodei
+    `git checkout` dos JSON do GX (com a janela de 23/09) enquanto a task do Airflow estava
+    entre montar a suite e rodar o checkpoint. O retry passou. Não é defeito de código, mas
+    mostra que suites compartilhadas em disco e reescritas a cada execução podem se atropelar
+    entre execuções concorrentes (registrado; fora do escopo).
+
+3.4 Carga concorrente derruba o stream: com a DAG de ingestão, um job Spark e o Superset
+    rodando junto, a latência p95 foi 26,5 s e a duração do micro-batch 22,9 s (acima do
+    trigger). Sozinho (seção 4), 11,5 s e 8,5 s.
+
+================================================================================
+4. RODADA LIMPA E SLOs
+================================================================================
+
+Stream + producer em container, sem nenhuma outra carga, 37 micro-batches (~6 min):
+  latência p95 (p95 por batch, após os 3 primeiros)  11,51 s   (meta < 12 s: OK)
+  duração do micro-batch p95                         8,49 s    (meta < 10 s: OK)
+  lag máximo                                         0
+  linhas/s: entrada 8,8, processadas 14,0; estado curto até 3.165 linhas
+  entrada 3.253 = pontuadas 3.253
+
+`make slo-report` sobre a janela inteira (com as execuções concorrentes e os reinícios):
+  stream p95 26,73 s e duração 23,10 s VIOLADO (dominados pela carga concorrente e pelos
+  primeiros batches após cada reinício); lag OK; gates 75% VIOLADO (a falha do 3.3); DAGs 1
+  de 1 OK; API p95 60,7 ms OK; 5xx 0% OK. É o comportamento esperado do relatório: ele mostra
+  a janela como ela foi, e o runbook explica como separar partida de regime.

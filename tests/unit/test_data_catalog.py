@@ -132,6 +132,7 @@ class TestRenderMarkdown:
             "Perfil de Comportamento",
             "Shadow Scoring",
             "Rótulo (ground truth)",
+            "SLO",
         }
         used_terms = {term for entry in CATALOG for term in entry.glossary_terms}
         assert used_terms.issubset(known_terms)
@@ -140,7 +141,16 @@ class TestRenderMarkdown:
 class TestOptionalAssets:
     def test_only_market_and_streaming_output_are_optional(self):
         optional = {e.key for e in CATALOG if e.optional}
-        assert optional == {"bronze_market_data", "silver_market_data", "silver_transactions_stream"}
+        assert optional == {
+            "bronze_market_data",
+            "silver_market_data",
+            "silver_transactions_stream",
+            # métricas de plataforma (#55): só existem depois da primeira gravação
+            "serving_stream_batch_metrics",
+            "serving_pipeline_runs",
+            "serving_quality_gate_runs",
+            "serving_api_requests",
+        }
 
     def test_missing_optional_asset_rendered_as_warning_not_error(self):
         results = [ValidationResult("bronze_market_data", False, "nenhum objeto encontrado")]
