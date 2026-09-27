@@ -25,6 +25,12 @@ CREATE TABLE IF NOT EXISTS stream_batch_metrics (
     latency_p50_s             DOUBLE PRECISION,
     latency_p95_s             DOUBLE PRECISION,
     latency_max_s             DOUBLE PRECISION,
+    -- Tempo de cada etapa do foreachBatch, issue #56 (o replay de uma etapa já feita dá ~0)
+    state_load_ms             BIGINT,
+    score_ms                  BIGINT,
+    parquet_ms                BIGINT,
+    kafka_ms                  BIGINT,
+    state_write_ms            BIGINT,
     recorded_at               TIMESTAMP DEFAULT (now() AT TIME ZONE 'UTC'),
     PRIMARY KEY (query_id, batch_id)
 );
@@ -62,6 +68,13 @@ CREATE TABLE IF NOT EXISTS api_requests (
     status_code  INTEGER,
     duration_ms  DOUBLE PRECISION
 );
+
+-- Colunas acrescentadas depois da issue #55: bancos que já têm a tabela as ganham aqui.
+ALTER TABLE stream_batch_metrics ADD COLUMN IF NOT EXISTS state_load_ms BIGINT;
+ALTER TABLE stream_batch_metrics ADD COLUMN IF NOT EXISTS score_ms BIGINT;
+ALTER TABLE stream_batch_metrics ADD COLUMN IF NOT EXISTS parquet_ms BIGINT;
+ALTER TABLE stream_batch_metrics ADD COLUMN IF NOT EXISTS kafka_ms BIGINT;
+ALTER TABLE stream_batch_metrics ADD COLUMN IF NOT EXISTS state_write_ms BIGINT;
 
 CREATE INDEX IF NOT EXISTS ix_stream_batch_metrics_ts ON stream_batch_metrics (batch_timestamp);
 CREATE INDEX IF NOT EXISTS ix_quality_gate_runs_run_at ON quality_gate_runs (run_at);

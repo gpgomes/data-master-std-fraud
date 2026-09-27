@@ -38,6 +38,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from collections.abc import Mapping
 
 from pyspark.sql import Column, DataFrame, SparkSession, Window
@@ -52,7 +53,12 @@ from src.common.spark_session import create_spark_session
 from src.observability.store import MetricsStore
 from src.transformation.fraud.detector import detect
 from src.transformation.fraud.profile import PROFILE_SCHEMA
-from src.transformation.fraud.signals import EVENT_COLUMNS
+from src.transformation.fraud.signals import (
+    CONCENTRATION_WINDOW_S,
+    EVENT_COLUMNS,
+    GEO_LOOKBACK,
+    VELOCITY_WINDOW_S,
+)
 from src.transformation.streaming.metrics_listener import StreamMetricsListener
 
 logger = get_logger("stream_processor")
@@ -68,6 +74,13 @@ Z_SCORE_SCALE = 6.0  # mapeia |z_score| para [0,1]: |z|=6 => fraud_score=1.0
 DETECTOR_VERSION = "zscore-v1"
 # Horizonte do estado curto: cobre a maior janela dos sinais (6 h da viagem impossível). O V1 usa 1 h.
 STATE_HORIZON_SECONDS = 6 * 3600
+# Compactação do estado curto (issue #56). Só a viagem impossível olha além de 1 h, e só para os
+# últimos `GEO_LOOKBACK` eventos do cliente. Velocidade (10 min), concentração de destinatários
+# (1 h) e o Z-Score do V1 (1 h) cabem em `STATE_FULL_WINDOW_SECONDS`. Então o estado guarda tudo da
+# última hora e, de 1 h até 6 h, só os últimos eventos de cada cliente: em regime ele cai de
+# TPS × 6 h para ~TPS × 1 h + 5 × clientes, com os mesmos sinais (teste de paridade).
+STATE_FULL_WINDOW_SECONDS = max(VELOCITY_WINDOW_S, CONCENTRATION_WINDOW_S, Z_SCORE_WINDOW_SECONDS)
+GEO_LOOKBACK_EVENTS = GEO_LOOKBACK
 # Rótulo do gerador sintético: viaja no payload, mas nunca entra no caminho de scoring.
 LABEL_COLUMNS = ("is_fraud", "fraud_type")
 
@@ -92,6 +105,19 @@ _STATE_SCHEMA = StructType(
         StructField("destination_account", StringType(), True),
     ]
 )
+
+
+class _StageClock:
+    """Cronômetro de voltas: `lap(nome)` guarda os ms desde a volta anterior."""
+
+    def __init__(self) -> None:
+        self._last = time.perf_counter()
+        self.laps: dict = {}
+
+    def lap(self, name: str) -> None:
+        now = time.perf_counter()
+        self.laps[name] = int(round((now - self._last) * 1000))
+        self._last = now
 
 
 def deterministic_alert_id(transaction_id: Column) -> Column:
@@ -260,19 +286,35 @@ class StreamProcessor:
         return self._empty_df(_STATE_SCHEMA)
 
     def _compute_pruned_history(self, current_batch: DataFrame, history: DataFrame) -> DataFrame:
-        """Funde o estado anterior com o micro-batch atual, podando tudo mais antigo que
-        `STATE_HORIZON_SECONDS` em relação ao evento mais recente já visto (tempo de evento, não
-        wall-clock — segue correto tanto em tempo real quanto em replay de dados antigos).
+        """Funde o estado anterior com o micro-batch atual e compacta o resultado, sempre em
+        relação ao evento mais recente já visto (tempo de evento, não wall-clock — segue correto
+        tanto em tempo real quanto em replay de dados antigos):
+
+        - tudo o que tem até `STATE_FULL_WINDOW_SECONDS` (1 h) fica;
+        - de 1 h até `STATE_HORIZON_SECONDS` (6 h), só os últimos `GEO_LOOKBACK_EVENTS` eventos de
+          cada cliente (a viagem impossível só compara com eles);
+        - o resto sai.
+
         Guarda só as colunas que o detector enxerga (`EVENT_COLUMNS`): o rótulo nunca entra no
         estado. Função pura: o resultado é o que `_persist_history` grava para o próximo
-        micro-batch."""
+        micro-batch. Um evento que chegue com mais de 1 h de atraso é pontuado com esse contexto
+        compactado (ver "Eventos atrasados" no runbook)."""
         combined = history.select(*EVENT_COLUMNS).unionByName(current_batch.select(*EVENT_COLUMNS))
         max_row = combined.agg(F.max("timestamp")).first()
         max_ts = max_row[0] if max_row is not None else None
         if max_ts is None:
             return combined
-        cutoff = max_ts - F.expr(f"INTERVAL {STATE_HORIZON_SECONDS} SECONDS")
-        return combined.filter(F.col("timestamp") >= cutoff)
+        horizon = max_ts - F.expr(f"INTERVAL {STATE_HORIZON_SECONDS} SECONDS")
+        full_window = max_ts - F.expr(f"INTERVAL {STATE_FULL_WINDOW_SECONDS} SECONDS")
+        recency = Window.partitionBy("customer_id").orderBy(
+            F.col("timestamp").desc(), F.col("transaction_id").desc()
+        )
+        return (
+            combined.filter(F.col("timestamp") >= horizon)
+            .withColumn("_recency", F.row_number().over(recency))
+            .filter((F.col("timestamp") >= full_window) | (F.col("_recency") <= GEO_LOOKBACK_EVENTS))
+            .drop("_recency")
+        )
 
     def _persist_history(self, current_batch: DataFrame, history: DataFrame) -> None:
         pruned = self._compute_pruned_history(current_batch, history)
@@ -511,9 +553,12 @@ class StreamProcessor:
         try:
             if batch_df.isEmpty():
                 return
+            # Tempo de cada etapa, em ms, para achar o gargalo do micro-batch (issue #56).
+            clock = _StageClock()
             history = self._load_history().cache()
             cached.append(history)
             state_rows = history.count()
+            clock.lap("state_load_ms")
 
             scored = self._score_batch(batch_df, history).cache()
             cached.append(scored)
@@ -522,8 +567,11 @@ class StreamProcessor:
             alerts = self._build_fraud_alerts(scored).cache()
             cached.append(alerts)
             alert_count = alerts.count()
+            clock.lap("score_ms")
             # Lido pelo StreamMetricsListener quando o Spark reportar o progresso deste batch (#55).
-            self._batch_stats[batch_id] = {**summary, "alerts": alert_count, "state_rows": state_rows}
+            # O mesmo dicionário recebe os tempos das etapas abaixo antes de o batch terminar.
+            stats = {**summary, "alerts": alert_count, "state_rows": state_rows}
+            self._batch_stats[batch_id] = stats
 
             def write_alerts() -> None:
                 if alert_count:
@@ -532,6 +580,7 @@ class StreamProcessor:
                     )
 
             self._run_stage(batch_id, "parquet", lambda: self._write_silver_stream(scored, batch_id))
+            clock.lap("parquet_ms")
             self._run_stage(
                 batch_id,
                 "enriched",
@@ -540,7 +589,10 @@ class StreamProcessor:
                 ),
             )
             self._run_stage(batch_id, "alerts", write_alerts)
+            clock.lap("kafka_ms")
             self._run_stage(batch_id, "history", lambda: self._persist_history(batch_df, history))
+            clock.lap("state_write_ms")
+            stats.update(clock.laps)
 
             logger.info(
                 "Micro-batch processado", batch_id=batch_id, rows=rows, alerts=alert_count

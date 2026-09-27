@@ -217,6 +217,7 @@ make fraud-online-eval         # Benchmark online V1 × V2 (SQL sobre stream_sco
 
 # Observabilidade
 make slo-report                # SLOs das últimas 24 h (stream, DAGs, quality gates, API): OK / VIOLADO / SEM DADOS
+make load-test                 # Teste de carga do stream por nível de TPS (stream rodando sozinho; ~30 min)
 
 # Limpeza
 make clean                     # Limpar volumes Docker, dados temporários e artefatos de build
@@ -266,6 +267,8 @@ micro-batch (latência, duração, throughput, lag do Kafka, tamanho do estado),
 Expectations uma por gate e a API uma por request, em tabelas do mesmo Postgres. Um segundo dashboard no Superset,
 **Platform Health**, mostra as séries, e `make slo-report` diz se cada SLO está dentro da meta. Sem Prometheus nem
 Grafana: nenhum container novo. Detalhes e metas: [`docs/runbook.md`](docs/runbook.md#observabilidade-e-slos-issue-55).
+
+**Escala (issue #56):** com o estado curto em regime, o stream fica dentro do SLO de latência (p95 < 12 s) até ~70 TPS no Docker local e satura entre 70 e 142 TPS. A primeira versão saturava já a ~17 TPS: o gargalo era a pontuação sobre 6 h de estado, e compactar o estado (1 h completa + os últimos 5 eventos por cliente, mesmos sinais) cortou o micro-batch de 15,6 s para 6,2 s. `make load-test` reproduz; números em [`docs/architecture.md`](docs/architecture.md#escala-do-stream-issue-56).
 
 ## Detalhamento dos Dados
 

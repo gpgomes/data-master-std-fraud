@@ -256,8 +256,9 @@ Uma linha por micro-batch do stream (PK `query_id`, `batch_id`: o replay reescre
 | batch_duration_ms, add_batch_ms, get_offset_ms | long | Duração total, do `foreachBatch` e da consulta de offsets |
 | kafka_lag | long | Soma, por partição, de (último offset disponível − offset processado) |
 | rows_scored, alerts | long | Linhas pontuadas (após deduplicar por `transaction_id`) e alertas do V2 |
-| state_rows | long | Linhas do estado curto de 6 h lidas no micro-batch |
+| state_rows | long | Linhas do estado curto lidas no micro-batch (última 1 h completa + os últimos 5 eventos de cada cliente até 6 h, issue #56) |
 | latency_p50_s, latency_p95_s, latency_max_s | double | Latência evento → processamento (`processing_timestamp − produced_at`) dentro do micro-batch |
+| state_load_ms, score_ms, parquet_ms, kafka_ms, state_write_ms | long | Tempo de cada etapa do `foreachBatch` (issue #56): ler o estado curto, pontuar (V2 + V1 + contagens), gravar o Parquet, publicar no Kafka e gravar o estado. Uma etapa pulada no replay dá ~0 |
 
 ### pipeline_runs
 Uma linha por execução de DAG (PK `dag_id`, `run_id`): `state` (`success`/`failed`), `start_date`, `end_date`,

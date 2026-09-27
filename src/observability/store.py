@@ -42,6 +42,11 @@ STREAM_BATCH_COLUMNS = (
     "latency_p50_s",
     "latency_p95_s",
     "latency_max_s",
+    "state_load_ms",
+    "score_ms",
+    "parquet_ms",
+    "kafka_ms",
+    "state_write_ms",
 )
 GATE_COLUMNS = ("dataset", "success", "total_expectations", "failed_expectations", "optional")
 PIPELINE_COLUMNS = (

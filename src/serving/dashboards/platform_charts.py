@@ -16,8 +16,9 @@ from src.serving.dashboards.charts import ChartDef
 PLATFORM_DASHBOARD_TITLE = "Platform Health"
 PLATFORM_DASHBOARD_SLUG = "platform-health"
 PLATFORM_DATASETS = ("stream_batch_metrics", "pipeline_runs", "quality_gate_runs", "api_requests")
-# 3 KPIs do stream; 3 séries do stream; execuções das DAGs + gates com falha; 2 KPIs e a série da API
-PLATFORM_ROW_SIZES = (3, 3, 2, 3)
+# 3 KPIs do stream; 4 séries do stream (a 4ª é o tempo por etapa, issue #56); execuções das DAGs +
+# gates com falha; 2 KPIs e a série da API
+PLATFORM_ROW_SIZES = (3, 4, 2, 3)
 
 
 def _sql(expression: str, label: str) -> dict:
@@ -129,6 +130,19 @@ PLATFORM_CHARTS: tuple[ChartDef, ...] = (
         "batch_timestamp",
         [_sql("MAX(kafka_lag)", "Lag (eventos)"), _sql("MAX(state_rows)", "Estado curto (linhas)")],
         "Lag do consumidor e tamanho do estado curto de 6 h lido a cada micro-batch.",
+    ),
+    _timeseries(
+        "Stream - Tempo por Etapa do Micro-batch",
+        "stream_batch_metrics",
+        "batch_timestamp",
+        [
+            _sql("AVG(state_load_ms) / 1000.0", "Carregar estado (s)"),
+            _sql("AVG(score_ms) / 1000.0", "Pontuar (s)"),
+            _sql("AVG(parquet_ms) / 1000.0", "Parquet (s)"),
+            _sql("AVG(kafka_ms) / 1000.0", "Kafka (s)"),
+            _sql("AVG(state_write_ms) / 1000.0", "Gravar estado (s)"),
+        ],
+        "Onde o micro-batch gasta o tempo (issue #56): a etapa que cresce com a carga é o gargalo.",
     ),
     ChartDef(
         slice_name="Pipeline - Execucoes por DAG",
