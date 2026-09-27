@@ -60,6 +60,7 @@ make api                       # Start FastAPI dev server at :8000
 make catalog                   # Generate docs/data_catalog.md + docs/images/data_lineage.svg, validate datasets against live infra
 make fraud-eval                # Evaluate the fraud detectors (V1 Z-Score vs V2 multi-signal; Precision/Recall/FPR, local Spark, no Docker) and generate docs/fraud_evaluation.md
 make fraud-calibrate           # Recalibrate the V2 weights/threshold on the validation seed and write src/transformation/fraud/weights.py
+make load-test                 # Stream load test (scripts/stream_load_test.py): producers per TPS level, measured via stream_batch_metrics; stream must run alone (~30 min)
 make slo-report                # Platform SLOs over the last 24 h (src/serving/queries/slo_report.sql over the observability tables): OK / VIOLATED / NO DATA
 make fraud-online-eval         # Online V1 vs V2 benchmark: SQL (src/serving/queries/fraud_online_benchmark.sql) over stream_scored_transactions; needs the stream run + make spark-submit-stream-postgres
 make dashboards                # Provision Superset dashboard (KPIs), smoke-test against live infra
@@ -84,7 +85,8 @@ yfinance / CSV → Python Collector → MinIO bronze/ (JSON/CSV)
 ```
 Python Simulator → Kafka raw-transactions → Spark Structured Streaming
                                                     ↓ Fraud Engine V2 (multi-signal, profile broadcast +
-                                                      6 h short state); Z-Score V1 runs in shadow
+                                                      compacted short state: last 1 h + last 5 events
+                                                      per customer up to 6 h); Z-Score V1 runs in shadow
                           MinIO silver/transactions_stream/ (Parquet, distinct
                           from batch's silver/transactions/) + Kafka
                           enriched-transactions (all scored rows) + Kafka

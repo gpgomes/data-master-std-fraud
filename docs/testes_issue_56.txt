@@ -1,0 +1,138 @@
+================================================================================
+CHECKLIST DE TESTES — Teste de carga do stream, ponto de saturação e uma otimização medida (issue #56)
+================================================================================
+
+Decisões (com o usuário):
+  1. Carga gerada pelo próprio producer, com várias instâncias em paralelo.
+  2. Otimização escolhida depois de medir (a quebra por etapa apontou a pontuação sobre o
+     estado): compactar o estado curto.
+  3. Só o stream (o batch fica para outra issue, se valer).
+  4. Antes/depois medido com o estado pré-carregado no tamanho de regime.
+
+Arquivos:
+  - scripts/stream_load_test.py (harness; `make load-test`) e scripts/seed_stream_state.py
+  - src/transformation/streaming/stream_processor.py: tempo por etapa do micro-batch
+    (_StageClock) e compactação do estado (_compute_pruned_history)
+  - src/observability/{schema.sql,store.py}, metrics_listener.py: 5 colunas de tempo por etapa
+    em stream_batch_metrics (com ALTER idempotente para bancos da #55)
+  - src/serving/dashboards/platform_charts.py: chart "Stream - Tempo por Etapa do Micro-batch"
+  - Makefile (load-test), docs (architecture "Escala do stream", runbook, dicionário, README,
+    CLAUDE.md), catálogo
+  - tests/unit/test_stream_load_test.py (19), test_stream_processor.py (+4)
+
+================================================================================
+1. PROTOCOLO
+================================================================================
+
+Docker local: 2 workers Spark × 2 cores × 2 GB, Docker Desktop com 12 GB. Stream sozinho
+(DAG de ingestão pausada, nada mais rodando). Producers no host, cada um com GENERATOR_SEED
+própria. Por nível: 60 s de aquecimento, 240 s de janela, espera o lag zerar entre níveis.
+Produzido = delta dos offsets do Kafka na janela. Métricas do stream = stream_batch_metrics
+(issue #55) na janela. Saturado = micro-batch p95 > trigger (10 s), lag no fim > 1 trigger de
+eventos, ou lido < 90% do produzido.
+
+Calibração do producer (uma instância, 30 s): pedido 25 → 16 TPS; 50 → 25; 200 → 50. O envio é
+síncrono (cada mensagem espera o ack), então a carga é dividida em instâncias de 25 TPS pedidos.
+
+================================================================================
+2. BASELINE COM ESTADO DE MINUTOS (código anterior, sem pré-carga)
+================================================================================
+
+  produzido  micro-batch p95  latência p95 (batch)  lag  estado    CPU workers
+  17,8 TPS   3,65 s           10,78 s               0    5 mil     ~20%
+  35,8       4,03             10,62                 0    16 mil    ~20%
+  68,2       4,29             10,63                 0    36 mil    ~16%
+  136,5      5,57             10,74                 0    75 mil    26–37%
+  205,4      7,23             11,05                 0    136 mil   ~47%
+
+Nenhum nível saturou; 205 TPS (12 producers) é o teto do gerador nesta máquina. Leitura: a
+latência é o trigger + processamento e quase não depende da carga; o micro-batch tem um custo
+fixo de ~3,3 s. Mas cada nível dura minutos, então o estado tinha minutos de eventos, e em
+produção ele guarda 6 h (TPS × 21.600 linhas). Esse teste subestima o custo do estado.
+
+Perfil por etapa a ~200 TPS (estado de 188 mil linhas, média de 20 micro-batches):
+  pontuar 3.742 ms (55%), gravar estado 1.111 (16%), Parquet 585 (9%), carregar estado 524
+  (8%), Kafka 243 (4%); total 6.867 ms.
+
+================================================================================
+3. ANTES × DEPOIS EM REGIME (estado pré-carregado: 1,08 M linhas = 6 h a 50 TPS)
+================================================================================
+
+  scripts/seed_stream_state.py seed --rows 1080000   (1.000 clientes do producer, 6 h)
+
+                micro-batch p95      latência p95 (batch)   estado máx         CPU workers
+  produzido     antes    depois      antes    depois        antes    depois    antes / depois
+  ~17 TPS       15,57 s  6,16 s      17,05 s  11,23 s       1,08 M   167 mil   85–114% / ~67%
+  ~35           16,88    6,24        17,85    11,23         1,08 M   156 mil   ~104% / 67–87%
+  ~70           18,54    7,17        20,19    11,28         1,08 M   156 mil   ~104% / 83–91%
+  ~142          22,46    14,27       24,47    15,65         1,11 M   181 mil   92–125% / ~110%
+  (produzido antes: 18,0 / 36,1 / 72,3 / 145,1; depois: 17,0 / 34,1 / 68,9 / 142,0 TPS)
+
+Saturação: ANTES todos os níveis (micro-batch acima do trigger já a ~17 TPS); DEPOIS só o de
+~142 TPS. Lag 0 em todos: o stream absorve com micro-batches maiores; o limite aqui é latência.
+
+Tempo médio por etapa (ms), mesmas janelas:
+  alvo  run     carregar  pontuar  parquet  kafka  gravar  total
+  25    antes   1.231     10.179   479      203    1.936   14.826
+  25    depois    432      2.808   438      134      974    5.611
+  50    antes   1.398     10.741   543      248    2.143   15.733
+  50    depois    463      3.027   432      168      959    5.815
+  100   antes   1.648     12.217   554      210    2.133   17.420
+  100   depois    527      3.269   498      212    1.114    6.370
+  200   antes   1.886     14.631   696      345    2.689   21.166
+  200   depois    651      5.710   934      369    1.978   10.636
+
+Latência por evento DEPOIS (stream_scored_transactions.latency_seconds, após
+`make spark-submit-stream-postgres` e `--latency-from`):
+  ~17 TPS: p50 6,41 s, p95 10,86, p99 11,35 (4.077 eventos)
+  ~34:     p50 6,39,   p95 10,85, p99 11,32 (8.179)
+  ~69:     p50 6,43,   p95 10,91, p99 11,41 (16.508)
+  ~142:    p50 7,06,   p95 13,68, p99 16,26 (33.302)
+A latência por evento do ANTES não pôde ser recalculada: o script da rodada zera o Parquet do
+stream entre rodadas. A comparação usa as métricas por micro-batch, que existem para as duas.
+
+================================================================================
+4. A OTIMIZAÇÃO
+================================================================================
+
+Só a viagem impossível olha além de 1 h, e só para os últimos 5 eventos do cliente
+(GEO_LOOKBACK); velocidade (10 min), concentração de destinatários (1 h) e o Z-Score (1 h)
+cabem em 1 h. O estado passou a guardar a última 1 h completa + os últimos 5 eventos de cada
+cliente até 6 h. Em regime: ~TPS × 3.600 + 5 × clientes, em vez de TPS × 21.600.
+
+Mesmos sinais, provado por teste:
+  - TestBatchStreamParity.test_parity_holds_when_the_compacted_state_drops_old_events: 6 h de
+    eventos em micro-batches de 4; c2 tem 30 eventos com mais de 1 h e um salto para Manaus
+    (viagem impossível só vista com os antigos); c7 igual, mas o 5º evento antigo é uma origem
+    plausível (o sinal NÃO dispara); concentração na última hora. Resultado igual ao dataset
+    inteiro de uma vez.
+  - Mutação: guardando 4 eventos em vez de 5 o teste falha em `tg-jump` (a 1ª versão do cenário
+    passava com o mutante; foi corrigida para que o 5º evento decida o resultado).
+  - TestShortState: tudo da última hora fica; além de 1 h só os últimos 5 por cliente; as
+    janelas vêm das constantes dos sinais.
+
+================================================================================
+5. INCIDENTES DURANTE A MEDIÇÃO (não afetam os números acima)
+================================================================================
+
+  - 1ª tentativa: o stream caiu no 2º micro-batch com ExecutorLostFailure ("Not receiving
+    heartbeat for 60 seconds"), logo depois de o Docker Desktop subir; sem OOM nem reinício de
+    container. Refeito, não repetiu.
+  - `pkill -f "a\|b"` não casa nada no macOS (o `\|` é literal no pgrep): um harness antigo
+    continuou rodando e contaminou uma rodada (1 producer "entregou" 86 TPS). Descartada.
+  - O harness caiu ao gravar o JSON (`Decimal` do psycopg2); corrigido com teste.
+
+================================================================================
+6. VALIDAÇÃO
+================================================================================
+
+  make lint        # limpo
+  make test-unit   # 898 passed, cobertura 89,0%
+  make dashboards  # 23 charts verificados (o novo "Tempo por Etapa" com dados)
+  make catalog     # exit 0
+
+Ressalvas: o estado pré-carregado é o mesmo em todos os níveis (em regime real a ~142 TPS seria
+~3 M linhas antes e ~0,5 M depois, então o "depois" a 142 TPS seria pior que o medido); os
+producers rodam no host e dividem a máquina com o Docker; a meta de 5 s do expert não é
+alcançável com trigger de 10 s (latência ≈ trigger + processamento): exigiria reduzir o trigger,
+o que o custo fixo de ~3–6 s por micro-batch agora permite testar.

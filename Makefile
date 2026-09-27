@@ -2,7 +2,7 @@
         spark-submit-batch spark-submit-stream spark-submit-silver-gold spark-submit-gold-postgres \
         spark-submit-stream-postgres \
         seed-data producer-transactions producer-market api catalog dashboards dashboards-export \
-        fraud-eval fraud-calibrate fraud-online-eval slo-report \
+        fraud-eval fraud-calibrate fraud-online-eval slo-report load-test \
         clean clean-data logs ps help
 
 # ── Variáveis ──────────────────────────────────────────────────────────────────
@@ -132,6 +132,10 @@ fraud-online-eval: ## Benchmark online V1 x V2 (SQL sobre stream_scored_transact
 
 slo-report: ## Relatório de SLOs da plataforma nas últimas 24 h (stream, pipeline, gates e API; issue #55)
 	$(COMPOSE) exec -T postgres psql -U $(POSTGRES_USER) -d $(POSTGRES_DB) -v ON_ERROR_STOP=1 < src/serving/queries/slo_report.sql
+
+LOAD_LEVELS ?= 25,50,100,200
+load-test: ## Teste de carga do stream (issue #56): sobe producers no host por nível de TPS e mede via stream_batch_metrics; requer o stream rodando sozinho
+	$(PYTHON) -u -m scripts.stream_load_test --levels $(LOAD_LEVELS) --per-instance-tps 25 --duration-s 240 --warmup-s 60 --output data/load_test/results.json
 
 dashboards: ## Provisiona o dashboard Superset de KPIs de fraude/transações (requer make up + dados no Postgres)
 	$(PYTHON) -m scripts.provision_superset_dashboards --verify --strict

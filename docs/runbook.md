@@ -98,11 +98,12 @@ Silver (ignora `--start-date/--end-date`) e só as linhas legítimas do históri
 Silver mudar; o stream só o lê na partida, então reinicie o job depois.
 
 **Estado curto.** Os sinais de janela (velocidade, viagem impossível, concentração de destinatários)
-precisam dos eventos anteriores, que o micro-batch sozinho não tem. Entre micro-batches o job grava as
-últimas **6 horas** de eventos (só as colunas que o detector enxerga, nunca o rótulo) em
-`silver/_stream_state/recent_events/`. Reiniciar o job continua desse estado.
+precisam dos eventos anteriores, que o micro-batch sozinho não tem. Entre micro-batches o job grava, só com
+as colunas que o detector enxerga (nunca o rótulo), **toda a última hora** de eventos e, de 1 h até 6 h,
+**só os últimos 5 eventos de cada cliente** (a viagem impossível é o único sinal que olha além de 1 h, e só para
+eles; compactação da issue #56), em `silver/_stream_state/recent_events/`. Reiniciar o job continua desse estado.
 
-**Eventos atrasados (#59).** Não há watermark: nenhum evento é descartado por chegar tarde. Um evento atrasado é pontuado contra os eventos que o antecedem **em tempo de evento** que estiverem no estado (e, por isso, a viagem impossível ainda é detectada), e sai do estado se for mais velho que 6 h em relação ao evento mais recente já visto. Um evento com mais de 6 h de atraso é pontuado com pouco contexto de janela curta. O caminho antigo
+**Eventos atrasados (#59).** Não há watermark: nenhum evento é descartado por chegar tarde. Um evento atrasado é pontuado contra os eventos que o antecedem **em tempo de evento** que estiverem no estado (e, por isso, a viagem impossível ainda é detectada), e sai do estado se for mais velho que 6 h em relação ao evento mais recente já visto. Com a compactação (#56), um evento com mais de 1 h de atraso só tem, do seu passado, os últimos 5 eventos de cada cliente que sobraram no estado; um evento com mais de 6 h de atraso é pontuado com pouco contexto de janela curta. O caminho antigo
 (`silver/_stream_state/customer_amount_history/`, 3 colunas) ficou órfão e pode ser apagado.
 
 **Saída.**
@@ -528,6 +529,32 @@ make slo-report     # SLOs das últimas 24 h: OK / VIOLADO / SEM DADOS
 `DEFAULT now()` em hora local; `CREATE TABLE IF NOT EXISTS` não corrige. Ajuste com
 `ALTER TABLE ... ALTER <coluna> SET DEFAULT (now() AT TIME ZONE 'UTC')` ou apague as quatro tabelas (são só
 métricas).
+
+## Teste de carga do stream (issue #56)
+
+`scripts/stream_load_test.py` (`make load-test`) sobe, para cada nível de TPS, N instâncias do producer no host
+(cada uma com `GENERATOR_SEED` própria: com a mesma seed, instâncias iniciadas no mesmo segundo repetiriam
+`transaction_id`), espera 60 s de aquecimento, mede 240 s e para. Mede pelo Kafka (eventos/s produzidos de
+fato), por `stream_batch_metrics` (linhas/s, duração do micro-batch, lag, estado, latência de cada batch e o
+**tempo por etapa**) e por `docker stats` (CPU e memória do Spark). Um nível é **saturado** quando o micro-batch
+p95 passa do trigger (10 s), sobra lag no fim da janela ou o stream lê menos de 90% do produzido.
+
+```bash
+make spark-submit-stream                         # terminal 1: o stream, SOZINHO (sem DAGs, jobs Spark ou Superset rodando)
+make load-test LOAD_LEVELS=25,50,100,200         # terminal 2: ~30 min; resultado em data/load_test/results.json
+# latência por evento (p50/p95/p99 exatos) de cada janela: pare o stream e
+make spark-submit-stream-postgres
+.venv/bin/python -m scripts.stream_load_test --latency-from data/load_test/results.json
+```
+
+- **Uma instância do producer entrega no máximo ~50 TPS** (envio síncrono: cada mensagem espera o ack) e ~65%
+  do pedido até 25 TPS; o harness reporta o produzido medido no Kafka, não o alvo. Com 12 instâncias no host,
+  ~205 TPS é o teto do gerador nesta máquina.
+- **Meça em regime.** Cada nível dura minutos, mas o estado curto em produção guarda horas. Para medir o custo
+  real do estado, pré-carregue-o antes de subir o stream (`scripts/seed_stream_state.py`, docstring com os
+  comandos; zere também `silver/transactions_stream/` e `checkpoints/`).
+- **O que olhar:** o chart "Stream - Tempo por Etapa do Micro-batch" do Platform Health mostra qual etapa cresce
+  com a carga.
 
 ## CI (GitHub Actions)
 

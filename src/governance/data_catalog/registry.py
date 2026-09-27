@@ -298,7 +298,8 @@ CATALOG: tuple[CatalogEntry, ...] = (
         description=(
             "Uma linha por micro-batch do stream, gravada pelo StreamingQueryListener: linhas/s de "
             "entrada e processadas, duração por fase, lag do Kafka, linhas pontuadas, alertas, "
-            "tamanho do estado curto e latência p50/p95/máx evento→processamento (issue #55)."
+            "tamanho do estado curto, latência p50/p95/máx evento→processamento (issue #55) e o "
+            "tempo de cada etapa do foreachBatch (issue #56)."
         ),
         upstream=("kafka_raw_transactions",),
         optional=True,

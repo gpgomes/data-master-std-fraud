@@ -50,7 +50,8 @@ Simulador Python → Kafka (raw-transactions)
                         ↓
               Spark Structured Streaming
                         ↓
-   Fraud Engine V2 (perfil do Gold por broadcast + estado curto de 6 h);
+   Fraud Engine V2 (perfil do Gold por broadcast + estado curto compactado:
+   1 h completa + últimos 5 eventos por cliente até 6 h);
    Z-Score V1 em paralelo, só como shadow
                         ↓
     MinIO Silver (silver/transactions_stream/, distinto do
@@ -81,7 +82,7 @@ O que é "normal" para um cliente (valor típico, devices, redes, destinatários
 | Camada | O que calcula | Onde vive | Custo |
 |--------|---------------|-----------|-------|
 | Batch (longa) | Perfil de comportamento por cliente | `gold/customer_behavior_profile/`, recalculado por `silver_to_gold.py` (~30 s para 500 mil transações) | Varre o histórico, roda uma vez por execução |
-| Stream (curta) | Velocidade, viagem impossível e concentração de destinatários | Estado de 6 h em `silver/_stream_state/recent_events/` | Lê o perfil por broadcast e o estado curto a cada micro-batch |
+| Stream (curta) | Velocidade, viagem impossível e concentração de destinatários | Estado curto em `silver/_stream_state/recent_events/`: a última 1 h completa + os últimos 5 eventos de cada cliente até 6 h (compactação da issue #56) | Lê o perfil por broadcast e o estado curto a cada micro-batch |
 
 O custo clássico da Lambda, a lógica duplicada entre batch e stream, é o núcleo puro `src/transformation/fraud/` (`DataFrame → DataFrame`, sem UDF Python) chamado pelos dois caminhos, mais um **teste de paridade**: o dataset inteiro de uma vez dá o mesmo score, sinais e tipo que o mesmo dataset em micro-batches com o estado persistido entre eles.
 
@@ -148,6 +149,25 @@ O gerador manda **toda** a fraude para uma conta-destino nova: `NEW_DESTINATION`
 - **Great Expectations** — Quality gates integrados ao Airflow
 - **Catálogo de dados leve** (`src/governance/data_catalog/`) — registro versionado, linhagem e classificação, validado contra a infra real; ver decisão abaixo
 
+### Escala do stream (issue #56)
+
+Medida com `make load-test` (producers no host, 4 min por nível, stream sozinho no Docker local: 2 workers × 2 cores × 2 GB). A latência é o trigger de 10 s mais o processamento; o SLO local é p95 < 12 s.
+
+**Com o estado curto em regime** (pré-carregado com 1,08 M linhas, 6 h a 50 TPS), antes e depois da compactação do estado:
+
+| Produzido | Micro-batch p95 antes → depois | Latência p95 (por batch) antes → depois | Estado |
+|---:|---:|---:|---:|
+| ~17 TPS | 15,6 s → 6,2 s | 17,1 s → 11,2 s | 1,08 M → 167 mil |
+| ~35 TPS | 16,9 s → 6,2 s | 17,9 s → 11,2 s | → 156 mil |
+| ~70 TPS | 18,5 s → 7,2 s | 20,2 s → 11,3 s | → 156 mil |
+| ~142 TPS | 22,5 s → 14,3 s | 24,5 s → 15,7 s | → 181 mil |
+
+- **Gargalo:** a pontuação (janelas por cliente e por destino sobre estado + micro-batch), de 10,2 s para 2,8 s a ~17 TPS (−72%); ler e gravar o estado caíram 65% e 50%. Parquet e Kafka não mudaram.
+- **Ponto de saturação:** antes, o micro-batch passava do trigger já a ~17 TPS; depois, o stream fica dentro do SLO até ~70 TPS e satura entre 70 e 142 TPS. O lag ficou 0 em todos os níveis: o stream absorve a carga com micro-batches maiores, então o limite desta máquina é a **latência**, não o throughput.
+- **Latência por evento depois:** p50 6,4 s, p95 10,9 s, p99 11,4 s até ~70 TPS; p95 13,7 s e p99 16,3 s a ~142 TPS.
+- **Com estado de minutos** (sem pré-carga), o stream acompanhou até ~205 TPS (micro-batch p95 7,2 s), o teto do gerador nesta máquina: esse número subestima o custo do estado e não é o de regime.
+- Ressalvas: o estado pré-carregado é o mesmo em todos os níveis (em regime real a 142 TPS ele seria ~3 M linhas antes e ~0,5 M depois); os producers dividem a máquina com o Docker. Registro completo: `docs/testes_issue_56.txt`.
+
 ### Observabilidade (issue #55)
 - **Métricas de plataforma** (`src/observability/`) — stream (via `StreamingQueryListener`), DAGs, quality gates e API, em tabelas append-only no Postgres; dashboard "Platform Health" no Superset e `make slo-report`
 
@@ -165,6 +185,7 @@ O gerador manda **toda** a fraude para uma conta-destino nova: `NEW_DESTINATION`
 | Schema Registry (#59) | Sem Schema Registry: mensagens em JSON no Kafka; o contrato é um `.avsc` versionado (`src/ingestion/streaming/schemas/`), com teste de compatibilidade Avro × Pydantic × DDL Spark (`test_data_contract.py`) | Um serviço a menos no ambiente local, e o teste pega divergência de campo entre producer e consumidor. Custo: nada impede em tempo de execução um producer de publicar fora do contrato (o Pydantic do producer é a única barreira) e o JSON é maior que Avro binário. Em produção: Schema Registry com Avro binário e compatibilidade BACKWARD |
 | Detecção de fraude (issues #43 a #47) | Fraud Engine multi-signal: 10 sinais combinados por noisy-OR, com perfil longo do batch e janela curta no stream. O Z-Score fica como shadow | Precision/Recall/FPR medidos, reprodutíveis e comparados com o Z-Score, no mesmo dado. Interpretável (cada alerta traz os sinais que o dispararam) e sem infra de treino. Ver "Detecção de fraude" abaixo |
 | Score do detector | Noisy-OR sobre sinais ponderados, não um modelo treinado | `1 − Π(1 − wᵢ·sᵢ)` fica em [0, 1], é monotônico e dá o motivo do alerta de graça. Um modelo treinado (MLflow/sklearn) pediria infra de treino, versionamento de modelo e mais superfície a defender; fica como evolução |
+| Compactação do estado curto (issue #56) | Guardar a última 1 h completa + os últimos 5 eventos de cada cliente até 6 h, em vez de 6 h completas | Medido: com o estado em regime, a pontuação (as janelas sobre estado + micro-batch) era 55–70% do micro-batch e crescia com o estado, que em regime é TPS × 6 h. Só a viagem impossível olha além de 1 h, e só para os últimos 5 eventos; velocidade, concentração e o Z-Score cabem em 1 h. Mesmos sinais (teste de paridade com um cenário em que o 5º evento antigo decide o resultado, e mutação com 4 eventos falha), estado em regime ~TPS × 1 h + 5 × clientes. Custo: evento com mais de 1 h de atraso tem menos contexto |
 | Eventos atrasados no stream (#59) | Sem watermark; o evento atrasado é pontuado com o contexto do estado curto | O watermark do Spark só age em operadores com estado, e o stream não tem nenhum antes do `foreachBatch` (o estado é o Parquet de 6 h): declarado, ele não fazia nada. Evento atrasado nunca é descartado; é pontuado contra os eventos que o antecedem em tempo de evento e sai do estado se ficar mais velho que 6 h em relação ao mais recente. Custo: um evento muito atrasado é pontuado com pouco contexto de janela curta |
 | Durabilidade do producer (#59) | `acks="all"`, sem producer idempotente | Antes, `acks=1` perdia a mensagem na entrada se o líder caísse antes de replicar. Idempotência não está disponível nos clientes usados (kafka-python 2.0.2 na imagem, kafka-python-ng no host), então um retry pode duplicar: o stream deduplica por `transaction_id` no micro-batch e o loader do Postgres fica com uma linha |
 | Rótulo de fraude no stream | `is_fraud`/`fraud_type` seguem no payload do Kafka, separados do DataFrame antes do scoring | Manter o rótulo no payload preserva a avaliação online; separá-lo estruturalmente no `_score_batch` e cobrir com teste de vazamento fecha o risco de o detector ler o rótulo. Tirá-lo do payload (tópico `ground-truth`, o rótulo chegando tarde) seria mais realista e fica como evolução |

@@ -38,7 +38,7 @@ from src.transformation.streaming.stream_processor import (
     Z_SCORE_THRESHOLD,
     StreamProcessor,
 )
-from tests.unit.fraud_helpers import SALVADOR, event, profile_df, profile_row
+from tests.unit.fraud_helpers import SALVADOR, SAO_PAULO, event, profile_df, profile_row
 
 # ── Fixtures ────────────────────────────────────────────────────────────────────
 
@@ -389,6 +389,39 @@ class TestShortState:
         history = self._state(spark, [_state_row("c", "2024-06-15T04:00:00Z")])  # exatamente 6 h
         current = _make_tx(spark, [_tx(customer_id="c", ts="2024-06-15T10:00:00Z")])
         assert processor._compute_pruned_history(current, history).count() == 2
+
+    def test_everything_from_the_last_hour_is_kept(self, spark, processor):
+        """Velocidade (10 min), concentração (1 h) e o Z-Score (1 h) precisam de todos os eventos
+        da última hora; a compactação (#56) não pode tocar neles."""
+        rows = [_state_row("c", f"2026-03-02T11:{m:02d}:00Z") for m in range(1, 60, 5)]  # 12 eventos
+        current = _make_tx(spark, [_tx(customer_id="c", ts="2026-03-02T12:00:00Z")])
+        assert processor._compute_pruned_history(current, self._state(spark, rows)).count() == 13
+
+    def test_older_than_one_hour_only_the_last_events_per_customer_are_kept(self, spark, processor):
+        """Além de 1 h, só a viagem impossível olha para trás, e só os últimos 5 eventos (#56)."""
+        old = [_state_row("c", f"2026-03-02T{h:02d}:00:00Z") for h in range(6, 11)]  # 06h..10h
+        old += [_state_row("c", f"2026-03-02T{h:02d}:30:00Z") for h in range(6, 11)]  # 06h30..10h30
+        other = [_state_row("d", "2026-03-02T07:00:00Z")]
+        current = _make_tx(spark, [_tx(customer_id="c", ts="2026-03-02T12:00:00Z")])
+        pruned = processor._compute_pruned_history(current, self._state(spark, old + other))
+        kept_old_c = sorted(
+            r["transaction_id"]
+            for r in pruned.filter("customer_id = 'c' AND transaction_id LIKE 'st-%'").collect()
+        )
+        # o evento atual (12h) conta entre os 5 mais recentes de c: sobram os 4 antigos mais novos
+        assert kept_old_c == sorted(
+            f"st-c-2026-03-02T{hm}Z" for hm in ("09:00:00", "09:30:00", "10:00:00", "10:30:00")
+        )
+        assert pruned.filter("customer_id = 'd'").count() == 1  # cada cliente tem os seus 5
+
+    def test_the_compaction_windows_come_from_the_signals(self):
+        from src.transformation.fraud import signals
+
+        assert sp.GEO_LOOKBACK_EVENTS == signals.GEO_LOOKBACK
+        assert STATE_HORIZON_SECONDS == signals.GEO_WINDOW_S
+        assert sp.STATE_FULL_WINDOW_SECONDS == max(
+            signals.VELOCITY_WINDOW_S, signals.CONCENTRATION_WINDOW_S, sp.Z_SCORE_WINDOW_SECONDS
+        )
 
     def test_state_never_keeps_the_label(self, spark, processor):
         """O micro-batch traz `is_fraud`/`fraud_type`; o estado só guarda o que o detector vê."""
@@ -1145,6 +1178,9 @@ class TestLateEvents:
 # ── TestBatchStreamParity ───────────────────────────────────────────────────────
 
 
+MANAUS = (-3.1190, -60.0217)  # ~2.700 km de São Paulo
+
+
 class TestBatchStreamParity:
     """Processar o dataset em vários micro-batches, com o estado persistido entre eles, dá o mesmo
     resultado que processar tudo de uma vez: é o que faz o stream valer o que o harness mediu."""
@@ -1176,26 +1212,21 @@ class TestBatchStreamParity:
             r["transaction_id"]: r for r in v2.join(v1.select("transaction_id", "z_score"), "transaction_id").collect()
         }
 
-    def test_chunked_stream_matches_the_whole_dataset(self, spark, tmp_path):
+    @classmethod
+    def _stream_and_compare(cls, spark, tmp_path, rows, customers, chunk):
         from unittest.mock import patch
 
-        rows = self._events()
         p = TestIdempotentMicroBatch._local_processor(spark, tmp_path)
-        p._profile = profile_df(spark, *[profile_row(c) for c in ("c1", "c2", "c3", "c4", "c5")])
-        reference = self._reference(spark, rows, p._profile, p)
+        p._profile = profile_df(spark, *[profile_row(c) for c in customers])
+        reference = cls._reference(spark, rows, p._profile, p)
 
         with patch.object(p, "_write_to_kafka"):
-            for batch_id, start in enumerate(range(0, len(rows), 3)):
-                p._process_batch(_make_tx(spark, rows[start : start + 3]), batch_id)
+            for batch_id, start in enumerate(range(0, len(rows), chunk)):
+                p._process_batch(_make_tx(spark, rows[start : start + chunk]), batch_id)
         streamed = {
             r["transaction_id"]: r
             for r in TestIdempotentMicroBatch._silver_stream(spark, p).collect()
         }
-
-        # o teste não é vazio: as janelas curtas de fato disparam, e alertam
-        assert any("GEO_VELOCITY" in r["fraud_signals"] for r in reference.values())
-        assert any("RECIPIENT_CONCENTRATION" in r["fraud_signals"] for r in reference.values())
-        assert sum(r["is_fraud_predicted"] for r in reference.values()) >= 3
 
         assert streamed.keys() == reference.keys()
         for tx_id, expected in reference.items():
@@ -1208,6 +1239,64 @@ class TestBatchStreamParity:
                 assert got["z_score"] is None, tx_id
             else:
                 assert got["z_score"] == pytest.approx(expected["z_score"]), tx_id
+        return p, reference
+
+    def test_chunked_stream_matches_the_whole_dataset(self, spark, tmp_path):
+        rows = self._events()
+        _, reference = self._stream_and_compare(
+            spark, tmp_path, rows, ("c1", "c2", "c3", "c4", "c5"), chunk=3
+        )
+        # o teste não é vazio: as janelas curtas de fato disparam, e alertam
+        assert any("GEO_VELOCITY" in r["fraud_signals"] for r in reference.values())
+        assert any("RECIPIENT_CONCENTRATION" in r["fraud_signals"] for r in reference.values())
+        assert sum(r["is_fraud_predicted"] for r in reference.values()) >= 3
+
+    @staticmethod
+    def _six_hour_events() -> list[dict]:
+        """6 h de eventos, em ordem de tempo, em que a compactação do estado (#56) de fato poda:
+
+        - c1: um evento a cada 20 min das 06h às 11h40 (18), e o Z-Score/velocidade da última hora;
+        - c2: um evento a cada 10 min das 06h às 10h50 em São Paulo (30, todos com mais de 1 h no
+          fim) e às 11h50 um salto para Manaus (~2.700 km): nenhum dos 5 anteriores é origem
+          plausível, e a viagem impossível só é vista se esses 5 continuarem no estado;
+        - c7: igual a c2, mas o 5º evento antes do salto (10h10) já foi em Manaus. Ele é uma origem
+          plausível, então a viagem impossível NÃO dispara; se a compactação guardasse menos de 5
+          eventos, ele sumiria do estado e o sinal dispararia por engano;
+        - c3 a c6: quatro remetentes para a mesma conta na última hora (concentração).
+        """
+        rows = []
+        for i in range(18):
+            ts = f"2026-03-02T{6 + (20 * i) // 60:02d}:{(20 * i) % 60:02d}:00"
+            rows.append(_legit(f"a{i}", "c1", ts, 100.0 + (i % 3) * 5))
+        for i in range(30):
+            ts = f"2026-03-02T{6 + (10 * i) // 60:02d}:{(10 * i) % 60:02d}:00"
+            rows.append(_legit(f"b{i}", "c2", ts))
+        rows.append(event("b-jump", "c2", "2026-03-02T11:50:00", 100.0, at=MANAUS, dest="acc-new"))
+        for i in range(30):
+            ts = f"2026-03-02T{6 + (10 * i) // 60:02d}:{(10 * i) % 60:02d}:00"
+            at = MANAUS if ts.endswith("10:10:00") else SAO_PAULO
+            rows.append(event(f"g{i}", "c7", ts, 100.0, at=at))
+        rows.append(event("g-jump", "c7", "2026-03-02T11:50:00", 100.0, at=MANAUS, dest="acc-new"))
+        for j, c in enumerate(("c3", "c4", "c5", "c6")):
+            rows.append(_legit(f"m{j}", c, f"2026-03-02T11:{45 + 2 * j:02d}:00", dest="acc-mule"))
+        rows.append(_legit("a-last", "c1", "2026-03-02T11:58:00", 900.0, dest="acc-new"))
+        return sorted(rows, key=lambda r: r["timestamp"])
+
+    def test_parity_holds_when_the_compacted_state_drops_old_events(self, spark, tmp_path):
+        rows = self._six_hour_events()
+        p, reference = self._stream_and_compare(
+            spark, tmp_path, rows, ("c1", "c2", "c3", "c4", "c5", "c6", "c7"), chunk=4
+        )
+        # não vacuoso: a viagem impossível depende dos eventos antigos de c2 e de c7 (o 5º evento
+        # de c7 é o que impede o sinal), e a concentração dispara
+        assert "GEO_VELOCITY" in reference["tb-jump"]["fraud_signals"]
+        assert "GEO_VELOCITY" not in reference["tg-jump"]["fraud_signals"]
+        assert any("RECIPIENT_CONCENTRATION" in r["fraud_signals"] for r in reference.values())
+        # e a compactação de fato podou: sobra menos estado do que eventos processados
+        state = spark.read.parquet(p._history_path)
+        assert state.count() < len(rows)
+        old_c2 = state.filter("customer_id = 'c2' AND timestamp < '2026-03-02 10:58:00'").count()
+        assert old_c2 <= sp.GEO_LOOKBACK_EVENTS
 
 
 # ── TestLoadStaticInputs ────────────────────────────────────────────────────────

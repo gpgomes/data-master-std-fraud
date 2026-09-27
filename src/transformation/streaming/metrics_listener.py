@@ -89,6 +89,11 @@ def progress_to_row(progress: Any, batch_stats: dict[int, dict[str, Any]]) -> di
         "latency_p50_s": stats.get("latency_p50_s"),
         "latency_p95_s": stats.get("latency_p95_s"),
         "latency_max_s": stats.get("latency_max_s"),
+        "state_load_ms": stats.get("state_load_ms"),
+        "score_ms": stats.get("score_ms"),
+        "parquet_ms": stats.get("parquet_ms"),
+        "kafka_ms": stats.get("kafka_ms"),
+        "state_write_ms": stats.get("state_write_ms"),
     }
 
 
