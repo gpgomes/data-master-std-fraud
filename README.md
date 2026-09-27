@@ -237,6 +237,8 @@ O workflow [`.github/workflows/ci.yml`](.github/workflows/ci.yml) roda automatic
 
 O job `test` usa Python 3.11 + Java 17 (PySpark roda em modo local `local[*]`, sem precisar do cluster Spark real). O relatório de cobertura HTML é publicado como artefato do workflow.
 
+**Teste ponta a ponta (issue #57):** o workflow **E2E** (`.github/workflows/e2e.yml`, manual e noturno) sobe a stack mínima e roda `make e2e`: batch e stream de verdade num namespace isolado, com invariantes (mesmos ids e mesma soma de valor em todas as camadas, `alert_id` do Kafka = do Postgres, zero duplicata após reinício) e cenários de falha (kill no meio do micro-batch, dado inválido, duplicata, JSON inválido, Kafka e Postgres fora do ar). Ver [`docs/runbook.md`](docs/runbook.md#teste-ponta-a-ponta-issue-57).
+
 **Testes de integração (`tests/integration/`) não rodam no CI** — dependem do stack Docker completo (Kafka, Zookeeper, Airflow, Superset, Postgres, MinIO, cluster Spark), pesado demais para rodar em todo PR; ver `docs/runbook.md` para rodá-los localmente com `make up && make setup`.
 
 Antes de abrir um PR, reproduza o gate localmente:

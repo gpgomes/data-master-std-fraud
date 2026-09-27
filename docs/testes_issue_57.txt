@@ -1,0 +1,75 @@
+================================================================================
+CHECKLIST DE TESTES — Workflow E2E com invariantes de dados e cenários de falha (issue #57)
+================================================================================
+
+Decisões (com o usuário):
+  1. GitHub Actions manual + noturno, e o mesmo `make e2e` local.
+  2. Volume pequeno e determinístico (3.000 transações no batch, 1.200 eventos no stream).
+  3. Seis cenários de falha automatizados: reinício no meio do micro-batch, dado inválido
+     bloqueando a promoção, evento duplicado, JSON inválido, Kafka fora e Postgres fora.
+
+Desenho:
+  - Namespace isolado: buckets e tópicos `e2e-*`, banco `fraud_e2e` (`E2E_ENV` em
+    tests/e2e/harness.py, exportado pelo `make e2e`). A suíte só roda com `E2E=1` e esse
+    namespace; um teste unitário garante que Makefile e harness não divergem e que nada aponta
+    para recurso de desenvolvimento.
+  - Jobs Spark no container `spark-master` em modo local: funciona com a stack completa e com a
+    mínima do CI (sem workers, Airflow nem Superset).
+  - O batch e o stream rodam uma vez (fixtures de sessão) e cada teste verifica uma invariante.
+  - Publicador determinístico com o gerador e a validação do producer, os mesmos 1.000 clientes
+    (seed 42) do batch; devolve os `transaction_id` publicados.
+
+Arquivos: tests/e2e/{__init__,conftest,harness,publisher,test_e2e_pipeline}.py,
+.github/workflows/e2e.yml, Makefile (e2e), tests/unit/test_e2e_harness.py, docs.
+
+================================================================================
+1. EXECUÇÕES LOCAIS
+================================================================================
+
+  make e2e     # 4 execuções; a 1ª e as 3 últimas com 16 passed em ~4,5 min
+
+  2ª execução: falhou no preparo. O Kafka apaga tópicos de forma assíncrona: o tópico some da
+  listagem antes de o broker terminar, e recriar nesse intervalo dá TopicAlreadyExistsError
+  ("marked for deletion"). Corrigido com nova tentativa até o tópico estar livre.
+
+Relatório da última execução (data/e2e/report.json):
+  eventos publicados 1.200 (ondas: normal 400, reinício 400, Kafka fora 200, Postgres fora 200)
+  Parquet: 1.201 linhas, 1.200 ids distintos (a duplicata reenviada caiu em outro micro-batch)
+  reinício: caught_mid_batch = true, replay_logged = true
+  Kafka fora 45 s: stream vivo depois = true
+  Postgres fora: stream vivo durante = true
+  alertas no Postgres: 74
+
+================================================================================
+2. INVARIANTES (16 testes)
+================================================================================
+
+Batch: ids iguais em gerado/Bronze/Silver/Gold/Postgres sem duplicata; SUM(amount_brl) igual em
+Silver/Gold/Postgres; rótulos de fraude iguais; agregado diário = fato; um perfil por cliente.
+
+Dado inválido: uma linha com valor negativo e fraude sem tipo no Bronze faz o gate falhar antes
+do job Bronze→Silver; o Silver não muda; sem o arquivo o gate volta a passar.
+
+Stream: todo evento publicado está no Parquet e nada além; nenhuma duplicata além do evento
+reenviado; na serving layer uma linha por evento; `enriched-transactions` com todos os eventos;
+`alert_id` do Kafka = do Postgres; JSON inválido descartado com o stream seguindo; métricas de
+plataforma gravadas.
+
+Falhas: reinício no meio do micro-batch sem perda nem duplicata (e com o log de replay quando pegou
+o meio do batch); eventos processados depois da queda do Kafka; stream processando com o Postgres
+fora.
+
+================================================================================
+3. CI
+================================================================================
+
+  make lint        # limpo
+  make test-unit   # 902 passed, cobertura 89,0% (a suíte E2E fica pulada sem E2E=1)
+
+O workflow `.github/workflows/e2e.yml` não pôde ser executado antes do merge: `workflow_dispatch`
+só aparece para workflows que já existem na branch padrão. Depois do merge: Actions → E2E →
+Run workflow (ou `gh workflow run e2e.yml`).
+
+Ressalvas: localmente os cenários param e religam os containers `kafka` e `postgres` de
+desenvolvimento; as métricas do stream dos micro-batches com o Postgres fora são perdidas (por
+desenho: métrica nunca derruba o pipeline).

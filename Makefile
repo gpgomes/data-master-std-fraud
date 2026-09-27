@@ -2,7 +2,7 @@
         spark-submit-batch spark-submit-stream spark-submit-silver-gold spark-submit-gold-postgres \
         spark-submit-stream-postgres \
         seed-data producer-transactions producer-market api catalog dashboards dashboards-export \
-        fraud-eval fraud-calibrate fraud-online-eval slo-report load-test \
+        fraud-eval fraud-calibrate fraud-online-eval slo-report load-test e2e \
         clean clean-data logs ps help
 
 # ── Variáveis ──────────────────────────────────────────────────────────────────
@@ -69,6 +69,16 @@ test-unit: ## Executar somente testes unitários
 
 test-integration: ## Executar somente testes de integração
 	$(PYTHON) -m pytest tests/integration/ $(PYTEST_ARGS)
+
+# Namespace isolado do E2E (issue #57): buckets e tópicos e2e-*, banco fraud_e2e. Fonte única em
+# tests/e2e/harness.py (E2E_ENV); os valores aqui têm de bater com ela (um teste confere).
+E2E_EXPORTS = E2E=1 MINIO_BUCKET_BRONZE=e2e-bronze MINIO_BUCKET_SILVER=e2e-silver MINIO_BUCKET_GOLD=e2e-gold \
+	MINIO_BUCKET_CHECKPOINTS=e2e-checkpoints KAFKA_TOPIC_TRANSACTIONS=e2e-raw-transactions \
+	KAFKA_TOPIC_MARKET_DATA=e2e-raw-market-data KAFKA_TOPIC_ENRICHED=e2e-enriched-transactions \
+	KAFKA_TOPIC_FRAUD_ALERTS=e2e-fraud-alerts POSTGRES_DB=fraud_e2e
+
+e2e: ## Teste ponta a ponta com invariantes e cenários de falha (issue #57): requer kafka, minio, postgres e spark-master de pé; ~20 min
+	$(E2E_EXPORTS) $(PYTHON) -m pytest tests/e2e/ -v --no-cov -p no:cacheprovider --junitxml=data/e2e/junit.xml
 
 test-cov: ## Executar testes com relatório de cobertura HTML
 	$(PYTHON) -m pytest --cov=src --cov-report=html:htmlcov --cov-report=term-missing

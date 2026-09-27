@@ -654,7 +654,7 @@ class StreamProcessor:
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Speed layer: enriquecimento + detecção de fraude via Z-Score (streaming)."
+        description="Speed layer: enriquecimento + detecção de fraude (Fraud Engine V2; Z-Score em shadow)."
     )
     parser.add_argument(
         "--starting-offsets",
