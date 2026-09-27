@@ -1,4 +1,7 @@
 kafka-python==2.0.2
+# Codec de compressão padrão do ProducerConfig (compression_type="lz4"): sem esta lib o KafkaProducer
+# aborta na criação e o container entra em crash loop (issue #48). Alinhado ao pyproject.toml (lz4>=4.0.0).
+lz4==4.4.5
 faker==24.0.0
 numpy==1.26.4
 loguru==0.7.2

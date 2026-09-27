@@ -118,6 +118,32 @@ Loader do Postgres (`make spark-submit-stream-postgres`): `fraud_alerts` é mont
 mesmo `build_fraud_alerts`. As colunas `signals` e `detector_version` ainda não existem na tabela
 (issue #47), e `is_anomaly` em `stream_scored_transactions` é o do V1.
 
+### Rodar os producers: no host ou em container (issue #48)
+
+Os dois producers (`kafka_producer_transactions.py` e `kafka_producer_market.py`) rodam de duas formas:
+
+```bash
+# No host (usa o .venv; aceita PRODUCER_RATE_TPS=20 e as demais variáveis abaixo)
+make producer-transactions
+make producer-market
+
+# Em container (perfil `producers`; sobe os dois, com 10 TPS fixos de transações no compose)
+docker compose --profile producers up -d producer-transactions producer-market
+docker compose --profile producers ps                       # os dois "Up", sem reinício
+docker compose --profile producers stop producer-transactions producer-market
+```
+
+Conferir que publicam (as somas dos offsets das partições têm de crescer):
+
+```bash
+docker compose exec -T kafka kafka-run-class kafka.tools.GetOffsetShell \
+  --bootstrap-server localhost:29092 --topic raw-transactions --time -1
+```
+
+- **O código é montado, as dependências não.** O compose monta `./src` no container, então mudança em `src/` só pede reiniciar o serviço. A imagem (`docker/producer/`) instala **só** `docker/producer/requirements-producer.txt`: dependência nova de um producer entra nesse arquivo e a imagem é reconstruída (`docker compose --profile producers up -d --build ...`).
+- **O producer de mercado só publica durante o pregão**: das 13h às 20h UTC (10h às 17h em Brasília), sem checar o dia da semana. Fora desse horário ele fica de pé, sem reiniciar, e `raw-market-data` não cresce (o log diz "Fora do horário de pregão" em nível DEBUG). Isso é o comportamento esperado, não uma falha.
+- **`AssertionError: Libraries for lz4 compression codec not found`** e o container reiniciando em loop: a imagem não tem a lib do codec de compressão do `ProducerConfig` (`lz4`). Era o estado até a issue #48. Se voltar a acontecer, confira se `lz4` está em `docker/producer/requirements-producer.txt` e reconstrua com `--build`; o teste `tests/unit/test_producer_image_requirements.py` existe para impedir que isso chegue ao `main`.
+
 ### Dados sintéticos: perfis, fraude por episódio e ground truth (issue #43)
 
 O gerador (`src/common/data_generator.py`) dá a cada cliente um perfil de comportamento
@@ -466,6 +492,7 @@ Só `tests/unit/` roda no CI — testes de integração (`tests/integration/`) e
 | Job Spark morre com `ExecutorLostFailure` / `Command exited with code 137` (SIGKILL) | OOM killer: a VM do Docker Desktop (`docker info` mostra `Total Memory`) ficou sem memória — stack completa + 2 executores de 2G + producers/streaming. Não é bug de código | Docker Desktop → Settings → Resources → Memory: **12 GB** (Apply & restart; volumes são preservados). Enquanto isso, pare os producers e o `spark-submit-stream` antes de rodar jobs batch pesados |
 | Job batch fica esperando recursos / DAG `batch_transformation_pipeline` não avança | O `spark-submit-stream` (streaming) segura os 4 cores e 4 GB do cluster (2 workers × 2 cores × 2G) | `Ctrl+C` no streaming antes de rodar batch, ou aumentar workers/cores no `docker-compose.yml` |
 | Airflow DB error | PostgreSQL não pronto | Aguardar healthcheck, `make logs-postgres` |
+| Container `producer-transactions`/`producer-market` reiniciando em loop com `Libraries for lz4 compression codec not found` | A imagem dos producers não tem a lib do codec de compressão (`docker/producer/requirements-producer.txt`) | Reconstruir com `docker compose --profile producers up -d --build`; ver "Rodar os producers" acima |
 | GX checkpoint falha | Ver seção "Quality Gates" acima | Diagnosticar via logs da task/data docs; corrigir a causa raiz e rerodar a DAG — nunca editar os JSON gerados em `gx/expectations/` diretamente, só `suites.py` |
 | `make test-unit` falha com `JAVA_GATEWAY_EXITED` | JDK ausente no PATH (PySpark local precisa de um JRE) | Instalar Java 17, ex. `brew install openjdk@17` no macOS, e garantir `JAVA_HOME`/`java` no PATH da shell |
 | CI falha no `pip install -e ".[dev]"` do job `test`, no pacote `confluent-kafka` | Runner sem a lib nativa `librdkafka` (a wheel manylinux pode não cobrir a imagem do runner) | Adicionar um step `apt-get install -y librdkafka-dev` antes do `pip install` em `.github/workflows/ci.yml`, job `test` |
