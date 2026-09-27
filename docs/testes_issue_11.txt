@@ -2,6 +2,11 @@
 CHECKLIST DE TESTES — Streaming Spark e Detecção de Fraude (issue #11)
 ================================================================================
 
+NOTA (issues #46 e #47): registro histórico. Descreve o detector de streaming como foi testado
+na época, um Z-Score do valor (`zscore-v1`) com `fraud_type` copiado do rótulo. Hoje o detector
+que alerta é o Fraud Engine multi-signal (`multisignal-v2`) e o Z-Score roda só em paralelo
+(shadow). Ver docs/architecture.md ("Detecção de fraude") e docs/testes_issue_47.txt.
+
 Objetivo: implementar a speed layer da arquitetura Lambda — consumir
 raw-transactions em tempo real, enriquecer, detectar anomalias de valor via
 Z-Score numa janela deslizante por cliente, e publicar enriched-transactions/

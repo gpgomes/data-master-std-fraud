@@ -1,6 +1,6 @@
 # Catálogo de Dados
 
-_Gerado em 2026-09-26T18:34:17.381230+00:00 por `python -m scripts.build_data_catalog`._
+_Gerado em 2026-09-26T23:32:13.145937+00:00 por `python -m scripts.build_data_catalog`._
 
 Substitui o OpenMetadata completo na V1 local (decisão documentada em `docs/architecture.md`) — ver definições de campo e o glossário de negócio completo em [`docs/data_dictionary.md`](data_dictionary.md).
 
@@ -17,7 +17,7 @@ Substitui o OpenMetadata completo na V1 local (decisão documentada em `docs/arc
 |---------|-------------|-------|---------------|-----------|--------|
 | **Silver — Transações**<br>Transações limpas, deduplicadas, timestamps normalizados para UTC. | `s3://silver/transactions/` | Data Engineering | PII, Confidencial | — | ✅ ok |
 | **Silver — Market Data**<br>Cotações enriquecidas com retorno diário e price range. | `s3://silver/market_data/` | Data Engineering | Público | VWAP, Volatilidade | ⚠️ sem dados (opcional): nenhum objeto encontrado em s3://silver/market_data/ |
-| **Silver — Transações (Streaming)**<br>Saída do detector de streaming, particionada por query_id/batch_id: transações com o veredito do Fraud Engine (fraud_score, is_fraud_predicted, fraud_signals, fraud_type_predicted, detector_version), o Z-Score antigo em paralelo (z_score, is_anomaly, fraud_score_v1) e o rótulo do gerador (is_fraud, fraud_type). Só existe depois que o job de streaming rodou (issues #11 e #46). | `s3://silver/transactions_stream/` | Data Engineering | PII, Confidencial | Z-Score, Fraud Score | ✅ ok |
+| **Silver — Transações (Streaming)**<br>Saída do detector de streaming, particionada por query_id/batch_id: transações com o veredito do Fraud Engine (fraud_score, is_fraud_predicted, fraud_signals, fraud_type_predicted, detector_version), o Z-Score antigo em paralelo (z_score, is_anomaly, fraud_score_v1) e o rótulo do gerador (is_fraud, fraud_type). Só existe depois que o job de streaming rodou (issues #11 e #46). | `s3://silver/transactions_stream/` | Data Engineering | PII, Confidencial | Fraud Engine, Shadow Scoring, Z-Score, Fraud Score | ✅ ok |
 
 ## Gold
 
@@ -27,7 +27,7 @@ Substitui o OpenMetadata completo na V1 local (decisão documentada em `docs/arc
 | **Gold — Dimensão Clientes**<br>Dimensão de clientes (SCD2, apenas registro corrente). | `s3://gold/dim_customers/` | Analytics Engineering | PII, Confidencial | — | ✅ ok |
 | **Gold — Dimensão Data**<br>Dimensão de calendário derivada das datas distintas do Silver. | `s3://gold/dim_date/` | Analytics Engineering | Público | — | ✅ ok |
 | **Gold — Métricas Diárias de Fraude**<br>Agregação diária de volume e taxa de fraude por tipo de transação. | `s3://gold/agg_daily_fraud_metrics/` | Analytics Engineering | Confidencial | Fraud Score | ✅ ok |
-| **Gold — Perfil de Comportamento do Cliente**<br>Perfil de comportamento por cliente, aprendido do histórico legítimo do Silver: valor típico (μ/σ de ln(amount)), devices, redes /24 e destinatários conhecidos, share noturno, centro geográfico e idade da conta. Grão: uma linha por cliente. É a camada longa da arquitetura Lambda, lida por broadcast pelo detector do streaming (issue #46). | `s3://gold/customer_behavior_profile/` | Fraud Analytics | PII, Confidencial | Fraud Score | ✅ ok |
+| **Gold — Perfil de Comportamento do Cliente**<br>Perfil de comportamento por cliente, aprendido do histórico legítimo do Silver: valor típico (μ/σ de ln(amount)), devices, redes /24 e destinatários conhecidos, share noturno, centro geográfico e idade da conta. Grão: uma linha por cliente. É a camada longa da arquitetura Lambda, lida por broadcast pelo detector do streaming (issue #46). Validado pelo gate gold_customer_behavior_profile do Great Expectations (issue #47). | `s3://gold/customer_behavior_profile/` | Fraud Analytics | PII, Confidencial | Perfil de Comportamento, Fraud Engine | ✅ ok |
 
 ## Serving (PostgreSQL)
 
@@ -37,8 +37,8 @@ Substitui o OpenMetadata completo na V1 local (decisão documentada em `docs/arc
 | **Postgres — dim_customers**<br>Espelho da dimensão de clientes Gold. | `dim_customers` | Analytics Engineering | PII, Confidencial | — | ✅ ok |
 | **Postgres — dim_date**<br>Espelho da dimensão de calendário Gold. | `dim_date` | Analytics Engineering | Público | — | ✅ ok |
 | **Postgres — agg_daily_fraud_metrics**<br>Espelho da agregação diária de fraude Gold, consumido pela API (issue #15). | `agg_daily_fraud_metrics` | Analytics Engineering | Confidencial | Fraud Score | ✅ ok |
-| **Postgres — stream_scored_transactions**<br>Transações pontuadas pelo detector de streaming (fraud_score, z_score, latência evento→processamento), carregadas por `make spark-submit-stream-postgres` (issue #38). | `stream_scored_transactions` | Analytics Engineering | Confidencial | Z-Score, Fraud Score | ✅ ok |
-| **Postgres — fraud_alerts**<br>Alertas do detector de streaming, os mesmos do tópico fraud-alerts; consumido por GET /alerts (issue #38). | `fraud_alerts` | Fraud Analytics | Confidencial | Z-Score, Fraud Score | ✅ ok |
+| **Postgres — stream_scored_transactions**<br>Transações pontuadas pelo Fraud Engine (fraud_score, is_fraud_predicted, fraud_signals, fraud_type_predicted, detector_version), com o Z-Score antigo em paralelo (z_score, is_anomaly, fraud_score_v1) e a latência evento→processamento. is_fraud/fraud_type são o **rótulo** do gerador (ground truth, só para medir); as colunas *_predicted e fraud_score são a predição. Carregada por `make spark-submit-stream-postgres` (issues #38 e #47). | `stream_scored_transactions` | Analytics Engineering | Confidencial | Fraud Engine, Shadow Scoring, Rótulo (ground truth), Fraud Score | ✅ ok |
+| **Postgres — fraud_alerts**<br>Alertas do Fraud Engine (V2), os mesmos do tópico fraud-alerts, com os sinais que dispararam cada alerta (signals) e o tipo inferido pelos sinais (fraud_type, nulo se nenhuma regra casou; nunca o rótulo). Consumido por GET /alerts (issues #38 e #47). | `fraud_alerts` | Fraud Analytics | Confidencial | Fraud Engine, Fraud Score | ✅ ok |
 
 ## Streaming (Kafka)
 
@@ -46,8 +46,8 @@ Substitui o OpenMetadata completo na V1 local (decisão documentada em `docs/arc
 |---------|-------------|-------|---------------|-----------|--------|
 | **Kafka — raw-transactions**<br>Transações publicadas em tempo real pelo producer. | `raw-transactions` | Data Engineering | PII, Confidencial | — | ✅ ok |
 | **Kafka — raw-market-data**<br>Cotações publicadas em tempo real pelo producer. Sem consumidor na V1: o Spark Streaming só lê raw-transactions e o Bronze de mercado vem do yfinance. | `raw-market-data` | Data Engineering | Público | VWAP | ✅ ok |
-| **Kafka — enriched-transactions**<br>Transações com o veredito do Fraud Engine anexado pelo StreamProcessor: fraud_score, fraud_signals (o motivo), fraud_type_predicted; e o Z-Score antigo em paralelo (issues #11 e #46). | `enriched-transactions` | Data Engineering | PII, Confidencial | Z-Score, Fraud Score | ✅ ok |
-| **Kafka — fraud-alerts**<br>Alertas do Fraud Engine multi-signal: tipo inferido pelos sinais (não o rótulo), lista de sinais ativos e versão do detector (issues #11 e #46). | `fraud-alerts` | Fraud Analytics | PII, Confidencial | Z-Score, Fraud Score, Velocity Check | ✅ ok |
+| **Kafka — enriched-transactions**<br>Transações com o veredito do Fraud Engine anexado pelo StreamProcessor: fraud_score, fraud_signals (o motivo), fraud_type_predicted; e o Z-Score antigo em paralelo (issues #11 e #46). | `enriched-transactions` | Data Engineering | PII, Confidencial | Fraud Engine, Shadow Scoring, Z-Score, Fraud Score | ✅ ok |
+| **Kafka — fraud-alerts**<br>Alertas do Fraud Engine multi-signal: tipo inferido pelos sinais (não o rótulo), lista de sinais ativos e versão do detector (issues #11 e #46). | `fraud-alerts` | Fraud Analytics | PII, Confidencial | Fraud Engine, Fraud Score, Velocity Check | ✅ ok |
 
 ## Dashboards
 

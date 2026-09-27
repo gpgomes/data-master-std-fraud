@@ -116,7 +116,7 @@ CATALOG: tuple[CatalogEntry, ...] = (
         location=f"s3://{settings.minio.bucket_silver}/transactions_stream/",
         owner="Data Engineering",
         classification=("PII", "Confidencial"),
-        glossary_terms=("Z-Score", "Fraud Score"),
+        glossary_terms=("Fraud Engine", "Shadow Scoring", "Z-Score", "Fraud Score"),
         description=(
             "Saída do detector de streaming, particionada por query_id/batch_id: transações com "
             "o veredito do Fraud Engine (fraud_score, is_fraud_predicted, fraud_signals, "
@@ -188,13 +188,14 @@ CATALOG: tuple[CatalogEntry, ...] = (
         location=f"s3://{settings.minio.bucket_gold}/customer_behavior_profile/",
         owner="Fraud Analytics",
         classification=("PII", "Confidencial"),
-        glossary_terms=("Fraud Score",),
+        glossary_terms=("Perfil de Comportamento", "Fraud Engine"),
         description=(
             "Perfil de comportamento por cliente, aprendido do histórico legítimo do Silver: "
             "valor típico (μ/σ de ln(amount)), devices, redes /24 e destinatários conhecidos, "
             "share noturno, centro geográfico e idade da conta. Grão: uma linha por cliente. É "
             "a camada longa da arquitetura Lambda, lida por broadcast pelo detector do "
-            "streaming (issue #46)."
+            "streaming (issue #46). Validado pelo gate gold_customer_behavior_profile do Great "
+            "Expectations (issue #47)."
         ),
         upstream=("silver_transactions", "gold_dim_customers"),
     ),
@@ -255,10 +256,14 @@ CATALOG: tuple[CatalogEntry, ...] = (
         location="stream_scored_transactions",
         owner="Analytics Engineering",
         classification=("Confidencial",),
-        glossary_terms=("Z-Score", "Fraud Score"),
+        glossary_terms=("Fraud Engine", "Shadow Scoring", "Rótulo (ground truth)", "Fraud Score"),
         description=(
-            "Transações pontuadas pelo detector de streaming (fraud_score, z_score, latência "
-            "evento→processamento), carregadas por `make spark-submit-stream-postgres` (issue #38)."
+            "Transações pontuadas pelo Fraud Engine (fraud_score, is_fraud_predicted, fraud_signals, "
+            "fraud_type_predicted, detector_version), com o Z-Score antigo em paralelo (z_score, "
+            "is_anomaly, fraud_score_v1) e a latência evento→processamento. is_fraud/fraud_type são "
+            "o **rótulo** do gerador (ground truth, só para medir); as colunas *_predicted e "
+            "fraud_score são a predição. Carregada por `make spark-submit-stream-postgres` "
+            "(issues #38 e #47)."
         ),
         upstream=("silver_transactions_stream",),
     ),
@@ -270,8 +275,12 @@ CATALOG: tuple[CatalogEntry, ...] = (
         location="fraud_alerts",
         owner="Fraud Analytics",
         classification=("Confidencial",),
-        glossary_terms=("Z-Score", "Fraud Score"),
-        description="Alertas do detector de streaming, os mesmos do tópico fraud-alerts; consumido por GET /alerts (issue #38).",
+        glossary_terms=("Fraud Engine", "Fraud Score"),
+        description=(
+            "Alertas do Fraud Engine (V2), os mesmos do tópico fraud-alerts, com os sinais que "
+            "dispararam cada alerta (signals) e o tipo inferido pelos sinais (fraud_type, nulo se "
+            "nenhuma regra casou; nunca o rótulo). Consumido por GET /alerts (issues #38 e #47)."
+        ),
         upstream=("silver_transactions_stream",),
     ),
     # ── Streaming (Kafka) ────────────────────────────────────────────────
@@ -308,7 +317,7 @@ CATALOG: tuple[CatalogEntry, ...] = (
         location=settings.kafka.topic_enriched,
         owner="Data Engineering",
         classification=("PII", "Confidencial"),
-        glossary_terms=("Z-Score", "Fraud Score"),
+        glossary_terms=("Fraud Engine", "Shadow Scoring", "Z-Score", "Fraud Score"),
         description=(
             "Transações com o veredito do Fraud Engine anexado pelo StreamProcessor: fraud_score, "
             "fraud_signals (o motivo), fraud_type_predicted; e o Z-Score antigo em paralelo "
@@ -324,7 +333,7 @@ CATALOG: tuple[CatalogEntry, ...] = (
         location=settings.kafka.topic_fraud_alerts,
         owner="Fraud Analytics",
         classification=("PII", "Confidencial"),
-        glossary_terms=("Z-Score", "Fraud Score", "Velocity Check"),
+        glossary_terms=("Fraud Engine", "Fraud Score", "Velocity Check"),
         description=(
             "Alertas do Fraud Engine multi-signal: tipo inferido pelos sinais (não o rótulo), "
             "lista de sinais ativos e versão do detector (issues #11 e #46)."

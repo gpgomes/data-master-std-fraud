@@ -82,7 +82,7 @@
 
     <rect x="610" y="480" width="550" height="86" rx="10" fill="#f5f3ff" stroke="#8b5cf6" stroke-width="1.5"/>
     <text x="885" y="518" text-anchor="middle" font-size="15" font-weight="600" fill="#4c1d95">Spark Structured Streaming</text>
-    <text x="885" y="536" text-anchor="middle" font-size="11.5" fill="#5b21b6">stream_processor.py — Z-Score</text>
+    <text x="885" y="536" text-anchor="middle" font-size="11.5" fill="#5b21b6">stream_processor.py — Fraud Engine (V2)</text>
   </g>
 
   <line x1="600" y1="566" x2="600" y2="584" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow)"/>

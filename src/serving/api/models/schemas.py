@@ -6,7 +6,7 @@ from datetime import date, datetime
 from typing import Generic, TypeVar
 
 from fastapi import Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 T = TypeVar("T")
 
@@ -58,7 +58,13 @@ class TransactionOut(BaseModel):
 
 
 class AlertOut(BaseModel):
-    """Um alerta do detector de fraude de streaming (`fraud_alerts`, issue #38)."""
+    """Um alerta do Fraud Engine de streaming (`fraud_alerts`, issues #38 e #47).
+
+    `fraud_type` é o tipo **inferido pelos sinais** (nulo quando nenhuma regra casou; nunca o
+    rótulo do gerador). `fraud_signals` lista os sinais ativos que dispararam o alerta (a coluna
+    `signals` da tabela, guardada como texto separado por vírgula). `z_score` é o do detector
+    antigo, que segue calculado em paralelo, e pode ser nulo.
+    """
 
     alert_id: str
     transaction_id: str
@@ -69,7 +75,19 @@ class AlertOut(BaseModel):
     fraud_score: float | None = None
     z_score: float | None = None
     alert_reason: str | None = None
+    fraud_signals: list[str] = Field(default_factory=list)
+    detector_version: str | None = None
     processed_at: datetime | None = None
+
+    @field_validator("fraud_signals", mode="before")
+    @classmethod
+    def _split_signals(cls, value: object) -> object:
+        """A tabela guarda os sinais como `"A,B"`; vazio ou nulo (linha antiga) vira lista vazia."""
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [signal for signal in (part.strip() for part in value.split(",")) if signal]
+        return value
 
 
 class DailyFraudMetricOut(BaseModel):

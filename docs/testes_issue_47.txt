@@ -1,0 +1,306 @@
+================================================================================
+CHECKLIST DE TESTES — Serving, GX, catálogo e benchmark final V1 × V2 (issue #47)
+================================================================================
+
+Objetivo: fechar a série do Fraud Engine (#43 a #47). Com o detector rodando no
+stream (#46), a saída chega ao Postgres, à API e ao catálogo; o perfil de
+comportamento ganha um quality gate; e o resultado vira evidência documentada:
+Precision, Recall, FPR e latência do V2 contra o V1, offline e online.
+
+Decisões (e onde divergi da issue):
+
+  1. `fraud_signals` como texto separado por vírgula (VARCHAR), não como array do
+     Postgres. A API é testada em SQLite (test_api.py), o Superset lê texto simples
+     e o JDBC do Spark não precisa mapear o tipo array. Vazio = nenhum sinal.
+  2. Colunas novas: as 4 pedidas em `stream_scored_transactions` (`is_fraud_predicted`,
+     `fraud_signals`, `fraud_type_predicted`, `detector_version`) e as 2 em
+     `fraud_alerts` (`signals`, `detector_version`), mais duas que a issue não
+     listava: `fraud_score_v1` e `shadow_detector_version`. Depois da #46 o
+     `fraud_score` da saída é o do V2; sem `fraud_score_v1` o score do Z-Score se
+     perderia no Postgres.
+  3. Nome na API: a coluna de `fraud_alerts` é `signals` (como no `FraudAlert` e no
+     tópico Kafka), e `GET /alerts` a devolve como `fraud_signals` (lista), que é o
+     que o critério de aceite pede. O repositório faz `signals AS fraud_signals`.
+  4. Superset: nenhum gráfico novo (fora do escopo, como a issue diz). Só as
+     descrições dos dois gráficos de streaming (que falavam em Z-Score) e as
+     colunas novas dos datasets `fraud_alerts` e `stream_scored_transactions` no
+     snapshot versionado. O `make dashboards-export` regenera todos os uuids do
+     dashboard; para não poluir o diff versionei só as colunas novas, com os uuids
+     originais.
+  5. O benchmark online virou um alvo do Makefile (`make fraud-online-eval`) sobre
+     uma query versionada, em vez de uma consulta solta.
+  6. Correção de um erro meu na #46: eu tinha escrito (issue, PR e notas) que os
+     alertas sem tipo criariam um grupo nulo num gráfico de alertas por
+     `fraud_type` do Superset. Esse gráfico não existe (o "Distribuição de Fraude
+     por Tipo" usa o rótulo do batch em `fact_transactions`). Corrigi o comentário
+     na issue #46 e o corpo do PR #52.
+
+Arquivos criados:
+  - src/serving/queries/fraud_online_benchmark.sql
+  - tests/unit/test_fraud_online_benchmark.py (8 testes)
+  - docs/fraud_engine_perguntas_banca.md
+  - docs/testes_issue_47.txt (este arquivo)
+  - src/governance/great_expectations/gx/expectations/gold_customer_behavior_profile.json
+    e gx/checkpoints/gold_customer_behavior_profile_checkpoint.yml (gerados pelo
+    runner, versionados como os das outras suites)
+
+Arquivos modificados:
+  - src/serving/loaders/schema.sql (colunas novas + ALTER TABLE ... IF NOT EXISTS)
+  - src/serving/loaders/stream_to_postgres.py
+  - src/serving/api/{models/schemas.py, repository.py, routes/alerts.py}
+  - src/governance/great_expectations/{suites.py, datasets.py}
+  - dags/dag_batch_transformation.py (gate do perfil na task de validação do Gold)
+  - src/governance/data_catalog/registry.py, docs/data_catalog.md,
+    docs/images/data_lineage.svg
+  - src/serving/dashboards/charts.py, dashboards/superset/dashboard_configs/datasets/
+  - Makefile (fraud-online-eval)
+  - docs/{architecture,runbook,data_dictionary,test_status}.md, README.md, CLAUDE.md,
+    docs/images/architecture.svg
+  - tests/unit/{test_api,test_stream_to_postgres,test_great_expectations,
+    test_data_catalog}.py
+
+================================================================================
+1. TESTES UNITÁRIOS
+================================================================================
+
+Comando:
+  make test-unit        # 789 passed (752 depois da #46), cobertura 88,8% (gate de 70%)
+
+  make lint             # ruff + mypy limpos
+
+Cobertura por critério:
+
+  - `GET /alerts` devolve `fraud_signals` (tests/unit/test_api.py): lista de sinais,
+    versão do detector, tipo inferido; alerta sem tipo e sem Z-Score; sinais vazios
+    ("combinação de sinais fracos"); linha carregada antes do upgrade (colunas
+    nulas) devolve lista vazia.
+  - Loader (tests/unit/test_stream_to_postgres.py): tabela pontuada com V2 e V1 lado
+    a lado, sinais como texto, rótulo e predição em colunas separadas; alerta com
+    `signals` e `detector_version`; as colunas do DataFrame batem, na ordem, com o
+    DDL do Postgres.
+  - `ensure_schema` em banco novo e em banco já provisionado
+    (TestUpgradeOfProvisionedDatabases): toda coluna criada depois da #38 tem um
+    ALTER TABLE ... ADD COLUMN IF NOT EXISTS de mesmo tipo; nenhum ALTER sem
+    IF NOT EXISTS; nenhuma coluna original foi removida ou mudou; `ensure_schema`
+    executa o arquivo inteiro numa transação. A verificação contra um Postgres
+    real está na seção 2.
+  - GX (tests/unit/test_great_expectations.py, TestGoldCustomerBehaviorProfile,
+    12 testes): perfil válido passa; falham cliente duplicado, `mu_log` nulo,
+    `mu_log` com o valor cru no lugar do log, σ abaixo do piso, `night_share` > 1,
+    latitude e longitude trocadas, cliente com perfil e sem coordenadas,
+    `has_profile` incoerente com `n_history` (nos dois sentidos), coluna ausente e
+    tabela vazia.
+  - Catálogo: os testes existentes (glossário, linhagem, imagem versionada igual ao
+    catálogo) passam com o dataset e os termos novos.
+  - Benchmark: a query só lê, só usa colunas do DDL, reporta as métricas da série e
+    os percentis de latência; o alvo do Makefile aponta para ela.
+
+================================================================================
+2. VERIFICAÇÃO CONTRA A INFRA REAL (Docker)
+================================================================================
+
+2.1 `ensure_schema` em banco JÁ PROVISIONADO (o Postgres do Docker tinha as tabelas
+    da #38: `fraud_alerts` com 10 colunas, `stream_scored_transactions` com 17):
+
+      make spark-submit-stream-postgres
+      -> fraud_alerts: 12 colunas; stream_scored_transactions: 23 colunas
+      -> carga de 15.433 linhas e 361 alertas, dados legíveis nas colunas novas
+
+2.2 `schema.sql` em banco NOVO (`CREATE DATABASE scratch_issue47`, removido depois):
+
+      psql -v ON_ERROR_STOP=1 < src/serving/loaders/schema.sql   # 14 comandos, sem erro
+      psql -v ON_ERROR_STOP=1 < src/serving/loaders/schema.sql   # segunda aplicação, sem erro
+      -> 35 colunas nas duas tabelas de streaming, mesmos nomes e tipos que o banco
+         atualizado em 2.1 (diff vazio)
+
+2.3 API real (`uvicorn`, GET /alerts?page_size=100 sobre os 361 alertas):
+
+      total 361 | 100 itens, os 100 com `fraud_signals` | 38 com `fraud_type` nulo |
+      detector_version {"multisignal-v2"}
+
+    Exemplo: fraud_signals ["AMOUNT_ANOMALY","NEW_DESTINATION"], fraud_type
+    SOCIAL_ENGINEERING, fraud_score 0,942, z_score 5,32, alert_reason
+    "Sinais: AMOUNT_ANOMALY, NEW_DESTINATION | score 0.942 | multisignal-v2".
+
+2.4 Gate do Great Expectations sobre o Gold real:
+
+      python -m src.governance.great_expectations.runner gold_customer_behavior_profile
+      -> "Quality gate passou": 34 expectativas, 0 falhas (10.000 perfis)
+
+    Os valores reais ficaram dentro das faixas: mu_log 3,24 a 7,51; sigma_log 0,56 a
+    1,28; night_share 0 a 0,41; home_lat -30,1 a -3,1; home_lon -60,1 a -34,8; todos
+    com has_profile.
+
+2.5 Catálogo estrito contra a infra real:
+
+      make catalog          # exit 0; regenera docs/data_catalog.md e o SVG de linhagem
+      -> 21 datasets, 0 referências inválidas
+
+2.6 Superset:
+
+      make dashboards       # exit 0; smoke test compara cada chart contra o Postgres
+      -> passou com as tabelas de streaming já no formato novo
+
+================================================================================
+3. BENCHMARK FINAL
+================================================================================
+
+3.1 Offline: `make fraud-eval` (~1 min, Spark local, sem Docker), seeds fixas.
+
+      V2: Precision 0,727, Recall 0,941, F1 0,820 (média das 5 seeds de teste)
+      git diff docs/fraud_evaluation.md src/transformation/fraud/weights.py
+      -> vazio: o relatório e os pesos saem idênticos byte a byte (reprodutível)
+
+    O relatório traz V1 × V2 com Precision, Recall, F1, FPR, FNR, PR-AUC, alertas
+    por 1.000 transações, recall por tipo e por cenário (inclusive *stealth*),
+    falsos positivos por hard negative, time-to-detect, matriz de confusão do tipo
+    inferido, a tabela dos sinais e a sensibilidade sem `NEW_DESTINATION`.
+
+3.2 Online: rodada limpa e ininterrupta.
+
+    Preparo: apagados `silver/transactions_stream/`, `silver/_stream_state/` e
+    `checkpoints/` (dados locais regeneráveis). Perfil no Gold da #46 (10.000
+    clientes). Stream (`make spark-submit-stream`) e producer no host
+    (`PRODUCER_RATE_TPS=20`, rende ~14 TPS; o container do producer não roda por
+    causa da issue #48) por 21 min. Depois, com o stream parado:
+
+      make spark-submit-stream-postgres     # 18.170 linhas, 492 alertas
+      make fraud-online-eval
+
+    Saída (integral):
+
+      Null display is "-".
+
+      == 1. Volume ==
+       eventos | fraudes_rotulo | prevalencia_pct | sem_veredito_v2 |      primeiro_evento       |       ultimo_evento        
+      ---------+----------------+-----------------+-----------------+----------------------------+----------------------------
+         18170 |            323 |            1.78 |               0 | 2026-09-26 20:34:50.576064 | 2026-09-26 20:56:07.957254
+
+
+      == 2. Precision, Recall, F1, FPR por detector (mesmos eventos) ==
+            detector      | tp  |  fp  | fn  |  tn   | precision_pct | recall_pct | f1_pct | fpr_pct | fnr_pct | alertas_por_1000 
+      --------------------+-----+------+-----+-------+---------------+------------+--------+---------+---------+------------------
+       zscore-v1 (shadow) | 186 | 1125 | 137 | 16722 |          14.2 |       57.6 |   22.8 |    6.30 |    42.4 |             72.2
+       multisignal-v2     | 295 |  197 |  28 | 17650 |          60.0 |       91.3 |   72.4 |    1.10 |     8.7 |             27.1
+
+
+      == 3. Recall por tipo de fraude (rótulo), V1 x V2 ==
+          tipo_rotulo     | fraudes | recall_v1_pct | recall_v2_pct 
+      --------------------+---------+---------------+---------------
+       ACCOUNT_TAKEOVER   |     101 |          61.4 |         100.0
+       CARD_CLONING       |      27 |          25.9 |         100.0
+       IDENTITY_THEFT     |      63 |          63.5 |         100.0
+       MONEY_LAUNDERING   |      46 |          87.0 |          97.8
+       SOCIAL_ENGINEERING |      86 |          43.0 |          68.6
+
+
+      == 4. Quem pegou o quê (só fraudes) ==
+       ambos | so_v2 | so_v1 | nenhum 
+      -------+-------+-------+--------
+         180 |   115 |     6 |     22
+
+
+      == 5. Tipo inferido pelo V2 x tipo do rótulo (fraudes que o V2 alertou) ==
+          tipo_rotulo     |   tipo_inferido    | alertas 
+      --------------------+--------------------+---------
+       ACCOUNT_TAKEOVER   | ACCOUNT_TAKEOVER   |      94
+       ACCOUNT_TAKEOVER   | CARD_CLONING       |       4
+       ACCOUNT_TAKEOVER   | (sem tipo)         |       2
+       ACCOUNT_TAKEOVER   | MONEY_LAUNDERING   |       1
+       CARD_CLONING       | CARD_CLONING       |      27
+       IDENTITY_THEFT     | IDENTITY_THEFT     |      59
+       IDENTITY_THEFT     | (sem tipo)         |       3
+       IDENTITY_THEFT     | MONEY_LAUNDERING   |       1
+       MONEY_LAUNDERING   | SOCIAL_ENGINEERING |      28
+       MONEY_LAUNDERING   | MONEY_LAUNDERING   |      12
+       MONEY_LAUNDERING   | (sem tipo)         |       2
+       MONEY_LAUNDERING   | IDENTITY_THEFT     |       2
+       MONEY_LAUNDERING   | CARD_CLONING       |       1
+       SOCIAL_ENGINEERING | (sem tipo)         |      34
+       SOCIAL_ENGINEERING | MONEY_LAUNDERING   |      13
+       SOCIAL_ENGINEERING | SOCIAL_ENGINEERING |      12
+
+       tipo_correto | sem_tipo | fraudes_alertadas | tipo_correto_pct 
+      --------------+----------+-------------------+------------------
+                204 |       41 |               295 |             69.2
+
+
+      == 6. Falsos positivos do V2 (legítimas alertadas): sinais mais frequentes ==
+            signal       | falsos_positivos 
+      -------------------+------------------
+       NEW_DESTINATION   |              197
+       TX_VELOCITY       |               46
+       AMOUNT_ANOMALY    |               18
+       NEW_DEVICE        |               16
+       ACCOUNT_AGE_LOW   |               13
+       NEW_IP            |                9
+       GEO_FAR_FROM_HOME |                6
+       GEO_VELOCITY      |                2
+
+
+      == 7. Latência evento -> processamento (s), p50 / p95 / p99 ==
+       eventos | p50  |  p95  |  p99  | media 
+      ---------+------+-------+-------+-------
+         18170 | 5.97 | 10.46 | 10.92 |  5.74
+
+
+      == 8. Versões dos detectores nos dados ==
+           alerta     |  shadow   | eventos 
+      ----------------+-----------+---------
+       multisignal-v2 | zscore-v1 |   18170
+
+    Leitura:
+      - V2 × V1 nos mesmos 18.170 eventos: F1 72,4% contra 22,8%; Recall 91,3%
+        contra 57,6%; FPR 1,10% contra 6,30%.
+      - O Recall do V2 por tipo bate com o offline (`ACCOUNT_TAKEOVER`,
+        `CARD_CLONING` e `IDENTITY_THEFT` 100%; `MONEY_LAUNDERING` 97,8% contra 99,1%;
+        `SOCIAL_ENGINEERING` 68,6% contra 68,2%). O Recall global (91,3%, intervalo
+        de ±3 p.p. com 323 fraudes) fica dentro do intervalo do offline (94,1%). A
+        Precision é menor porque a prevalência é de 1,8% e a offline de ~2,6%.
+      - O tipo inferido está certo em 69,2% das fraudes alertadas (76,3% no offline),
+        e 41 delas ficam sem tipo. No total, 169 dos 492 alertas (34%) não têm tipo,
+        e 128 deles são falsos positivos.
+      - Todos os 197 falsos positivos do V2 têm `NEW_DESTINATION` ativo.
+      - O Z-Score pegou 6 fraudes que o V2 perdeu; o V2 pegou 115 que o Z-Score não vê.
+      - Latência: p50 5,97 s, p95 10,46 s, p99 10,92 s. Baseline do V1 antes do Fraud
+        Engine (#36): p50 5,46 s, p95 9,90 s. Regressão de ~0,5 s (o teto é o
+        trigger de 10 s).
+      - Não explicado: o FPR do Z-Score online (6,3%) é maior que o offline (2,2%).
+        Hipótese: janela de 1 h com poucas amostras por cliente numa execução curta
+        (~18 eventos por cliente). Não confirmada.
+
+3.3 Latência com o estado curto em regime (feita na #46, registrada aqui porque
+    fecha o risco R2 do plano): estado com 346 mil linhas (~14,5 TPS x 6 h para
+    1.000 clientes) mais 3.497 eventos novos: p50 5,67 s, p95 10,38 s, intervalo entre
+    micro-batches de 9,9 s (o job não acumula atraso). O plano B (guardar só o último
+    evento por cliente) não foi necessário.
+
+================================================================================
+4. CRITÉRIOS DE ACEITE
+================================================================================
+
+  [x] `make catalog` (estrito) passa contra a infra real (2.5).
+  [x] `GET /alerts` devolve `fraud_signals`; teste da API atualizado (1 e 2.3).
+  [x] `ensure_schema` funciona em banco novo e em banco já provisionado, com
+      teste (1) e verificação manual registrada (2.1 e 2.2).
+  [x] `docs/fraud_evaluation.md` final com V1 × V2 (3.1) e a rodada online
+      registrada neste arquivo (3.2).
+  [x] Documentação atualizada; nenhuma menção restante a "detecção só por Z-Score"
+      ou ao fallback `MONEY_LAUNDERING` nos documentos vivos (README, architecture,
+      runbook, data_dictionary, catálogo). Os registros históricos de testes
+      (`test_status.md`, `testes_issue_11.txt`, `testes_e2e_validation.txt`)
+      descrevem o V1 como foi testado na época e ganharam um aviso.
+  [x] Checklist do conjunto completo:
+        - `make fraud-eval` reproduzível a partir de seeds fixas (3.1, diff vazio);
+        - V1 × V2 com Precision, Recall, F1, FPR, FNR, PR-AUC, alertas/1.000 tx,
+          recall por tipo e por cenário (3.1, relatório);
+        - `fraud_type` do alerta inferido, nunca copiado do rótulo
+          (TestBuildFraudAlerts e TestStreamNoLabelLeakage na #46; 3.2, seção 5);
+        - `fraud_signals` em cada alerta (2.3);
+        - testes de vazamento e de paridade batch × stream verdes (#46,
+          test_stream_processor.py);
+        - testes de idempotência da #36 verdes (TestIdempotentMicroBatch), mais a
+          verificação com `kill -9` no meio do micro-batch feita na #46.
+  [x] `make lint` e `make test-unit` verdes (1).
+
+Guarda de escopo: a suite GX do perfil foi feita; gráficos novos no Superset não.

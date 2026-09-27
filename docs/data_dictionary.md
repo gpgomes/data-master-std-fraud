@@ -25,7 +25,7 @@ Dados raw de transações financeiras conforme recebidos dos producers Kafka.
 | longitude | double | Longitude do cliente (pode ser nulo) |
 | is_fraud | boolean | Flag de fraude (label, ground truth conhecida na origem) |
 | fraud_type | string | Tipo de fraude (nulo se não for fraude) |
-| fraud_score | double | Score de risco (0-1); sempre nulo no Bronze — campo derivado, populado pela detecção de fraude (streaming/Z-Score), nunca pela geração/ingestão |
+| fraud_score | double | Score de risco (0-1); sempre nulo no Bronze — campo derivado, populado pela detecção de fraude (streaming, Fraud Engine), nunca pela geração/ingestão |
 
 ### bronze/market_data/
 Dados OHLCV de ativos conforme coletados via yfinance.
@@ -59,6 +59,20 @@ Cotações limpas e enriquecidas com indicadores básicos.
 Colunas adicionais:
 - `daily_return`: retorno percentual diário
 - `price_range`: diferença high - low
+
+### silver/transactions_stream/
+Saída do job de streaming (`stream_processor.py`), **distinta** de `silver/transactions/` (que é do
+batch). Uma linha por `transaction_id` de cada micro-batch, particionada por `query_id` (o id do
+checkpoint) e `batch_id`. Só existe depois que o streaming rodou (issues #11 e #46).
+
+| Grupo | Colunas | Descrição |
+|-------|---------|-----------|
+| Transação | `transaction_id`, `customer_id`, `timestamp`, `amount`, `currency`, `transaction_type`, `merchant_category`, `origin_account`, `destination_account`, `origin_bank`, `destination_bank`, `channel`, `device_id`, `ip_address`, `latitude`, `longitude`, `produced_at`, `source_system` | O evento como chegou do Kafka |
+| Enriquecimento | `customer_segment`, `customer_risk_score`, `customer_city` | Join broadcast com `gold/dim_customers` |
+| **Rótulo (ground truth)** | `is_fraud`, `fraud_type` | O que o gerador sintético sabe. Viaja no payload do Kafka e serve **só para medir** o detector: é separado do DataFrame antes de qualquer detector e voltado por `transaction_id` no fim |
+| **Predição — Fraud Engine V2** (quem alerta) | `fraud_score`, `is_fraud_predicted`, `fraud_signals`, `fraud_type_predicted`, `detector_version` | Score noisy-OR em [0, 1]; alerta quando `fraud_score` passa do limiar calibrado; `fraud_signals` lista os sinais ativos; `fraud_type_predicted` é inferido pelos sinais (nulo se nenhuma regra casa) |
+| **Predição — Z-Score V1** (shadow) | `z_score`, `is_anomaly`, `fraud_score_v1`, `shadow_detector_version` | O detector antigo, mantido só para comparação online |
+| Auditoria | `processing_timestamp`, `query_id`, `batch_id` | Quando o Spark processou o micro-batch e de qual execução ele veio |
 
 ## Gold Layer
 
@@ -127,9 +141,33 @@ Particionado por `date_key`.
 | fraud_count | long | Total de transações fraudulentas |
 | fraud_rate | double | fraud_count / total_transactions |
 
-### gold/fato_anomalias/ *(ainda não implementado)*
-Registros de anomalias detectadas no streaming com Z-Score e contexto —
-depende do job de streaming (roadmap 2.3/2.4), não incluído no batch Silver→Gold.
+### gold/customer_behavior_profile/
+Perfil de comportamento por cliente (issue #46): o que é "normal" para cada um, aprendido do histórico
+legítimo. Grão: **uma linha por cliente** de `gold/dim_customers`. É a camada longa da arquitetura
+Lambda: o batch calcula (varre meses de transações), o streaming lê por broadcast e só calcula a janela
+curta. Usa só as linhas com `is_fraud = false` do Silver (rótulos históricos existem depois da
+confirmação da fraude); o streaming nunca lê o rótulo do evento que está pontuando.
+
+| Campo | Tipo | Descrição |
+|-------|------|-----------|
+| customer_id | string | PK (mesma chave de `dim_customers.customer_key`) |
+| has_profile | boolean | `n_history >= 3`. Sem isso o valor cai para o prior do segmento e os sinais de "conhecido" ficam neutros |
+| n_history | long | Transações legítimas usadas |
+| mu_log, sigma_log | double | Média e desvio de `ln(amount)`, encolhidos ao prior do segmento (k = 5); `sigma_log` tem piso de 0,3 |
+| known_devices | array\<string\> | Devices já usados |
+| known_ip_prefixes | array\<string\> | Redes /24 já usadas |
+| known_destinations | array\<string\> | Destinatários frequentes (≥ 2 usos, até 50) |
+| night_share | double | Fração das transações de madrugada (0–5 h, horário de São Paulo); 1,0 sem histórico |
+| home_lat, home_lon | double | Mediana das coordenadas; nulas sem histórico |
+| account_opening_date | date | Abertura da conta, de `dim_customers` |
+
+Validada pelo gate `gold_customer_behavior_profile` do Great Expectations (não nulos, cliente único,
+faixas de μ/σ e de coordenadas, `has_profile` coerente com `n_history`).
+
+### gold/fato_anomalias/ *(nunca implementado)*
+Ideia original de uma tabela Gold de anomalias detectadas no streaming. Não existe: os alertas ficam em
+`silver/transactions_stream/` (Parquet), no tópico Kafka `fraud-alerts` e na tabela `fraud_alerts` do
+Postgres (abaixo).
 
 ## Serving Layer — streaming (issue #38)
 
@@ -138,35 +176,68 @@ Carregadas em PostgreSQL por `src/serving/loaders/stream_to_postgres.py` a parti
 ### stream_scored_transactions
 Uma linha por `transaction_id` processada pelo detector de streaming.
 
+**Rótulo × predição.** `is_fraud` e `fraud_type` são o **rótulo do gerador sintético** (ground truth):
+servem para medir o detector, nunca entram no scoring. O que o detector decidiu está nas colunas de
+predição, e as duas gerações de detector ficam lado a lado (issue #47):
+
 | Coluna | Tipo | Descrição |
 |--------|------|-----------|
 | transaction_id | string | PK |
-| customer_id | string | Cliente (id do evento, não é FK para `dim_customers`: o simulador gera clientes próprios) |
+| customer_id | string | Cliente (id do evento) |
 | event_time | timestamp | Horário do evento (`timestamp` da transação) |
 | amount, currency, transaction_type, channel, merchant_category | — | Atributos da transação |
-| is_fraud, fraud_type | boolean, string | Rótulo sintético do gerador (não é a decisão do detector) |
-| z_score | double | Z-Score do valor sobre a janela de 1h do cliente; nulo sem baseline (menos de 2 transações na janela) |
-| fraud_score | double | `min(abs(z_score) / 6, 1)`; nulo quando `z_score` é nulo |
+| is_fraud, fraud_type | boolean, string | **Rótulo** sintético do gerador (não é a decisão do detector) |
+| fraud_score | double | **Fraud Engine V2**: score noisy-OR dos sinais ativos, em [0, 1]; 0 = nenhum sinal |
 | fraud_score_bucket | double | `fraud_score` arredondado a 0,1 (para o histograma) |
-| is_anomaly | boolean | `abs(z_score) > 3` |
+| is_fraud_predicted | boolean | **V2**: `fraud_score` acima do limiar calibrado (`weights.py`); é o que gera o alerta |
+| fraud_signals | string | **V2**: sinais ativos separados por vírgula (ex.: `AMOUNT_ANOMALY,NEW_DESTINATION`); vazio = nenhum sinal acima de 0,5 |
+| fraud_type_predicted | string | **V2**: tipo inferido pelos sinais; nulo se nenhuma regra casou |
+| detector_version | string | `multisignal-v2` |
+| z_score | double | **Z-Score V1** (shadow): valor sobre a janela de 1h do cliente; nulo sem baseline (menos de 2 transações na janela) |
+| is_anomaly | boolean | **V1**: `abs(z_score) > 3` |
+| fraud_score_v1 | double | **V1**: `min(abs(z_score) / 6, 1)`; nulo quando `z_score` é nulo |
+| shadow_detector_version | string | `zscore-v1` |
 | produced_at | timestamp | Quando o producer emitiu o evento |
 | processing_timestamp | timestamp | Quando o Spark processou o micro-batch |
 | latency_seconds | double | `processing_timestamp - produced_at` |
 
-Não carrega `device_id`, `ip_address`, contas nem coordenadas.
+Não carrega `device_id`, `ip_address`, contas nem coordenadas. Em bancos provisionados antes da
+issue #47 as colunas do V2 chegam por `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` (aplicado por
+`ensure_schema` a cada carga), e as linhas carregadas antes disso ficam com elas nulas até a próxima
+carga.
 
 ### fraud_alerts
-Os alertas do detector, o mesmo conteúdo do tópico Kafka `fraud-alerts`.
+Os alertas do Fraud Engine V2, o mesmo conteúdo do tópico Kafka `fraud-alerts`.
 
 | Coluna | Tipo | Descrição |
 |--------|------|-----------|
 | alert_id | string | PK, UUID determinístico derivado de `transaction_id` (idêntico ao do Kafka) |
 | transaction_id | string | Única: um alerta por transação |
 | customer_id, event_time, amount | — | Dados da transação alertada |
-| fraud_type | string | Rótulo do gerador quando existe; senão `MONEY_LAUNDERING` (fallback fixo) |
-| fraud_score, z_score | double | Score e Z-Score que dispararam o alerta |
-| alert_reason | string | Texto com o Z-Score, o limiar e a janela |
+| fraud_type | string | Tipo **inferido pelos sinais** (nunca o rótulo do gerador); nulo se nenhuma regra casou. Não há mais tipo de fallback |
+| fraud_score | double | Score noisy-OR do V2 |
+| z_score | double | Z-Score do V1 (shadow), para comparação; nulo sem baseline |
+| alert_reason | string | `Sinais: <lista> \| score <x> \| <detector_version>`; sem nenhum sinal acima de 0,5 diz "combinação de sinais fracos" |
+| signals | string | Sinais ativos separados por vírgula (a API devolve como lista em `fraud_signals`) |
+| detector_version | string | `multisignal-v2` |
 | processed_at | timestamp | `processing_timestamp` da linha (não a hora da carga) |
+
+### Sinais do Fraud Engine
+Cada sinal vale de 0 a 1 (binário, exceto `AMOUNT_ANOMALY`, que é graduado) e entra no score com o
+peso calibrado em `src/transformation/fraud/weights.py`. Aparece em `fraud_signals` quando vale ≥ 0,5.
+
+| Sinal | Dispara quando | Estado |
+|-------|----------------|--------|
+| `AMOUNT_ANOMALY` | `ln(amount)` está muito acima do típico do cliente (z entre 1,5 e 4) | Perfil |
+| `NEW_DEVICE` | device fora de `known_devices` | Perfil |
+| `NEW_IP` | rede /24 fora de `known_ip_prefixes` | Perfil |
+| `GEO_FAR_FROM_HOME` | a mais de 500 km do centro do cliente | Perfil |
+| `UNUSUAL_HOUR` | madrugada, para quem quase não transaciona nela | Perfil |
+| `NEW_DESTINATION` | destinatário fora de `known_destinations` | Perfil |
+| `ACCOUNT_AGE_LOW` | conta aberta há menos de 30 dias | Perfil |
+| `TX_VELOCITY` | 10 ou mais transações em 10 min | Janela curta |
+| `GEO_VELOCITY` | nenhum dos últimos 5 eventos (6 h) é uma origem plausível (≤ 900 km/h ou ≤ 100 km) | Janela curta |
+| `RECIPIENT_CONCENTRATION` | 3 ou mais remetentes para a mesma conta em 1 h | Janela curta |
 
 ## Glossário de Negócio
 
@@ -174,8 +245,12 @@ Os alertas do detector, o mesmo conteúdo do tópico Kafka `fraud-alerts`.
 |-------|-----------|
 | **VWAP** | Volume-Weighted Average Price — preço médio ponderado pelo volume |
 | **Volatilidade** | Desvio padrão dos retornos diários em uma janela de N dias |
-| **Fraud Score** | Probabilidade de fraude calculada pelo detector de streaming (0=legítimo, 1=fraude). Campo derivado: nulo em Bronze/geração, populado apenas a partir da detecção (streaming/Z-Score). Não confundir com `is_fraud`, que é o rótulo de ground truth conhecido na origem dos dados |
-| **Z-Score** | Número de desvios padrão da média — usado para detectar outliers de valor |
+| **Fraud Score** | Score de risco (0=legítimo, 1=fraude) calculado pelo detector de streaming. Campo derivado: nulo em Bronze/geração, populado apenas a partir da detecção. No streaming é o do Fraud Engine (noisy-OR dos sinais); o do Z-Score antigo é `fraud_score_v1`. Não é probabilidade calibrada. Não confundir com `is_fraud`, que é o rótulo de ground truth conhecido na origem dos dados |
+| **Z-Score** | Número de desvios padrão da média — usado para detectar outliers de valor. Foi o único detector do streaming até a issue #46; hoje roda em paralelo (*shadow*) como linha de base |
+| **Fraud Engine** | Detector multi-signal (`src/transformation/fraud/`): 10 sinais de comportamento (valor, device, rede, destinatário, hora, local, idade da conta, velocidade, viagem impossível, concentração de destinatários) combinados por noisy-OR (`1 − Π(1 − wᵢ·sᵢ)`), com pesos e limiar calibrados numa seed de validação (recall máximo com FPR ≤ 1%). Sem modelo treinado: o motivo de cada alerta sai dos sinais |
+| **Perfil de Comportamento** | O que é "normal" para um cliente (valor típico, devices, redes, destinatários, horário, local), calculado pelo batch em `gold/customer_behavior_profile/` e lido por broadcast pelo streaming |
+| **Shadow Scoring** | Rodar um detector novo e o antigo sobre os mesmos eventos, com só o novo alertando, para comparar os dois online sem risco |
+| **Rótulo (ground truth)** | `is_fraud`/`fraud_type` do gerador sintético. Serve para medir o detector, que nunca o lê. Não é a decisão do detector: essa está em `is_fraud_predicted`/`fraud_type_predicted` |
 | **Velocity Check** | Verificação de frequência anormal de transações em curto intervalo |
 | **Account Takeover** | Acesso não autorizado e operações em conta alheia |
 | **Smurfing** | Fragmentação de grandes valores em transações menores para evitar detecção |

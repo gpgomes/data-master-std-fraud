@@ -82,6 +82,7 @@ def _validate_gold_data(**context) -> None:
     run_gate("gold_dim_customers")
     run_gate("gold_dim_date")
     run_gate("gold_agg_daily_fraud_metrics")
+    run_gate("gold_customer_behavior_profile")  # o detector do streaming lê este perfil (issue #47)
 
 
 def _notify_completion(**context) -> None:

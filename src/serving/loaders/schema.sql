@@ -68,10 +68,20 @@ CREATE TABLE IF NOT EXISTS agg_daily_fraud_metrics (
 );
 
 -- ── Streaming (issue #38) ─────────────────────────────────────────────────────
--- Saída do detector de fraude (Z-Score, issue #11), carregada de
--- silver/transactions_stream/ por stream_to_postgres.py (truncate + reload).
--- Só as colunas úteis à consulta: device_id, ip_address, contas e coordenadas do
--- Parquet de origem não vão para a serving layer.
+-- Saída do detector de fraude, carregada de silver/transactions_stream/ por
+-- stream_to_postgres.py (truncate + reload). Só as colunas úteis à consulta:
+-- device_id, ip_address, contas e coordenadas do Parquet de origem não vão para a
+-- serving layer.
+--
+-- Rótulo x predição (issue #47). `is_fraud` e `fraud_type` são o RÓTULO do gerador
+-- sintético (ground truth): servem só para medir o detector, nunca entram no scoring.
+-- O que o detector decidiu está nas colunas de predição:
+--   * Fraud Engine V2 (`multisignal-v2`, quem alerta): fraud_score, is_fraud_predicted,
+--     fraud_signals, fraud_type_predicted, detector_version;
+--   * Z-Score V1 (`zscore-v1`, shadow, só para comparação): z_score, is_anomaly,
+--     fraud_score_v1, shadow_detector_version.
+-- `fraud_signals` é a lista dos sinais ativos separada por vírgula (VARCHAR, não array:
+-- a API é testada em SQLite e o Superset lê texto simples); vazio = nenhum sinal.
 
 CREATE TABLE IF NOT EXISTS stream_scored_transactions (
     transaction_id       VARCHAR PRIMARY KEY,
@@ -84,20 +94,40 @@ CREATE TABLE IF NOT EXISTS stream_scored_transactions (
     merchant_category    VARCHAR,
     is_fraud             BOOLEAN,
     fraud_type           VARCHAR,
-    z_score              DOUBLE PRECISION,
     fraud_score          DOUBLE PRECISION,
     fraud_score_bucket   DOUBLE PRECISION,
+    is_fraud_predicted   BOOLEAN,
+    fraud_signals        VARCHAR,
+    fraud_type_predicted VARCHAR,
+    detector_version     VARCHAR,
+    z_score              DOUBLE PRECISION,
     is_anomaly           BOOLEAN,
+    fraud_score_v1       DOUBLE PRECISION,
+    shadow_detector_version VARCHAR,
     produced_at          TIMESTAMP,
     processing_timestamp TIMESTAMP,
     latency_seconds      DOUBLE PRECISION
 );
 
+-- Bancos provisionados antes da issue #47 já têm a tabela sem as colunas do Fraud Engine, e o
+-- CREATE TABLE IF NOT EXISTS acima não as adiciona. Estes ALTER são idempotentes e rodam a cada
+-- carga: em banco novo não fazem nada. Toda coluna criada depois da issue #38 entra nos dois
+-- lugares (CREATE TABLE e ALTER); um teste confere.
+ALTER TABLE stream_scored_transactions ADD COLUMN IF NOT EXISTS is_fraud_predicted BOOLEAN;
+ALTER TABLE stream_scored_transactions ADD COLUMN IF NOT EXISTS fraud_signals VARCHAR;
+ALTER TABLE stream_scored_transactions ADD COLUMN IF NOT EXISTS fraud_type_predicted VARCHAR;
+ALTER TABLE stream_scored_transactions ADD COLUMN IF NOT EXISTS detector_version VARCHAR;
+ALTER TABLE stream_scored_transactions ADD COLUMN IF NOT EXISTS fraud_score_v1 DOUBLE PRECISION;
+ALTER TABLE stream_scored_transactions ADD COLUMN IF NOT EXISTS shadow_detector_version VARCHAR;
+
 CREATE INDEX IF NOT EXISTS ix_stream_scored_event_time ON stream_scored_transactions (event_time);
 CREATE INDEX IF NOT EXISTS ix_stream_scored_customer_id ON stream_scored_transactions (customer_id);
 
 -- Alertas do detector (mesmos do tópico Kafka fraud-alerts; alert_id é
--- determinístico a partir de transaction_id, ver stream_processor.py).
+-- determinístico a partir de transaction_id, ver stream_processor.py). Alerta é o que o
+-- Fraud Engine V2 marcou: `fraud_type` é o tipo INFERIDO pelos sinais (nulo se nenhuma regra
+-- casou, nunca o rótulo), `signals` é a lista dos sinais ativos separada por vírgula e
+-- `z_score` é o do detector antigo (shadow), que pode ser nulo.
 CREATE TABLE IF NOT EXISTS fraud_alerts (
     alert_id       VARCHAR PRIMARY KEY,
     transaction_id VARCHAR UNIQUE,
@@ -108,8 +138,13 @@ CREATE TABLE IF NOT EXISTS fraud_alerts (
     fraud_score    DOUBLE PRECISION,
     z_score        DOUBLE PRECISION,
     alert_reason   VARCHAR,
+    signals        VARCHAR,
+    detector_version VARCHAR,
     processed_at   TIMESTAMP
 );
+
+ALTER TABLE fraud_alerts ADD COLUMN IF NOT EXISTS signals VARCHAR;
+ALTER TABLE fraud_alerts ADD COLUMN IF NOT EXISTS detector_version VARCHAR;
 
 CREATE INDEX IF NOT EXISTS ix_fraud_alerts_processed_at ON fraud_alerts (processed_at);
 CREATE INDEX IF NOT EXISTS ix_fraud_alerts_customer_id ON fraud_alerts (customer_id);

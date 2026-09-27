@@ -61,6 +61,18 @@ columns:
   description: null
   python_date_format: null
   extra: null
+- column_name: fraud_score_v1
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: DOUBLE PRECISION
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  extra: null
 - column_name: fraud_score_bucket
   verbose_name: null
   is_dttm: false
@@ -121,6 +133,30 @@ columns:
   description: null
   python_date_format: null
   extra: null
+- column_name: fraud_type_predicted
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: VARCHAR
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  extra: null
+- column_name: shadow_detector_version
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: VARCHAR
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  extra: null
 - column_name: merchant_category
   verbose_name: null
   is_dttm: false
@@ -157,7 +193,31 @@ columns:
   description: null
   python_date_format: null
   extra: null
+- column_name: fraud_signals
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: VARCHAR
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  extra: null
 - column_name: fraud_type
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: VARCHAR
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  extra: null
+- column_name: detector_version
   verbose_name: null
   is_dttm: false
   is_active: true
@@ -198,6 +258,18 @@ columns:
   is_dttm: false
   is_active: true
   type: VARCHAR
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  extra: null
+- column_name: is_fraud_predicted
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: BOOLEAN
   advanced_data_type: null
   groupby: true
   filterable: true

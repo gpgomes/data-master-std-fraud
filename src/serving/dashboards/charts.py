@@ -15,8 +15,8 @@ Todos os valores abaixo (contagens, taxa de fraude, distribuição por
 `fraud_type`) foram verificados manualmente contra `psql` real antes de
 serem codificados aqui — ver `docs/testes_issue_16.txt`.
 
-Streaming (issue #38): `fraud_score` continua sempre NULL em `fact_transactions` (o
-batch nunca o calcula), mas o detector de streaming agora é carregado no Postgres em
+Streaming (issues #38 e #47): `fraud_score` continua sempre NULL em `fact_transactions` (o
+batch nunca o calcula), mas a saída do detector de streaming (Fraud Engine V2) é carregada no Postgres em
 `stream_scored_transactions` e `fraud_alerts` (`make spark-submit-stream-postgres`). Os
 charts que leem essas tabelas são `optional=True`: sem dado de streaming a verificação
 não os trata como falha.
@@ -141,7 +141,7 @@ CHARTS: tuple[ChartDef, ...] = (
         dataset_table="fraud_alerts",
         form_data_extra={"metric": "count"},
         query_extra={"metrics": ["count"]},
-        description="COUNT(*) em fraud_alerts: alertas de Z-Score emitidos pelo detector de streaming (nao e o rotulo is_fraud do batch).",
+        description="COUNT(*) em fraud_alerts: alertas do Fraud Engine (V2) emitidos pelo detector de streaming (nao e o rotulo is_fraud do batch).",
         optional=True,
     ),
     ChartDef(
@@ -155,7 +155,7 @@ CHARTS: tuple[ChartDef, ...] = (
             "adhoc_filters": [{"clause": "WHERE", "expressionType": "SQL", "sqlExpression": "fraud_score IS NOT NULL"}],
         },
         query_extra={"metrics": ["count"], "columns": ["fraud_score_bucket"], "extras": {"where": "fraud_score IS NOT NULL"}},
-        description="COUNT(*) por faixa de fraud_score (arredondado a 0,1) entre as transacoes pontuadas; sem score = sem baseline de 2 transacoes na janela de 1h.",
+        description="COUNT(*) por faixa de fraud_score do Fraud Engine (V2, arredondado a 0,1) entre as transacoes pontuadas; o score vem da combinacao dos sinais do evento (0 = nenhum sinal ativo).",
         optional=True,
     ),
     ChartDef(

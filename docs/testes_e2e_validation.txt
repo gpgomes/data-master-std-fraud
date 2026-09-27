@@ -2,6 +2,11 @@
 CHECKLIST DE TESTES — Validação End-to-End da Stack Completa
 ================================================================================
 
+NOTA (issues #46 e #47): registro histórico. Descreve o detector de streaming como foi testado
+na época, um Z-Score do valor (`zscore-v1`) com `fraud_type` copiado do rótulo. Hoje o detector
+que alerta é o Fraud Engine multi-signal (`multisignal-v2`) e o Z-Score roda só em paralelo
+(shadow). Ver docs/architecture.md ("Detecção de fraude") e docs/testes_issue_47.txt.
+
 Não é uma issue numerada do GitHub — validação ad-hoc pedida entre sessões
 ("vamos validar o conjunto todo rodando"), depois de todas as issues #7-#16
 e #18 já mergeadas. Objetivo: rodar a plataforma inteira junto, com dados

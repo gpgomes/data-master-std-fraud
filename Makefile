@@ -2,7 +2,7 @@
         spark-submit-batch spark-submit-stream spark-submit-silver-gold spark-submit-gold-postgres \
         spark-submit-stream-postgres \
         seed-data producer-transactions producer-market api catalog dashboards dashboards-export \
-        fraud-eval fraud-calibrate \
+        fraud-eval fraud-calibrate fraud-online-eval \
         clean clean-data logs ps help
 
 # ── Variáveis ──────────────────────────────────────────────────────────────────
@@ -14,6 +14,9 @@ STREAM_JOB       := src/transformation/streaming/stream_processor.py
 # senão cai para python3 do PATH. Sobrescrevível: `make test PYTHON=python3.11`.
 PYTHON           ?= $(shell [ -x .venv/bin/python ] && echo .venv/bin/python || echo python3)
 PYTEST_ARGS      ?= -v
+# Padrões de .env.example; sobrescrevíveis: `make fraud-online-eval POSTGRES_USER=... POSTGRES_DB=...`.
+POSTGRES_USER    ?= datamaster
+POSTGRES_DB      ?= fraud_analytics
 
 # ── Infra ──────────────────────────────────────────────────────────────────────
 up: ## Subir toda a infraestrutura local
@@ -123,6 +126,9 @@ fraud-eval: ## Avalia o detector de fraude (Precision/Recall/FPR) e gera docs/fr
 
 fraud-calibrate: ## Calibra os pesos e o limiar do detector multi-signal na seed de validação e grava src/transformation/fraud/weights.py
 	$(PYTHON) -m src.transformation.fraud.calibrate
+
+fraud-online-eval: ## Benchmark online V1 x V2 (SQL sobre stream_scored_transactions; requer o streaming rodado e make spark-submit-stream-postgres)
+	$(COMPOSE) exec -T postgres psql -U $(POSTGRES_USER) -d $(POSTGRES_DB) -v ON_ERROR_STOP=1 < src/serving/queries/fraud_online_benchmark.sql
 
 dashboards: ## Provisiona o dashboard Superset de KPIs de fraude/transações (requer make up + dados no Postgres)
 	$(PYTHON) -m scripts.provision_superset_dashboards --verify --strict

@@ -53,13 +53,14 @@ make spark-submit-batch        # Run Bronze→Silver PySpark batch job (Gold is 
 make spark-submit-stream       # Start Spark Structured Streaming (Kafka consumer); needs gold/customer_behavior_profile/ (run spark-submit-silver-gold first, otherwise it refuses to start)
 make spark-submit-silver-gold  # Run Silver→Gold job (star schema + gold/customer_behavior_profile/, the per-customer profile the streaming fraud detector broadcasts)
 make spark-submit-gold-postgres # Load Gold (MinIO) into the Postgres serving layer
-make spark-submit-stream-postgres # Load streaming output (fraud_score + alerts) into Postgres (stop the stream first)
+make spark-submit-stream-postgres # Load streaming output (V2 verdict + V1 shadow + label, and alerts with their signals) into Postgres (stop the stream first); ensure_schema adds the columns to already-provisioned databases
 make producer-transactions     # Start Kafka transaction producer
 make producer-market           # Start Kafka market data producer
 make api                       # Start FastAPI dev server at :8000
 make catalog                   # Generate docs/data_catalog.md + docs/images/data_lineage.svg, validate datasets against live infra
 make fraud-eval                # Evaluate the fraud detectors (V1 Z-Score vs V2 multi-signal; Precision/Recall/FPR, local Spark, no Docker) and generate docs/fraud_evaluation.md
 make fraud-calibrate           # Recalibrate the V2 weights/threshold on the validation seed and write src/transformation/fraud/weights.py
+make fraud-online-eval         # Online V1 vs V2 benchmark: SQL (src/serving/queries/fraud_online_benchmark.sql) over stream_scored_transactions; needs the stream run + make spark-submit-stream-postgres
 make dashboards                # Provision Superset dashboard (KPIs), smoke-test against live infra
 make dashboards-export         # Snapshot the provisioned dashboard to dashboards/superset/dashboard_configs/
 ```
@@ -161,6 +162,7 @@ The project is being built in phases (see `CaseFinancialDataLakeHouse.md` — th
 
 - **Phase 1 — Local infra with Docker Compose:** ✅ Done
 - **Phase 2 — PySpark batch + streaming transformations:** ✅ Done (batch: `bronze_to_silver.py`/`silver_to_gold.py`; streaming: `stream_processor.py`, Z-Score anomaly detection, issue #11; the Fraud Engine V2 replaced the Z-Score as the alerting detector in issue #46, with the Z-Score kept as shadow)
+- **Fraud Engine series (issues #43–#47):** ✅ Done — generator v2, evaluation harness (`make fraud-eval`), multi-signal engine, streaming integration (profile in Gold, 6 h short state, label separation, V1 as shadow), and serving/GX/catalog/final benchmark (`make fraud-online-eval`). See `docs/architecture.md` ("Detecção de fraude") and `docs/fraud_engine_perguntas_banca.md`
 - **Phase 3 — Data governance:** ✅ Done, with two scope changes from the original plan: Great Expectations quality gates (issue #13); a lightweight, code-based data catalog (issue #14) instead of OpenMetadata — see `docs/architecture.md`'s "Decisões Arquiteturais" table; Delta Lake was evaluated and explicitly **not** adopted (issue #9) — the platform uses Parquet only, no time-travel/versioning layer exists
 - **Phase 4 — Serving layer:** ✅ Done — PostgreSQL loader (issue #10), FastAPI (issue #15), Superset dashboards (issue #16, Grafana descoped — see `docs/architecture.md`)
 - **Phase 5 — AWS migration via Terraform:** ⬜ Not started (issue #17, open)

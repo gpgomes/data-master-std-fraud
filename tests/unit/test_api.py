@@ -50,6 +50,8 @@ CREATE TABLE fraud_alerts (
     fraud_score REAL,
     z_score REAL,
     alert_reason TEXT,
+    signals TEXT,
+    detector_version TEXT,
     processed_at TIMESTAMP
 );
 
@@ -130,10 +132,12 @@ def _insert_alert(db: Session, **overrides) -> None:
         "customer_id": "cust-001",
         "event_time": "2024-06-15T10:00:00",
         "amount": 5000.0,
-        "fraud_type": "MONEY_LAUNDERING",
-        "fraud_score": 0.9,
+        "fraud_type": "SOCIAL_ENGINEERING",
+        "fraud_score": 0.975,
         "z_score": 5.4,
-        "alert_reason": "Z-Score 5.4 (limiar=3.0) sobre janela de 60 min por cliente",
+        "alert_reason": "Sinais: AMOUNT_ANOMALY, NEW_DESTINATION | score 0.975 | multisignal-v2",
+        "signals": "AMOUNT_ANOMALY,NEW_DESTINATION",
+        "detector_version": "multisignal-v2",
         "processed_at": "2024-06-15T10:00:05",
     }
     base.update(overrides)
@@ -142,10 +146,10 @@ def _insert_alert(db: Session, **overrides) -> None:
             """
             INSERT INTO fraud_alerts
             (alert_id, transaction_id, customer_id, event_time, amount, fraud_type,
-             fraud_score, z_score, alert_reason, processed_at)
+             fraud_score, z_score, alert_reason, signals, detector_version, processed_at)
             VALUES
             (:alert_id, :transaction_id, :customer_id, :event_time, :amount, :fraud_type,
-             :fraud_score, :z_score, :alert_reason, :processed_at)
+             :fraud_score, :z_score, :alert_reason, :signals, :detector_version, :processed_at)
             """
         ),
         base,
@@ -249,7 +253,13 @@ class TestRepositoryAlerts:
         rows = repository.list_alerts(db)
         assert [r["transaction_id"] for r in rows] == ["tx-1"]
         assert rows[0]["z_score"] == 5.4
-        assert "Z-Score" in rows[0]["alert_reason"]
+        assert rows[0]["alert_reason"].startswith("Sinais:")
+
+    def test_list_alerts_returns_the_signals_that_fired_the_alert(self, db: Session):
+        _insert_alert(db, alert_id="a-1", transaction_id="tx-1")
+        row = repository.list_alerts(db)[0]
+        assert row["fraud_signals"] == "AMOUNT_ANOMALY,NEW_DESTINATION"
+        assert row["detector_version"] == "multisignal-v2"
 
     def test_count_alerts_matches_list(self, db: Session):
         _insert_alert(db, alert_id="a-1", transaction_id="tx-1")
@@ -415,9 +425,46 @@ class TestAlertRoutes:
         assert body["total"] == 1
         item = body["items"][0]
         assert item["transaction_id"] == "tx-1"
-        assert item["fraud_score"] == 0.9
+        assert item["fraud_score"] == 0.975
         assert item["z_score"] == 5.4
-        assert item["alert_reason"].startswith("Z-Score")
+        assert item["alert_reason"].startswith("Sinais:")
+
+    def test_list_returns_fraud_signals_as_a_list_and_the_detector_version(
+        self, client: TestClient, db: Session
+    ):
+        _insert_alert(db, alert_id="a-1", transaction_id="tx-1")
+        item = client.get("/alerts").json()["items"][0]
+
+        assert item["fraud_signals"] == ["AMOUNT_ANOMALY", "NEW_DESTINATION"]
+        assert item["detector_version"] == "multisignal-v2"
+        assert item["fraud_type"] == "SOCIAL_ENGINEERING"
+
+    def test_alert_without_an_inferred_type_or_zscore_is_still_served(
+        self, client: TestClient, db: Session
+    ):
+        """Nenhuma regra de tipo casou e o Z-Score não tinha baseline: os dois são nulos."""
+        _insert_alert(db, alert_id="a-1", transaction_id="tx-1", fraud_type=None, z_score=None)
+        item = client.get("/alerts").json()["items"][0]
+
+        assert item["fraud_type"] is None
+        assert item["z_score"] is None
+        assert item["fraud_signals"]
+
+    def test_alert_with_only_weak_signals_has_an_empty_signal_list(
+        self, client: TestClient, db: Session
+    ):
+        _insert_alert(db, alert_id="a-1", transaction_id="tx-1", signals="")
+        assert client.get("/alerts").json()["items"][0]["fraud_signals"] == []
+
+    def test_alert_loaded_before_the_signals_column_existed_has_an_empty_list(
+        self, client: TestClient, db: Session
+    ):
+        """Bancos provisionados antes da issue #47 ganham a coluna via ALTER, com valor nulo."""
+        _insert_alert(db, alert_id="a-1", transaction_id="tx-1", signals=None, detector_version=None)
+        item = client.get("/alerts").json()["items"][0]
+
+        assert item["fraud_signals"] == []
+        assert item["detector_version"] is None
 
     def test_empty_when_streaming_never_loaded(self, client: TestClient):
         body = client.get("/alerts").json()
