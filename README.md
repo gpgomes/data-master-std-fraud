@@ -200,8 +200,9 @@ make spark-submit-batch         # Job PySpark Bronze → Silver (Gold é um job 
 make spark-submit-silver-gold   # Job PySpark Silver → Gold (inclui o perfil de comportamento dos clientes que o streaming lê)
 make spark-submit-gold-postgres # Carregar Gold no Postgres (serving layer)
 make spark-submit-stream        # Job PySpark streaming (Kafka → Silver + Fraud Engine); exige o Gold do passo anterior
-make producer-transactions      # Iniciar producer de transações financeiras
-make producer-market            # Iniciar producer de dados de mercado
+make producer-transactions      # Iniciar producer de transações financeiras (no host)
+make producer-market            # Iniciar producer de dados de mercado (no host; só publica das 13h às 20h UTC, o pregão)
+docker compose --profile producers up -d producer-transactions producer-market   # os mesmos producers, em container
 
 # Serving, governança e dashboards
 make api                       # Iniciar a API FastAPI em modo desenvolvimento

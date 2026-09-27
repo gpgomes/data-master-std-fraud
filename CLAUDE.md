@@ -54,8 +54,8 @@ make spark-submit-stream       # Start Spark Structured Streaming (Kafka consume
 make spark-submit-silver-gold  # Run Silver→Gold job (star schema + gold/customer_behavior_profile/, the per-customer profile the streaming fraud detector broadcasts)
 make spark-submit-gold-postgres # Load Gold (MinIO) into the Postgres serving layer
 make spark-submit-stream-postgres # Load streaming output (V2 verdict + V1 shadow + label, and alerts with their signals) into Postgres (stop the stream first); ensure_schema adds the columns to already-provisioned databases
-make producer-transactions     # Start Kafka transaction producer
-make producer-market           # Start Kafka market data producer
+make producer-transactions     # Start Kafka transaction producer (host); in a container: docker compose --profile producers up -d producer-transactions
+make producer-market           # Start Kafka market data producer (host); only publishes 13h-20h UTC (B3 trading hours)
 make api                       # Start FastAPI dev server at :8000
 make catalog                   # Generate docs/data_catalog.md + docs/images/data_lineage.svg, validate datasets against live infra
 make fraud-eval                # Evaluate the fraud detectors (V1 Z-Score vs V2 multi-signal; Precision/Recall/FPR, local Spark, no Docker) and generate docs/fraud_evaluation.md

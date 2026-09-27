@@ -1,0 +1,99 @@
+================================================================================
+CHECKLIST DE TESTES — Imagem dos producers sem a lib lz4 (issue #48)
+================================================================================
+
+Objetivo: fazer os dois producers (`producer-transactions` e `producer-market`, perfil
+`producers` do docker-compose.yml) iniciarem e publicarem em container, e impedir que a
+imagem volte a ficar sem uma dependência sem que nada no CI perceba.
+
+Causa (confirmada de novo em 2026-09-26): `ProducerConfig` usa `compression_type="lz4"` por
+padrão; `docker/producer/requirements-producer.txt` não tinha `lz4`; o `KafkaProducer`
+(kafka-python==2.0.2) aborta na criação com
+`AssertionError: Libraries for lz4 compression codec not found` e o container entra em crash
+loop (`restart: unless-stopped`). No host funcionava porque o `pyproject.toml` declara
+`lz4>=4.0.0`. Nada no CI constrói ou executa a imagem, e os testes unitários mockam o Kafka.
+
+Decisão: opção 1 da issue (adicionar `lz4` aos requirements da imagem) mais o teste que ela
+pede, ampliado. Não fiz as opções 2 (trocar o `kafka-python==2.0.2` da imagem por
+`kafka-python-ng`) e 3 (`PRODUCER_COMPRESSION_TYPE`): a 1 resolve a falha, e a 2 mudaria o
+cliente Kafka dos dois producers, o que pediria revalidá-los inteiros.
+
+Arquivos:
+  - docker/producer/requirements-producer.txt (lz4==4.4.5, a mesma versão do host)
+  - tests/unit/test_producer_image_requirements.py (novo, 17 testes)
+  - docs/runbook.md (seção "Rodar os producers: no host ou em container", troubleshooting)
+  - README.md, CLAUDE.md (o comando em container)
+
+================================================================================
+1. TESTES UNITÁRIOS
+================================================================================
+
+  pytest tests/unit/test_producer_image_requirements.py   # 17 passed
+
+O que cobrem:
+  - a lib do codec do `ProducerConfig` padrão e dos dois perfis (`LOW_LATENCY_CONFIG`,
+    `HIGH_THROUGHPUT_CONFIG`) está nos requirements da imagem (critério de aceite da issue);
+  - os dois producers não sobrescrevem `compression_type` (senão o teste acima seria contornado);
+  - todo pacote de terceiros que os producers importam, seguindo os imports dentro de `src/`
+    (inclusive o `from kafka import KafkaProducer` de dentro de `run()`), está nos
+    requirements. Isso pega a mesma classe de defeito para qualquer dependência, não só
+    o lz4. Um import de terceiros sem mapeamento falha o teste e obriga a decidir. O
+    `pyspark` que o `src/common/schemas.py` importa dentro das funções get_*_schema() está
+    numa lista de exceções, com o motivo (os producers nunca as chamam);
+  - o que a imagem fixa é compatível com o que o `pyproject.toml` declara para o mesmo
+    pacote (o `kafka-python` é a divergência de nome conhecida: o pyproject usa o fork
+    `kafka-python-ng`);
+  - os testes não são vacuosos: sem o `lz4` na imagem, ou sem o `faker`, reprovam.
+
+Contra o arquivo de requirements ORIGINAL (sem a correção), 6 dos 17 testes reprovam
+(codec dos 3 configs, o teste do `lz4` sem versão fixa, o do `lz4` declarado dos dois lados e o
+de "faltando o codec seria pego"). Com a correção, os 17 passam.
+
+================================================================================
+2. VERIFICAÇÃO EM CONTAINER (Docker)
+================================================================================
+
+2.1 Antes da correção (reprodução):
+
+      docker compose --profile producers up -d --build producer-transactions
+      -> "restarting restarts=5" em ~40 s
+      -> AssertionError: Libraries for lz4 compression codec not found
+
+2.2 Depois da correção:
+
+      docker compose --profile producers up -d --build producer-transactions producer-market
+      docker compose --profile producers ps
+      -> producer-transactions  Up 2 minutes, RestartCount 0
+      -> producer-market        Up 2 minutes, RestartCount 0
+
+      raw-transactions (soma dos offsets das 3 partições):
+        t0     44.168
+        t+30 s 44.442   (+274 em 30 s, ~9 TPS; o compose fixa 10 TPS)
+      log: "Enviadas 300 msgs | erros=0 | lat_media=14.0ms"
+
+2.3 producer-market: o simulador só publica durante o pregão (13h às 20h UTC, sem checar dia
+    da semana); a verificação foi feita às 00h56 UTC de um domingo, fora do pregão. O
+    container ficou de pé sem reiniciar e `raw-market-data` ficou em 0, como o código manda
+    ("Fora do horário de pregão, aguardando..."). Para provar que o caminho de envio funciona
+    dentro do container, executei o `run()` real do módulo no container com só o relógio do
+    pregão forçado (`_is_pregao = lambda: True`), por 8 s:
+
+      Market producer encerrado | enviados=221 | erros=0 | lat_media=14.0ms
+      raw-market-data: 0 -> 221
+
+    Ou seja, o `KafkaProducer` com lz4, a validação contra `MarketTradeEvent` e o envio
+    funcionam na imagem. Os 221 ticks de teste ficaram no tópico (nada o consome).
+
+================================================================================
+3. CRITÉRIOS DE ACEITE
+================================================================================
+
+  [x] `docker compose --profile producers up -d producer-transactions producer-market` sobe os
+      dois containers e ambos publicam (2.2 e 2.3; o de mercado, fora do pregão, só publica
+      quando o relógio do pregão é satisfeito, comportamento que já existia e agora está no
+      runbook).
+  [x] Nenhum reinicia em loop: `docker compose ps` estável por mais de 2 minutos, RestartCount 0.
+  [x] Teste unitário garantindo que a lib do `compression_type` padrão do `ProducerConfig` está
+      em `docker/producer/requirements-producer.txt`.
+  [x] `docs/runbook.md` cita `--profile producers` e o `make producer-*` no host.
+  [x] `make lint` limpo e `make test-unit` verde: 806 passed (789 + os 17 novos), cobertura 88,8%.
