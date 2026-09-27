@@ -85,6 +85,17 @@ def _validate_gold_data(**context) -> None:
     run_gate("gold_customer_behavior_profile")  # o detector do streaming lê este perfil (issue #47)
 
 
+def _record_pipeline_run(**context) -> None:
+    """Task: registra a execução (estado, duração, tasks que falharam) em `pipeline_runs` (#55)."""
+    import sys
+
+    sys.path.insert(0, "/opt/airflow")
+
+    from src.observability.pipeline import record_pipeline_run
+
+    record_pipeline_run(**context)
+
+
 def _notify_completion(**context) -> None:
     """Task: log de conclusão da pipeline."""
     run_id = context.get("run_id", "unknown")
@@ -172,6 +183,16 @@ with DAG(
         trigger_rule="all_success",
     )
 
+    # 8. Registro da execução para o dashboard de saúde e o `make slo-report` (#55). Roda mesmo
+    # com falha upstream (all_done) e NÃO fica a jusante do notify_completion: as duas são folhas,
+    # então uma falha continua marcando a DAG como falha.
+    record_pipeline_run = PythonOperator(
+        task_id="record_pipeline_run",
+        python_callable=_record_pipeline_run,
+        trigger_rule="all_done",
+        retries=0,
+    )
+
     # ── Dependências ─────────────────────────────────────────────────────────
     # Silver depende do Bronze estar populado (batch_ingestion_pipeline, 06:00);
     # o quality gate bloqueia antes de gerar Gold com dados ruins; Gold depende
@@ -186,3 +207,11 @@ with DAG(
         >> load_stream_postgres
         >> notify_completion
     )
+    [
+        bronze_to_silver,
+        validate_silver_data,
+        silver_to_gold,
+        validate_gold_data,
+        load_gold_postgres,
+        load_stream_postgres,
+    ] >> record_pipeline_run

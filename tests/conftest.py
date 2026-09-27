@@ -16,6 +16,16 @@ from src.common.schemas import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _observability_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Testes unitários nunca gravam métricas de plataforma (issue #55): sem isto, com o Postgres
+    do Docker de pé em localhost, os testes da API gravariam requests de teste em `api_requests`.
+    Os testes do `MetricsStore` religam explicitamente e injetam uma conexão falsa."""
+    from src.common.config import settings
+
+    monkeypatch.setattr(settings.observability, "enabled", False)
+
+
 @pytest.fixture
 def sample_transaction() -> TransactionEvent:
     return TransactionEvent(

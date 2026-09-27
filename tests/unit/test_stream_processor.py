@@ -1035,6 +1035,67 @@ class TestIdempotentMicroBatch:
         assert sp._STAGES == ("parquet", "enriched", "alerts", "history")
 
 
+# ── TestBatchStats (#55) ─────────────────────────────────────────────────────────
+
+
+class TestBatchStats:
+    """O `_process_batch` deixa, por batch_id, o que só ele sabe para o listener de métricas."""
+
+    def test_process_batch_leaves_rows_alerts_and_state_size(self, spark, tmp_path):
+        from unittest.mock import patch
+
+        p = TestIdempotentMicroBatch._local_processor(spark, tmp_path)
+        with patch.object(p, "_write_to_kafka"):
+            p._process_batch(_make_tx(spark, [_legit(1, ts="2026-03-02T10:00:00")]), 0)
+            p._process_batch(TestIdempotentMicroBatch._new_batch(spark), 1)
+
+        assert p._batch_stats[0]["state_rows"] == 0
+        stats = p._batch_stats[1]
+        assert stats["rows_scored"] == 4
+        assert stats["alerts"] == 1
+        assert stats["state_rows"] == 1  # o evento do batch 0
+
+    def test_the_source_is_not_read_again_just_to_check_emptiness(self, processor):
+        """`isEmpty()` no DataFrame cru relia o Kafka e inflava o `numInputRows` em 1 por batch."""
+        from unittest.mock import MagicMock, patch
+
+        raw = MagicMock(name="raw")
+        cached = raw.dropDuplicates.return_value.cache.return_value
+        cached.isEmpty.return_value = True
+        with patch.object(processor, "_stage_done", return_value=False), patch.object(
+            processor, "_prune_markers"
+        ):
+            processor._process_batch(raw, 3)
+
+        raw.isEmpty.assert_not_called()
+        cached.isEmpty.assert_called_once()
+        cached.unpersist.assert_called_once()
+
+    def test_latency_comes_from_produced_at_when_present(self, spark, processor):
+        schema = StructType(
+            [
+                StructField("processing_timestamp", TimestampType(), True),
+                StructField("produced_at", TimestampType(), True),
+            ]
+        )
+        rows = [
+            {"processing_timestamp": "2026-03-02T10:00:10", "produced_at": f"2026-03-02T10:00:0{i}"}
+            for i in range(10)
+        ]
+        summary = processor._batch_summary(_df_from_rows(spark, rows, schema))
+        assert summary["rows_scored"] == 10
+        assert summary["latency_max_s"] == pytest.approx(10.0)
+        assert 8.0 <= summary["latency_p95_s"] <= 10.0
+
+    def test_latency_is_unknown_without_produced_at(self, spark, processor):
+        schema = StructType([StructField("processing_timestamp", TimestampType(), True)])
+        summary = processor._batch_summary(
+            _df_from_rows(spark, [{"processing_timestamp": "2026-03-02T10:00:10"}], schema)
+        )
+        assert summary["rows_scored"] == 1
+        assert summary["latency_p95_s"] is None and summary["latency_max_s"] is None
+
+
 # ── TestLateEvents (#59) ─────────────────────────────────────────────────────────
 
 

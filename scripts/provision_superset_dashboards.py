@@ -1,5 +1,5 @@
-"""CLI para provisionar o dashboard de KPIs de fraude/transacoes no Superset
-(issue #16).
+"""CLI para provisionar os dashboards do Superset: KPIs de fraude/transacoes (issue #16) e
+Platform Health (issue #55).
 
 Uso:
     python -m scripts.provision_superset_dashboards            # provisiona
@@ -38,7 +38,7 @@ def main(argv: list[str] | None = None) -> None:
     failed = [r for r in summary["verification"] if not r.ok]
     logger.info(
         "Dashboard provisionado",
-        dashboard_url=summary["dashboard_url"],
+        dashboard_urls=summary["dashboard_urls"],
         datasets=len(summary["dataset_ids"]),
         charts=len(summary["chart_ids"]),
         verificacoes_falhadas=len(failed),

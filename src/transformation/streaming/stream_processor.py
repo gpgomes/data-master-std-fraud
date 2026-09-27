@@ -49,9 +49,11 @@ from src.common.config import settings
 from src.common.logger import get_logger
 from src.common.schemas import TRANSACTION_SPARK_SCHEMA
 from src.common.spark_session import create_spark_session
+from src.observability.store import MetricsStore
 from src.transformation.fraud.detector import detect
 from src.transformation.fraud.profile import PROFILE_SCHEMA
 from src.transformation.fraud.signals import EVENT_COLUMNS
+from src.transformation.streaming.metrics_listener import StreamMetricsListener
 
 logger = get_logger("stream_processor")
 
@@ -187,6 +189,8 @@ class StreamProcessor:
         # Pesos e limiar do Fraud Engine: por padrão os versionados em `weights.py` (calibrados).
         self._weights = weights
         self._threshold = threshold
+        # Estatísticas de cada micro-batch para o listener de métricas (#55), por batch_id.
+        self._batch_stats: dict = {}
 
     # ── Leitura e parsing ────────────────────────────────────────────────────────
 
@@ -469,28 +473,57 @@ class StreamProcessor:
             .save(f"{self._silver}/transactions_stream/")
         )
 
+    @staticmethod
+    def _batch_summary(scored: DataFrame) -> dict:
+        """Linhas pontuadas e latência evento → processamento do micro-batch, num único job sobre
+        o DataFrame já cacheado (substitui o `count()` que já existia)."""
+        if "produced_at" in scored.columns:
+            latency = F.col("processing_timestamp").cast("double") - F.col("produced_at").cast(
+                "double"
+            )
+        else:  # evento sem `produced_at` (payload antigo ou teste): latência desconhecida
+            latency = F.lit(None).cast("double")
+        row = scored.agg(
+            F.count(F.lit(1)).alias("rows"),
+            F.percentile_approx(latency, [0.5, 0.95]).alias("q"),
+            F.max(latency).alias("max"),
+        ).first()
+        q = row["q"] if row is not None and row["q"] else [None, None]
+        return {
+            "rows_scored": int(row["rows"]) if row is not None else 0,
+            "latency_p50_s": q[0],
+            "latency_p95_s": q[1],
+            "latency_max_s": row["max"] if row is not None else None,
+        }
+
     def _process_batch(self, batch_df: DataFrame, batch_id: int) -> None:
         self._prune_markers(batch_id)
-        if batch_df.isEmpty():
-            return
         if self._stage_done(batch_id, _STAGES[-1]):
             logger.info("Micro-batch já concluído (replay após restart) — ignorado", batch_id=batch_id)
             return
 
         # `transaction_id` único no micro-batch: o at-least-once do Kafka pode repetir um evento, e
-        # os joins de volta do scoring (V1, V2 e rótulo) precisam ser 1:1.
+        # os joins de volta do scoring (V1, V2 e rótulo) precisam ser 1:1. O cache vem ANTES do
+        # `isEmpty()`: chamado no DataFrame cru, ele lia o Kafka uma vez a mais só para ver se havia
+        # dado, e o Spark somava essa leitura ao `numInputRows` do progresso (issue #55).
         batch_df = batch_df.dropDuplicates(["transaction_id"]).cache()
         cached = [batch_df]
         try:
+            if batch_df.isEmpty():
+                return
             history = self._load_history().cache()
             cached.append(history)
+            state_rows = history.count()
 
             scored = self._score_batch(batch_df, history).cache()
             cached.append(scored)
-            rows = scored.count()
+            summary = self._batch_summary(scored)
+            rows = summary["rows_scored"]
             alerts = self._build_fraud_alerts(scored).cache()
             cached.append(alerts)
             alert_count = alerts.count()
+            # Lido pelo StreamMetricsListener quando o Spark reportar o progresso deste batch (#55).
+            self._batch_stats[batch_id] = {**summary, "alerts": alert_count, "state_rows": state_rows}
 
             def write_alerts() -> None:
                 if alert_count:
@@ -540,6 +573,12 @@ class StreamProcessor:
     def run(self, starting_offsets: str = "latest", trigger_seconds: int = 10):
         """Inicia a query de streaming. Bloqueia até a query terminar."""
         self._load_static_inputs()
+
+        # Métricas por micro-batch no Postgres (#55). O driver roda no container do Spark, que
+        # alcança o Postgres pelo host interno.
+        self.spark.streams.addListener(
+            StreamMetricsListener(MetricsStore(host=settings.postgres.internal_host), self._batch_stats)
+        )
 
         stream = self.read_transactions_stream(starting_offsets=starting_offsets)
         query = (

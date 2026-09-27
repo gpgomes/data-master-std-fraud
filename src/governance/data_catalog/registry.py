@@ -283,6 +283,71 @@ CATALOG: tuple[CatalogEntry, ...] = (
         ),
         upstream=("silver_transactions_stream",),
     ),
+    # ── Observabilidade (Postgres, issue #55) ───────────────────────────
+    # Tabelas append-only criadas na primeira gravação de métrica: num ambiente onde nada
+    # rodou ainda elas não existem, por isso são opcionais no catálogo.
+    CatalogEntry(
+        key="serving_stream_batch_metrics",
+        name="Postgres — stream_batch_metrics",
+        layer=DatasetLayer.SERVING,
+        kind=DatasetKind.POSTGRES_TABLE,
+        location="stream_batch_metrics",
+        owner="Data Engineering",
+        classification=("Interno",),
+        glossary_terms=("SLO",),
+        description=(
+            "Uma linha por micro-batch do stream, gravada pelo StreamingQueryListener: linhas/s de "
+            "entrada e processadas, duração por fase, lag do Kafka, linhas pontuadas, alertas, "
+            "tamanho do estado curto e latência p50/p95/máx evento→processamento (issue #55)."
+        ),
+        upstream=("kafka_raw_transactions",),
+        optional=True,
+    ),
+    CatalogEntry(
+        key="serving_pipeline_runs",
+        name="Postgres — pipeline_runs",
+        layer=DatasetLayer.SERVING,
+        kind=DatasetKind.POSTGRES_TABLE,
+        location="pipeline_runs",
+        owner="Data Engineering",
+        classification=("Interno",),
+        glossary_terms=("SLO",),
+        description=(
+            "Uma linha por execução de DAG do Airflow (estado, duração, tasks que falharam), "
+            "gravada pela task record_pipeline_run, que roda mesmo com falha upstream (issue #55)."
+        ),
+        optional=True,
+    ),
+    CatalogEntry(
+        key="serving_quality_gate_runs",
+        name="Postgres — quality_gate_runs",
+        layer=DatasetLayer.SERVING,
+        kind=DatasetKind.POSTGRES_TABLE,
+        location="quality_gate_runs",
+        owner="Data Engineering",
+        classification=("Interno",),
+        glossary_terms=("SLO",),
+        description=(
+            "Uma linha por execução de quality gate do Great Expectations: dataset, sucesso, "
+            "expectativas avaliadas e com falha, e se o gate é opcional (issue #55)."
+        ),
+        optional=True,
+    ),
+    CatalogEntry(
+        key="serving_api_requests",
+        name="Postgres — api_requests",
+        layer=DatasetLayer.SERVING,
+        kind=DatasetKind.POSTGRES_TABLE,
+        location="api_requests",
+        owner="Analytics Engineering",
+        classification=("Interno",),
+        glossary_terms=("SLO",),
+        description=(
+            "Uma linha por request da API: método, rota (o template, sem ids), status e duração. "
+            "Gravada depois da resposta, fora da latência medida (issue #55)."
+        ),
+        optional=True,
+    ),
     # ── Streaming (Kafka) ────────────────────────────────────────────────
     CatalogEntry(
         key="kafka_raw_transactions",
@@ -359,6 +424,27 @@ CATALOG: tuple[CatalogEntry, ...] = (
             "serving_agg_daily_fraud_metrics",
             "serving_stream_scored_transactions",
             "serving_fraud_alerts",
+        ),
+    ),
+    CatalogEntry(
+        key="dashboard_platform_health",
+        name="Dashboard — Platform Health",
+        layer=DatasetLayer.DASHBOARD,
+        kind=DatasetKind.DASHBOARD,
+        location="http://localhost:8088/superset/dashboard/platform-health/",
+        owner="Data Engineering",
+        classification=("Interno",),
+        glossary_terms=("SLO",),
+        description=(
+            "Saúde da plataforma, separada dos KPIs de negócio: latência, duração, throughput e lag "
+            "do stream; execuções das DAGs e gates com falha; latência e erros da API (issue #55). "
+            "As metas ficam no `make slo-report`."
+        ),
+        upstream=(
+            "serving_stream_batch_metrics",
+            "serving_pipeline_runs",
+            "serving_quality_gate_runs",
+            "serving_api_requests",
         ),
     ),
 )

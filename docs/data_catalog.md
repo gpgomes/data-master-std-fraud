@@ -1,6 +1,6 @@
 # Catálogo de Dados
 
-_Gerado em 2026-09-26T23:32:13.145937+00:00 por `python -m scripts.build_data_catalog`._
+_Gerado em 2026-09-27T04:41:43.453353+00:00 por `python -m scripts.build_data_catalog`._
 
 Substitui o OpenMetadata completo na V1 local (decisão documentada em `docs/architecture.md`) — ver definições de campo e o glossário de negócio completo em [`docs/data_dictionary.md`](data_dictionary.md).
 
@@ -39,6 +39,10 @@ Substitui o OpenMetadata completo na V1 local (decisão documentada em `docs/arc
 | **Postgres — agg_daily_fraud_metrics**<br>Espelho da agregação diária de fraude Gold, consumido pela API (issue #15). | `agg_daily_fraud_metrics` | Analytics Engineering | Confidencial | Fraud Score | ✅ ok |
 | **Postgres — stream_scored_transactions**<br>Transações pontuadas pelo Fraud Engine (fraud_score, is_fraud_predicted, fraud_signals, fraud_type_predicted, detector_version), com o Z-Score antigo em paralelo (z_score, is_anomaly, fraud_score_v1) e a latência evento→processamento. is_fraud/fraud_type são o **rótulo** do gerador (ground truth, só para medir); as colunas *_predicted e fraud_score são a predição. Carregada por `make spark-submit-stream-postgres` (issues #38 e #47). | `stream_scored_transactions` | Analytics Engineering | Confidencial | Fraud Engine, Shadow Scoring, Rótulo (ground truth), Fraud Score | ✅ ok |
 | **Postgres — fraud_alerts**<br>Alertas do Fraud Engine (V2), os mesmos do tópico fraud-alerts, com os sinais que dispararam cada alerta (signals) e o tipo inferido pelos sinais (fraud_type, nulo se nenhuma regra casou; nunca o rótulo). Consumido por GET /alerts (issues #38 e #47). | `fraud_alerts` | Fraud Analytics | Confidencial | Fraud Engine, Fraud Score | ✅ ok |
+| **Postgres — stream_batch_metrics**<br>Uma linha por micro-batch do stream, gravada pelo StreamingQueryListener: linhas/s de entrada e processadas, duração por fase, lag do Kafka, linhas pontuadas, alertas, tamanho do estado curto e latência p50/p95/máx evento→processamento (issue #55). | `stream_batch_metrics` | Data Engineering | Interno | SLO | ✅ ok |
+| **Postgres — pipeline_runs**<br>Uma linha por execução de DAG do Airflow (estado, duração, tasks que falharam), gravada pela task record_pipeline_run, que roda mesmo com falha upstream (issue #55). | `pipeline_runs` | Data Engineering | Interno | SLO | ✅ ok |
+| **Postgres — quality_gate_runs**<br>Uma linha por execução de quality gate do Great Expectations: dataset, sucesso, expectativas avaliadas e com falha, e se o gate é opcional (issue #55). | `quality_gate_runs` | Data Engineering | Interno | SLO | ✅ ok |
+| **Postgres — api_requests**<br>Uma linha por request da API: método, rota (o template, sem ids), status e duração. Gravada depois da resposta, fora da latência medida (issue #55). | `api_requests` | Analytics Engineering | Interno | SLO | ✅ ok |
 
 ## Streaming (Kafka)
 
@@ -54,6 +58,7 @@ Substitui o OpenMetadata completo na V1 local (decisão documentada em `docs/arc
 | Dataset | Localização | Owner | Classificação | Glossário | Status |
 |---------|-------------|-------|---------------|-----------|--------|
 | **Dashboard — Visão Geral de Fraude**<br>KPIs de volume, valor, taxa de fraude e alertas, mais latência, distribuição de fraud_score e alertas por hora do streaming (Superset — Grafana descoped, issue #16). | `http://localhost:8088/superset/dashboard/fraude-transacoes-visao-geral/` | Fraud Analytics | Confidencial | Fraud Score | — não validado |
+| **Dashboard — Platform Health**<br>Saúde da plataforma, separada dos KPIs de negócio: latência, duração, throughput e lag do stream; execuções das DAGs e gates com falha; latência e erros da API (issue #55). As metas ficam no `make slo-report`. | `http://localhost:8088/superset/dashboard/platform-health/` | Data Engineering | Interno | SLO | — não validado |
 
 ## Linhagem
 
@@ -79,11 +84,16 @@ graph LR
     serving_agg_daily_fraud_metrics["Postgres — agg_daily_fraud_metrics"]
     serving_stream_scored_transactions["Postgres — stream_scored_transactions"]
     serving_fraud_alerts["Postgres — fraud_alerts"]
+    serving_stream_batch_metrics["Postgres — stream_batch_metrics"]
+    serving_pipeline_runs["Postgres — pipeline_runs"]
+    serving_quality_gate_runs["Postgres — quality_gate_runs"]
+    serving_api_requests["Postgres — api_requests"]
     kafka_raw_transactions["Kafka — raw-transactions"]
     kafka_raw_market_data["Kafka — raw-market-data"]
     kafka_enriched_transactions["Kafka — enriched-transactions"]
     kafka_fraud_alerts["Kafka — fraud-alerts"]
     dashboard_fraud_overview["Dashboard — Visão Geral de Fraude"]
+    dashboard_platform_health["Dashboard — Platform Health"]
     bronze_transactions --> silver_transactions
     bronze_market_data --> silver_market_data
     kafka_raw_transactions --> silver_transactions_stream
@@ -101,10 +111,15 @@ graph LR
     gold_agg_daily_fraud_metrics --> serving_agg_daily_fraud_metrics
     silver_transactions_stream --> serving_stream_scored_transactions
     silver_transactions_stream --> serving_fraud_alerts
+    kafka_raw_transactions --> serving_stream_batch_metrics
     kafka_raw_transactions --> kafka_enriched_transactions
     kafka_enriched_transactions --> kafka_fraud_alerts
     serving_fact_transactions --> dashboard_fraud_overview
     serving_agg_daily_fraud_metrics --> dashboard_fraud_overview
     serving_stream_scored_transactions --> dashboard_fraud_overview
     serving_fraud_alerts --> dashboard_fraud_overview
+    serving_stream_batch_metrics --> dashboard_platform_health
+    serving_pipeline_runs --> dashboard_platform_health
+    serving_quality_gate_runs --> dashboard_platform_health
+    serving_api_requests --> dashboard_platform_health
 ```

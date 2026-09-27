@@ -117,6 +117,17 @@ def _validate_bronze_data(**context) -> None:
     run_gate_optional("bronze_market_data")
 
 
+def _record_pipeline_run(**context) -> None:
+    """Task: registra a execução (estado, duração, tasks que falharam) em `pipeline_runs` (#55)."""
+    import sys
+
+    sys.path.insert(0, "/opt/airflow")
+
+    from src.observability.pipeline import record_pipeline_run
+
+    record_pipeline_run(**context)
+
+
 def _notify_completion(**context) -> None:
     """Task: log de conclusão da pipeline."""
     run_id = context.get("run_id", "unknown")
@@ -182,3 +193,19 @@ with DAG(
     check_source_availability >> [ingest_market_data, ingest_transactions, ingest_customers]
     [ingest_market_data, ingest_transactions, ingest_customers] >> validate_bronze_data
     validate_bronze_data >> notify_completion
+
+    # Registro da execução (#55): all_done, e fora da cadeia do notify_completion (ver a DAG de
+    # transformação).
+    record_pipeline_run = PythonOperator(
+        task_id="record_pipeline_run",
+        python_callable=_record_pipeline_run,
+        trigger_rule="all_done",
+        retries=0,
+    )
+    [
+        check_source_availability,
+        ingest_market_data,
+        ingest_transactions,
+        ingest_customers,
+        validate_bronze_data,
+    ] >> record_pipeline_run
