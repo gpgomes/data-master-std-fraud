@@ -263,6 +263,80 @@ class TestGoldAggDailyFraudMetrics:
         _run_invalid(context, "gold_agg_daily_fraud_metrics", df)
 
 
+class TestGoldCustomerBehaviorProfile:
+    """Perfil que o detector do streaming lê por broadcast (issues #46 e #47)."""
+
+    def _base(self, **overrides) -> dict:
+        base = {
+            "customer_id": ["c1", "c2", "new"],
+            "has_profile": [True, True, False],
+            "n_history": [48, 30, 0],
+            "mu_log": [4.9, 5.4, 4.97],
+            "sigma_log": [0.8, 1.1, 0.87],
+            "known_devices": [["d1", "d2"], ["d3"], []],
+            "known_ip_prefixes": [["177.10.20"], ["10.1.1"], []],
+            "known_destinations": [["acc-1"], ["acc-2", "acc-3"], []],
+            "night_share": [0.1, 0.02, 1.0],
+            "home_lat": [-23.55, -12.97, None],  # cliente novo: sem histórico, sem coordenadas
+            "home_lon": [-46.63, -38.50, None],
+            "account_opening_date": pd.to_datetime(["2016-09-24", "2020-01-01", "2026-09-01"]).date,
+        }
+        base.update(overrides)
+        return base
+
+    def test_valid_passes(self, context):
+        _run_valid(context, "gold_customer_behavior_profile", pd.DataFrame(self._base()))
+
+    def test_duplicate_customer_fails(self, context):
+        df = pd.DataFrame(self._base(customer_id=["c1", "c1", "new"]))
+        _run_invalid(context, "gold_customer_behavior_profile", df)
+
+    def test_null_mu_log_fails(self, context):
+        df = pd.DataFrame(self._base(mu_log=[4.9, None, 4.97]))
+        _run_invalid(context, "gold_customer_behavior_profile", df)
+
+    def test_mu_log_holding_the_raw_amount_instead_of_its_log_fails(self, context):
+        df = pd.DataFrame(self._base(mu_log=[4.9, 5400.0, 4.97]))
+        _run_invalid(context, "gold_customer_behavior_profile", df)
+
+    def test_sigma_below_the_floor_fails(self, context):
+        df = pd.DataFrame(self._base(sigma_log=[0.8, 0.0, 0.87]))  # o perfil aplica piso de 0,3
+        _run_invalid(context, "gold_customer_behavior_profile", df)
+
+    def test_night_share_above_one_fails(self, context):
+        df = pd.DataFrame(self._base(night_share=[0.1, 1.4, 1.0]))
+        _run_invalid(context, "gold_customer_behavior_profile", df)
+
+    def test_swapped_latitude_and_longitude_fail(self, context):
+        df = pd.DataFrame(self._base(home_lat=[-46.63, -38.50, None], home_lon=[-23.55, -12.97, None]))
+        _run_invalid(context, "gold_customer_behavior_profile", df)
+
+    def test_customer_with_a_profile_but_no_coordinates_fails(self, context):
+        df = pd.DataFrame(self._base(home_lat=[-23.55, None, None]))
+        _run_invalid(context, "gold_customer_behavior_profile", df)
+
+    def test_has_profile_must_agree_with_n_history(self, context):
+        df = pd.DataFrame(self._base(has_profile=[True, True, True]))  # o "new" tem n_history = 0
+        _run_invalid(context, "gold_customer_behavior_profile", df)
+        df = pd.DataFrame(self._base(has_profile=[False, True, False]))  # o "c1" tem 48 transações
+        _run_invalid(context, "gold_customer_behavior_profile", df)
+
+    def test_missing_column_fails(self, context):
+        df = pd.DataFrame(self._base()).drop(columns=["known_devices"])
+        _run_invalid(context, "gold_customer_behavior_profile", df)
+
+    def test_empty_table_fails(self, context):
+        df = pd.DataFrame(self._base()).iloc[0:0]
+        _run_invalid(context, "gold_customer_behavior_profile", df)
+
+    def test_thresholds_follow_the_profile_module(self):
+        """A suite e o `build_profiles` compartilham o piso de σ e o mínimo de histórico."""
+        from src.governance.great_expectations.suites import PROFILE_SIGMA_LOG_RANGE
+        from src.transformation.fraud.profile import SIGMA_FLOOR
+
+        assert PROFILE_SIGMA_LOG_RANGE[0] == SIGMA_FLOOR
+
+
 # ── Gates opcionais (dados de mercado) ───────────────────────────────────────
 
 

@@ -128,6 +128,10 @@ class TestRenderMarkdown:
             "Velocity Check",
             "Account Takeover",
             "Smurfing",
+            "Fraud Engine",
+            "Perfil de Comportamento",
+            "Shadow Scoring",
+            "Rótulo (ground truth)",
         }
         used_terms = {term for entry in CATALOG for term in entry.glossary_terms}
         assert used_terms.issubset(known_terms)

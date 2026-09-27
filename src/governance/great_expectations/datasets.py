@@ -34,6 +34,7 @@ _GOLD_PATHS = {
     "gold_dim_customers": "dim_customers/",
     "gold_dim_date": "dim_date/",
     "gold_agg_daily_fraud_metrics": "agg_daily_fraud_metrics/",
+    "gold_customer_behavior_profile": "customer_behavior_profile/",
 }
 
 DATASET_KEYS = tuple(

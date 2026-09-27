@@ -197,9 +197,9 @@ make test-cov                  # Testes com relatório de cobertura HTML (htmlco
 # Pipeline
 make seed-data                  # Gerar dados sintéticos de transações e mercado
 make spark-submit-batch         # Job PySpark Bronze → Silver (Gold é um job separado)
-make spark-submit-silver-gold   # Job PySpark Silver → Gold
+make spark-submit-silver-gold   # Job PySpark Silver → Gold (inclui o perfil de comportamento dos clientes que o streaming lê)
 make spark-submit-gold-postgres # Carregar Gold no Postgres (serving layer)
-make spark-submit-stream        # Job PySpark streaming (Kafka → Silver + detecção de fraude)
+make spark-submit-stream        # Job PySpark streaming (Kafka → Silver + Fraud Engine); exige o Gold do passo anterior
 make producer-transactions      # Iniciar producer de transações financeiras
 make producer-market            # Iniciar producer de dados de mercado
 
@@ -208,6 +208,11 @@ make api                       # Iniciar a API FastAPI em modo desenvolvimento
 make catalog                   # Gerar docs/data_catalog.md e docs/images/data_lineage.svg, e validar os datasets contra a infra real
 make dashboards                # Provisionar o dashboard Superset de KPIs (+ smoke test)
 make dashboards-export         # Exportar o dashboard provisionado para dashboards/superset/dashboard_configs/
+
+# Detector de fraude
+make fraud-eval                # Avaliar Z-Score V1 × Fraud Engine V2 offline (Precision/Recall/FPR, seeds fixas, sem Docker) → docs/fraud_evaluation.md
+make fraud-calibrate           # Recalibrar pesos e limiar do V2 na seed de validação → src/transformation/fraud/weights.py
+make fraud-online-eval         # Benchmark online V1 × V2 (SQL sobre stream_scored_transactions, com o streaming já carregado no Postgres)
 
 # Limpeza
 make clean                     # Limpar volumes Docker, dados temporários e artefatos de build
@@ -237,6 +242,19 @@ make test-unit
 
 ---
 
+## Detecção de fraude
+
+O detector do streaming é o **Fraud Engine** (`src/transformation/fraud/`): dez sinais de comportamento por cliente (valor, device, rede, destinatário, horário, local, idade da conta, velocidade, viagem impossível e concentração de destinatários) combinados por noisy-OR, com pesos e limiar calibrados numa seed de validação (*recall máximo com FPR ≤ 1%*). O batch calcula o **perfil** de cada cliente (`gold/customer_behavior_profile/`); o stream lê o perfil por broadcast e calcula só as janelas curtas. Cada alerta traz os sinais que o dispararam e o tipo de fraude **inferido** por eles. O detector não vê o rótulo `is_fraud`, e o antigo Z-Score segue em paralelo (*shadow*) para comparação.
+
+| Detector | Precision | Recall | F1 | FPR |
+|----------|----------:|-------:|---:|----:|
+| Z-Score V1, offline (5 seeds) | 40,7% | 56,4% | 47,3% | 2,21% |
+| **Fraud Engine V2, offline (5 seeds)** | 72,7% | 94,1% | 82,0% | 0,95% |
+| Z-Score V1, online (18.170 eventos) | 14,2% | 57,6% | 22,8% | 6,30% |
+| **Fraud Engine V2, online (18.170 eventos)** | 60,0% | 91,3% | 72,4% | 1,10% |
+
+Latência evento → processamento no V2: p50 6,0 s, p95 10,5 s (o teto é o trigger de 10 s). **Ressalva:** o dado é sintético e o gerador injeta as assinaturas que o detector procura (toda a fraude vai para um destinatário novo); o número que importa é o relativo, e o relatório dimensiona a circularidade. Reprodução: `make fraud-eval` (offline, [`docs/fraud_evaluation.md`](docs/fraud_evaluation.md)) e `make fraud-online-eval` (online). Como cada parte funciona: [`docs/architecture.md`](docs/architecture.md#detecção-de-fraude-fraud-engine); perguntas de banca respondidas com esses números: [`docs/fraud_engine_perguntas_banca.md`](docs/fraud_engine_perguntas_banca.md).
+
 ## Detalhamento dos Dados
 
 ### Tópicos Kafka
@@ -245,8 +263,8 @@ make test-unit
 |--------|-----------|---------|
 | `raw-transactions` | Transações financeiras em tempo real | kafka_producer_transactions.py |
 | `raw-market-data` | Cotações e trades de mercado | kafka_producer_market.py |
-| `enriched-transactions` | Transações enriquecidas com score | stream_processor.py |
-| `fraud-alerts` | Alertas de transações fraudulentas (Z-Score) | stream_processor.py |
+| `enriched-transactions` | Transações enriquecidas com o score e os sinais do Fraud Engine (e o Z-Score antigo em paralelo) | stream_processor.py |
+| `fraud-alerts` | Alertas do Fraud Engine: tipo inferido pelos sinais, sinais ativos e versão do detector | stream_processor.py |
 
 ### Camadas do Data Lake
 
@@ -258,11 +276,17 @@ make test-unit
 
 ### Tipos de Fraude Detectados
 
-- **ACCOUNT_TAKEOVER** — Acesso e operações por terceiros na conta
-- **CARD_CLONING** — Uso de cartão clonado em localização diferente
-- **IDENTITY_THEFT** — Operações com dados de identidade roubados
-- **MONEY_LAUNDERING** — Padrão de lavagem (smurfing, layering)
-- **SOCIAL_ENGINEERING** — Fraude via engenharia social (PIX falso)
+O tipo de cada alerta é **inferido pelos sinais** que o dispararam (regras com prioridade em
+`src/transformation/fraud/fraud_type.py`), nunca copiado do rótulo do gerador; se nenhuma regra casa, o
+alerta fica sem tipo.
+
+| Tipo | Como o Fraud Engine o reconhece |
+|------|---------------------------------|
+| **ACCOUNT_TAKEOVER** — acesso e operações por terceiros na conta | device novo **e** (rede nova **ou** longe da casa do cliente) |
+| **CARD_CLONING** — cartão clonado em outra localização | viagem impossível (nenhum dos últimos 5 eventos em 6 h é uma origem plausível a ≤ 900 km/h) sem device novo |
+| **IDENTITY_THEFT** — dados de identidade roubados | conta com menos de 30 dias **e** (device novo **ou** valor fora do padrão) |
+| **MONEY_LAUNDERING** — lavagem (smurfing, layering) | vários remetentes para a mesma conta em 1 h, **ou** destinatário novo com rajada de transações |
+| **SOCIAL_ENGINEERING** — engenharia social (PIX falso) | valor fora do padrão para um destinatário novo, com device e rede conhecidos (o tipo mais difícil: só o destinatário o separa de um pagamento legítimo grande) |
 
 ---
 
@@ -272,7 +296,7 @@ make test-unit
 
 - **Bronze:** Schema validation, completude de campos obrigatórios, freshness check
 - **Silver:** Unicidade de chaves, ranges de valores, consistência referencial
-- **Gold:** Integridade de agregações, SLAs de atualização
+- **Gold:** Integridade de agregações, SLAs de atualização e o perfil de comportamento dos clientes (`gold_customer_behavior_profile`: cliente único, faixas de μ/σ e de coordenadas, `has_profile` coerente com o histórico), que o detector de streaming lê
 
 Os gates de `bronze_market_data` e `silver_market_data` são **opcionais**: o dado de
 mercado vem de uma API gratuita de terceiros (yfinance) sujeita a rate limit, então a
@@ -325,7 +349,7 @@ make dashboards          # provisiona + roda o smoke test contra cada chart
 make dashboards-export   # snapshot versionado em dashboards/superset/dashboard_configs/
 ```
 
-**Streaming na serving layer (issue #38)**: o `fraud_score` do batch (`fact_transactions`) segue `NULL` por definição (só o streaming o calcula), mas a saída do detector é carregada no Postgres em `stream_scored_transactions` (scores, `z_score`, latência evento→processamento) e `fraud_alerts` (os mesmos alertas do tópico Kafka), com `make spark-submit-stream-postgres` (também é a última task da DAG `batch_transformation_pipeline`). `GET /alerts` devolve esses alertas reais, e o dashboard ganhou latência média, alertas do detector, distribuição de `fraud_score` e alertas por hora.
+**Streaming na serving layer (issues #38 e #47)**: o `fraud_score` do batch (`fact_transactions`) segue `NULL` por definição (só o streaming o calcula), mas a saída do detector é carregada no Postgres em `stream_scored_transactions` (o veredito do Fraud Engine: `fraud_score`, `is_fraud_predicted`, `fraud_signals`, `fraud_type_predicted`; o Z-Score antigo em paralelo; o rótulo do gerador em `is_fraud`/`fraud_type`; e a latência evento→processamento) e `fraud_alerts` (os mesmos alertas do tópico Kafka, com os sinais que os dispararam), com `make spark-submit-stream-postgres` (também é a última task da DAG `batch_transformation_pipeline`). `GET /alerts` devolve esses alertas reais, com `fraud_signals`, e o dashboard ganhou latência média, alertas do detector, distribuição de `fraud_score` e alertas por hora.
 
 ### Limitações conhecidas da V1
 
@@ -335,6 +359,8 @@ make dashboards-export   # snapshot versionado em dashboards/superset/dashboard_
 | Ao derrubar/reiniciar o streaming no meio de um micro-batch, mensagens de `enriched-transactions`/`fraud-alerts` podem repetir numa janela residual (o Parquet em `silver/transactions_stream/` não duplica) | O Kafka sink do Spark não é transacional (at-least-once); consumidores devem deduplicar por `transaction_id`. Ver [`docs/runbook.md`](docs/runbook.md#semântica-de-entrega-do-streaming-issue-36) | [#36](https://github.com/gpgomes/data-master-std-fraud/issues/36) |
 | Sem dados de mercado (`bronze/market_data` vazio); gates e catálogo tratam como opcional | O Yahoo Finance devolve HTTP 429 (rate limit) conforme o IP; a coleta via yfinance não é confiável | [`docs/runbook.md`](docs/runbook.md#quality-gates-great-expectations) |
 | Batch e streaming não rodam juntos no cluster Spark padrão | O streaming ocupa os 4 cores e 4 GB dos workers | [`docs/runbook.md`](docs/runbook.md#troubleshooting) |
+| As métricas de fraude vêm de dado sintético (Recall de 94% offline e 91% online) | O gerador injeta as assinaturas que os sinais procuram; sem o sinal `NEW_DESTINATION` o Recall cai para 88% e engenharia social de 68% para 38%. Com dado real o Recall seria menor | [`docs/fraud_evaluation.md`](docs/fraud_evaluation.md#limitações-e-circularidade) |
+| Engenharia social *stealth* não é detectada (Recall 0%); ~1/3 dos alertas ficam sem tipo inferido | Só o destinatário novo separa essa fraude de um pagamento legítimo grande | [`docs/fraud_evaluation.md`](docs/fraud_evaluation.md) |
 | Sem AWS/Terraform, QuickSight e deploy automatizado | Fora do escopo da V1 local | [#17](https://github.com/gpgomes/data-master-std-fraud/issues/17) |
 
 ---

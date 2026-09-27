@@ -108,7 +108,7 @@ def get_transaction(db: Session, transaction_id: str) -> RowMapping | None:
 
 _ALERT_COLUMNS = """
     alert_id, transaction_id, customer_id, event_time, amount, fraud_type,
-    fraud_score, z_score, alert_reason, processed_at
+    fraud_score, z_score, alert_reason, signals AS fraud_signals, detector_version, processed_at
 """
 
 

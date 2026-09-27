@@ -1,8 +1,10 @@
 """Job PySpark: carga da saída do streaming para a serving layer PostgreSQL (issue #38).
 
-Lê `silver/transactions_stream/` (Parquet escrito pelo detector de fraude, issue #11) e
-carrega duas tabelas: `stream_scored_transactions` (transações pontuadas, com `fraud_score`
-e latência evento→processamento) e `fraud_alerts` (os alertas do detector).
+Lê `silver/transactions_stream/` (Parquet escrito pelo detector de fraude, issues #11 e #46) e
+carrega duas tabelas: `stream_scored_transactions` (transações pontuadas pelo Fraud Engine V2,
+com o Z-Score V1 em paralelo e a latência evento→processamento) e `fraud_alerts` (os alertas do
+V2). `is_fraud`/`fraud_type` são o rótulo do gerador (ground truth), as colunas `*_predicted`,
+`fraud_score` e `fraud_signals` são a predição (issue #47).
 
 Por que ler o Parquet e não consumir o Kafka: o streaming já ocupa todos os cores do cluster
 Spark local, então um segundo job de streaming não teria recursos; o Parquet é o registro
@@ -37,6 +39,9 @@ logger = get_logger("stream_to_postgres")
 
 _DATASETS = ["stream_scored_transactions", "fraud_alerts"]
 _EMPTY = {"rows_read": 0, "rows_written": 0}
+# Os sinais ativos viajam como texto separado por vírgula (o array do Parquet não vira coluna do
+# Postgres): ver a nota no `schema.sql`.
+_SIGNALS_SEPARATOR = ","
 
 
 class StreamToPostgresLoader(GoldToPostgresLoader):
@@ -88,10 +93,16 @@ class StreamToPostgresLoader(GoldToPostgresLoader):
             "merchant_category",
             "is_fraud",
             "fraud_type",
-            "z_score",
             "fraud_score",
             F.round("fraud_score", 1).alias("fraud_score_bucket"),
+            "is_fraud_predicted",
+            F.array_join("fraud_signals", _SIGNALS_SEPARATOR).alias("fraud_signals"),
+            "fraud_type_predicted",
+            "detector_version",
+            "z_score",
             "is_anomaly",
+            "fraud_score_v1",
+            "shadow_detector_version",
             "produced_at",
             "processing_timestamp",
             F.round(latency, 3).alias("latency_seconds"),
@@ -99,12 +110,10 @@ class StreamToPostgresLoader(GoldToPostgresLoader):
 
     @staticmethod
     def _to_alerts_table(df: DataFrame) -> DataFrame:
-        # `signals` e `detector_version` (issue #46) ainda não têm coluna na tabela `fraud_alerts`
-        # (a #47 as cria); o JDBC não grava coluna que a tabela não tem.
         return (
             build_fraud_alerts(df)
             .withColumnRenamed("timestamp", "event_time")
-            .drop("signals", "detector_version")
+            .withColumn("signals", F.array_join("signals", _SIGNALS_SEPARATOR))
         )
 
     # ── Carga ───────────────────────────────────────────────────────────────────

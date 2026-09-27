@@ -204,7 +204,7 @@ Suites e checkpoints ficam em `src/governance/great_expectations/` — definidos
 via código Python (`suites.py`), não editados à mão em JSON/YAML. Cobrem
 `bronze_transactions`, `bronze_market_data`, `silver_transactions`,
 `silver_market_data`, `gold_fact_transactions`, `gold_dim_customers`,
-`gold_dim_date`, `gold_agg_daily_fraud_metrics`.
+`gold_dim_date`, `gold_agg_daily_fraud_metrics`, `gold_customer_behavior_profile`.
 
 Política: **gate simples** — qualquer expectativa falhando bloqueia a task do
 Airflow (e portanto a DAG inteira, via `trigger_rule` padrão), não há
@@ -282,12 +282,12 @@ tabela — sem foreign keys entre fato e dimensões de propósito (ver
 |----------|-----------|
 | `GET /health/live`, `GET /health/ready` | Liveness/readiness (readiness checa a conexão com o Postgres) |
 | `GET /transactions`, `GET /transactions/{id}` | Transações (paginado) |
-| `GET /alerts` | Alertas reais do detector de streaming (tabela `fraud_alerts`, com `z_score`, `fraud_score` e `alert_reason`); a visão pelo rótulo do batch é `GET /transactions?is_fraud=true` |
+| `GET /alerts` | Alertas reais do Fraud Engine (tabela `fraud_alerts`): `fraud_score`, `fraud_signals` (a lista dos sinais que dispararam o alerta), `fraud_type` (inferido pelos sinais; **nulo** quando nenhuma regra casou, ~1/3 dos alertas), `detector_version`, o `z_score` do detector antigo (shadow, pode ser nulo) e `alert_reason`; a visão pelo rótulo do batch é `GET /transactions?is_fraud=true` |
 | `GET /kpis/fraud-daily` | `agg_daily_fraud_metrics` (paginado) |
 
 ### Carregar a saída do streaming (issue #38)
 
-`stream_to_postgres.py` lê `silver/transactions_stream/` e recarrega `stream_scored_transactions` (scores e latência) e `fraud_alerts`:
+`stream_to_postgres.py` lê `silver/transactions_stream/` e recarrega `stream_scored_transactions` (o veredito do Fraud Engine, o Z-Score antigo em paralelo, o rótulo do gerador e a latência) e `fraud_alerts`:
 
 ```bash
 make spark-submit-stream-postgres
@@ -296,6 +296,14 @@ make spark-submit-stream-postgres
 Truncate + reload idempotente: rodar de novo não duplica nada. Sem saída de streaming no Silver ele pula a carga com um aviso e sai com 0 (por isso é a última task da DAG `batch_transformation_pipeline`, sem bloqueá-la). Como o streaming ocupa todos os cores do cluster Spark local, **pare o `spark-submit-stream` (Ctrl+C) antes de rodar a carga**; o Parquet já gravado continua lá. A serving layer reflete o streaming com a defasagem da última carga.
 
 Conferir: `SELECT COUNT(*), COUNT(fraud_score), ROUND(AVG(latency_seconds)::numeric, 2) FROM stream_scored_transactions;` e `SELECT COUNT(*) FROM fraud_alerts;` (deve bater com as mensagens de `fraud-alerts`).
+
+**Rótulo × predição (issue #47).** Em `stream_scored_transactions`, `is_fraud` e `fraud_type` são o **rótulo do gerador sintético** (ground truth, só para medir); o que o detector decidiu está em `fraud_score`, `is_fraud_predicted`, `fraud_signals` e `fraud_type_predicted` (Fraud Engine V2, quem alerta) e, em paralelo, em `z_score`, `is_anomaly` e `fraud_score_v1` (Z-Score V1, shadow). `fraud_signals` é texto separado por vírgula (`AMOUNT_ANOMALY,NEW_DESTINATION`; vazio = nenhum sinal acima de 0,5); em `fraud_alerts` a coluna equivalente chama `signals` e a API a devolve como lista em `fraud_signals`.
+
+**Banco já provisionado (issue #47).** Um Postgres criado antes da #47 tem as duas tabelas sem as colunas novas, e `CREATE TABLE IF NOT EXISTS` não as adiciona. O `ensure_schema`, que roda no começo de toda carga, também aplica os `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` do `schema.sql`: nada a fazer além de rodar `make spark-submit-stream-postgres` de novo. Em banco novo os `ALTER` não têm efeito. As linhas carregadas antes do upgrade ficam com as colunas novas nulas até a próxima carga (que recarrega tudo); a API devolve `fraud_signals: []` para elas. Para conferir: `\d fraud_alerts` deve listar `signals` e `detector_version`.
+
+### Benchmark online V1 × V2 (issue #47)
+
+`make fraud-online-eval` roda `src/serving/queries/fraud_online_benchmark.sql` no Postgres: Precision, Recall, F1, FPR e FNR do V1 (`is_anomaly`) e do V2 (`is_fraud_predicted`) **sobre os mesmos eventos** (shadow scoring), recall por tipo, quem pegou o quê, o tipo inferido × o rótulo, os sinais dos falsos positivos do V2 e a latência p50/p95/p99. Pré-requisito: o streaming rodou e a carga acima foi feita. É o par online do `make fraud-eval` (offline): o V2 aqui já vem calibrado da seed de validação, não há warm-up e os números vêm de **uma** execução (o intervalo de confiança do Recall com ~150 fraudes é de ±3 p.p.). Para uma rodada limpa, apague `silver/transactions_stream/`, `silver/_stream_state/` e `checkpoints/` antes de subir o stream.
 
 ### Rodar manualmente
 
@@ -313,6 +321,8 @@ make api                         # sobe a API em http://localhost:8000/docs
    `POSTGRES_*` no `.env` não bate com o container — ver
    `make logs-postgres`.
 3. **`/alerts` vazio**: `fraud_alerts` só tem dados depois que o job de streaming rodou e a carga foi executada (`make spark-submit-stream-postgres`, ver abaixo). Sem streaming a API devolve `total: 0`, não erro.
+4. **`fraud_type: null` em `/alerts`**: esperado. O tipo é inferido pelos sinais e fica nulo quando nenhuma regra casa (por exemplo, `NEW_DESTINATION` sozinho com sinais fracos); não há mais tipo de fallback.
+5. **`column "signals" of relation "fraud_alerts" does not exist` na carga**: o `ensure_schema` não rodou (a carga chamou o JDBC direto) ou falhou. Rode `make spark-submit-stream-postgres` inteiro, ou aplique o `src/serving/loaders/schema.sql` com `psql`.
 
 ## Catálogo de Dados
 

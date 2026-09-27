@@ -730,6 +730,8 @@ pelos jobs.
 ## Issue #11 — Streaming Spark e Detecção de Fraude (executado em 2026-09-03)
 
 > Checklist completo: `docs/testes_issue_11.txt`
+>
+> **Registro histórico.** Esta seção descreve o detector como foi testado na época, um Z-Score do valor (`zscore-v1`) com `fraud_type` copiado do rótulo e um tipo de fallback. Desde a issue #46 o detector que alerta é o Fraud Engine multi-signal (`multisignal-v2`), e o Z-Score roda só em paralelo (shadow). Ver `docs/architecture.md` ("Detecção de fraude") e `docs/testes_issue_47.txt`.
 
 Objetivo: implementar a speed layer da arquitetura Lambda — `StreamProcessor`
 consome `raw-transactions` via Spark Structured Streaming, enriquece com

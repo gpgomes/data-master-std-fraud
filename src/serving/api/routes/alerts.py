@@ -1,9 +1,11 @@
-"""Alertas do detector de fraude de streaming (Z-Score, issue #11).
+"""Alertas do detector de fraude de streaming (Fraud Engine multi-signal, issues #11, #46 e #47).
 
 Fonte de dados (issue #38): tabela `fraud_alerts` no Postgres, carregada de
 `silver/transactions_stream/` por `stream_to_postgres.py` — os mesmos alertas do tópico
-Kafka `fraud-alerts`, com `z_score`, `fraud_score` e `alert_reason`. A tabela só tem dados
-depois que o job de streaming rodou e a carga foi executada (`make spark-submit-stream-postgres`).
+Kafka `fraud-alerts`, com `fraud_score`, `fraud_signals` (os sinais que dispararam o alerta),
+`fraud_type` (inferido pelos sinais, nulo se nenhuma regra casou), `detector_version`, o
+`z_score` do detector antigo (shadow) e `alert_reason`. A tabela só tem dados depois que o job
+de streaming rodou e a carga foi executada (`make spark-submit-stream-postgres`).
 
 A visão pelo **rótulo** de fraude do batch (o `is_fraud` do gerador, sem score) continua
 disponível em `GET /transactions?is_fraud=true`.

@@ -137,6 +137,10 @@ def _loader(spark: SparkSession, root: Path) -> StreamToPostgresLoader:
     return loader
 
 
+def StreamToPostgres_scored(spark, rows):  # noqa: N802 - atalho de teste
+    return StreamToPostgresLoader._to_scored_table(_df(spark, rows))
+
+
 class TestScoredTable:
     def test_computes_latency_and_score_bucket(self, spark):
         df = _df(
@@ -168,6 +172,61 @@ class TestScoredTable:
         ).first()
         assert row["fraud_score"] == pytest.approx(0.975)
         assert row["z_score"] == pytest.approx(2.0)
+
+    def test_carries_the_engine_verdict_and_the_shadow_side_by_side(self, spark):
+        row = StreamToPostgresLoader._to_scored_table(
+            _df(
+                spark,
+                [
+                    _row(
+                        is_fraud=True,
+                        fraud_type="CARD_CLONING",
+                        fraud_score=0.975,
+                        is_fraud_predicted=True,
+                        fraud_signals=["GEO_VELOCITY", "NEW_DESTINATION"],
+                        fraud_type_predicted="CARD_CLONING",
+                        z_score=1.2,
+                        is_anomaly=False,
+                        fraud_score_v1=0.2,
+                    )
+                ],
+            )
+        ).first()
+        assert row["is_fraud_predicted"] is True
+        assert row["fraud_type_predicted"] == "CARD_CLONING"
+        assert row["detector_version"] == "multisignal-v2"
+        assert row["is_anomaly"] is False and row["fraud_score_v1"] == pytest.approx(0.2)
+        assert row["shadow_detector_version"] == "zscore-v1"
+
+    def test_signals_become_a_comma_separated_string(self, spark):
+        rows = {
+            r["transaction_id"]: r["fraud_signals"]
+            for r in StreamToPostgres_scored(
+                spark,
+                [
+                    _row(transaction_id="two", fraud_signals=["GEO_VELOCITY", "NEW_DESTINATION"]),
+                    _row(transaction_id="none", fraud_signals=[]),
+                ],
+            ).collect()
+        }
+        assert rows == {"two": "GEO_VELOCITY,NEW_DESTINATION", "none": ""}
+
+    def test_the_label_and_the_prediction_are_separate_columns(self, spark):
+        """`is_fraud`/`fraud_type` são o rótulo; a predição não os sobrescreve nem os lê."""
+        row = StreamToPostgres_scored(
+            spark,
+            [
+                _row(
+                    is_fraud=False,
+                    fraud_type=None,
+                    is_fraud_predicted=True,
+                    fraud_type_predicted="ACCOUNT_TAKEOVER",
+                )
+            ],
+        ).first()
+        assert row["is_fraud"] is False and row["fraud_type"] is None
+        assert row["is_fraud_predicted"] is True
+        assert row["fraud_type_predicted"] == "ACCOUNT_TAKEOVER"
 
     def test_drops_sensitive_source_columns(self, spark):
         columns = set(StreamToPostgresLoader._to_scored_table(_df(spark, [_row()])).columns)
@@ -219,9 +278,28 @@ class TestAlertsTable:
         alert = StreamToPostgresLoader._to_alerts_table(_df(spark, self._ROWS)).first()
         assert alert["processed_at"].second == 7  # 10:00:07, não a hora da carga
 
+    def test_the_alert_carries_the_signals_and_the_detector_version(self, spark):
+        alert = StreamToPostgresLoader._to_alerts_table(_df(spark, self._ROWS)).first()
+        assert alert["signals"] == "NEW_DESTINATION,AMOUNT_ANOMALY"
+        assert alert["detector_version"] == "multisignal-v2"
+        assert alert["z_score"] == pytest.approx(8.5)  # o do V1, em paralelo
+
+    def test_an_alert_without_signals_or_type_is_still_loaded(self, spark):
+        """Combinação de sinais fracos (nenhum ≥ 0,5): lista vazia e sem tipo inferido."""
+        rows = [
+            _row(
+                transaction_id="tx-weak",
+                is_fraud_predicted=True,
+                fraud_score=0.93,
+                fraud_signals=[],
+                fraud_type_predicted=None,
+            )
+        ]
+        alert = StreamToPostgresLoader._to_alerts_table(_df(spark, rows)).first()
+        assert alert["signals"] == ""
+        assert alert["fraud_type"] is None
+
     def test_columns_match_the_postgres_table(self, spark):
-        """A tabela ainda não tem `signals` nem `detector_version` (issue #47): o JDBC não grava
-        coluna que ela não tem, então o loader as deixa de fora."""
         columns = StreamToPostgresLoader._to_alerts_table(_df(spark, self._ROWS)).columns
         ddl = _SCHEMA_SQL_PATH.read_text(encoding="utf-8")
         table_sql = ddl.split("fraud_alerts (")[1].split(");")[0]
@@ -300,6 +378,81 @@ class TestLoad:
         ):
             loader.run_all()
         assert calls == ["schema", "scored", "alerts"]
+
+
+# Colunas que as duas tabelas de streaming já tinham na issue #38, antes do Fraud Engine.
+_BASELINE_38 = {
+    "stream_scored_transactions": {
+        "transaction_id", "customer_id", "event_time", "amount", "currency", "transaction_type",
+        "channel", "merchant_category", "is_fraud", "fraud_type", "z_score", "fraud_score",
+        "fraud_score_bucket", "is_anomaly", "produced_at", "processing_timestamp",
+        "latency_seconds",
+    },
+    "fraud_alerts": {
+        "alert_id", "transaction_id", "customer_id", "event_time", "amount", "fraud_type",
+        "fraud_score", "z_score", "alert_reason", "processed_at",
+    },
+}
+
+
+def _create_columns(ddl: str, table: str) -> dict[str, str]:
+    body = ddl.split(f"CREATE TABLE IF NOT EXISTS {table} (")[1].split(");")[0]
+    columns = {}
+    for line in body.strip().splitlines():
+        parts = line.strip().rstrip(",").split()
+        if parts and not parts[0].startswith("--"):
+            columns[parts[0]] = " ".join(parts[1:]).upper()
+    return columns
+
+
+def _alter_columns(ddl: str, table: str) -> dict[str, str]:
+    import re
+
+    pattern = rf"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS (\w+) ([A-Z ]+);"
+    return {name: kind.strip() for name, kind in re.findall(pattern, ddl)}
+
+
+class TestUpgradeOfProvisionedDatabases:
+    """`CREATE TABLE IF NOT EXISTS` não adiciona coluna a uma tabela que já existe: um banco
+    provisionado antes da issue #47 precisa dos `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`."""
+
+    _DDL = _SCHEMA_SQL_PATH.read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize("table", ["stream_scored_transactions", "fraud_alerts"])
+    def test_every_column_added_after_issue_38_has_an_idempotent_alter(self, table):
+        created = _create_columns(self._DDL, table)
+        added_since_38 = set(created) - _BASELINE_38[table]
+        assert added_since_38, "a issue #47 deveria ter adicionado colunas"
+        assert set(_alter_columns(self._DDL, table)) == added_since_38
+
+    @pytest.mark.parametrize("table", ["stream_scored_transactions", "fraud_alerts"])
+    def test_the_alter_has_the_same_type_as_the_create(self, table):
+        created = _create_columns(self._DDL, table)
+        for name, kind in _alter_columns(self._DDL, table).items():
+            assert kind == created[name], f"{table}.{name}"
+
+    def test_no_alter_is_missing_if_not_exists(self):
+        alters = [
+            line for line in self._DDL.splitlines() if line.strip().startswith("ALTER TABLE")
+        ]
+        assert alters
+        assert all("ADD COLUMN IF NOT EXISTS" in line for line in alters)
+
+    def test_no_baseline_column_was_dropped_or_retyped(self):
+        for table, baseline in _BASELINE_38.items():
+            assert baseline <= set(_create_columns(self._DDL, table))
+
+    def test_ensure_schema_runs_the_whole_file_in_one_transaction(self):
+        from unittest.mock import MagicMock
+
+        loader = StreamToPostgresLoader.__new__(StreamToPostgresLoader)
+        conn = MagicMock()
+        with patch("src.serving.loaders.gold_to_postgres.psycopg2.connect", return_value=conn):
+            loader.ensure_schema()
+        executed = conn.cursor.return_value.__enter__.return_value.execute.call_args[0][0]
+        assert "ALTER TABLE fraud_alerts ADD COLUMN IF NOT EXISTS signals" in executed
+        conn.commit.assert_called_once()
+        conn.close.assert_called_once()
 
 
 class TestSchemaSql:

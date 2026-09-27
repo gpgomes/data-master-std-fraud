@@ -30,6 +30,8 @@ from __future__ import annotations
 from great_expectations.core.expectation_configuration import ExpectationConfiguration
 from great_expectations.data_context import FileDataContext
 
+from src.transformation.fraud.profile import MIN_HISTORY, PROFILE_COLUMNS, SIGMA_FLOOR
+
 FRESHNESS_WINDOW_DAYS = 90
 
 CURRENCIES = ["BRL", "USD", "EUR"]
@@ -45,7 +47,18 @@ SUITE_NAMES = (
     "gold_dim_customers",
     "gold_dim_date",
     "gold_agg_daily_fraud_metrics",
+    "gold_customer_behavior_profile",
 )
+
+# Faixas do perfil de comportamento (issue #47). Deliberadamente largas: pegam lixo (NaN, valor
+# cru no lugar do logaritmo, latitude e longitude trocadas), não desvios estatísticos.
+# `mu_log`/`sigma_log` são a média e o desvio de ln(amount): ln(0,01) = -4,6 e ln(1e6) = 13,8.
+PROFILE_MU_LOG_RANGE = (-5.0, 15.0)
+PROFILE_SIGMA_LOG_RANGE = (SIGMA_FLOOR, 5.0)  # o perfil aplica o piso de σ a todo cliente
+# O domínio é brasileiro: a mediana das coordenadas de um cliente cai dentro do país. Trocar
+# latitude por longitude põe a latitude em ~-45 e a longitude em ~-16, fora das duas caixas.
+PROFILE_LAT_RANGE = (-35.0, 6.0)
+PROFILE_LON_RANGE = (-75.0, -30.0)
 
 
 def _exists(*columns: str) -> list[ExpectationConfiguration]:
@@ -341,6 +354,64 @@ def _build_gold_agg_daily_fraud_metrics(context: FileDataContext) -> None:
     _save(context, "gold_agg_daily_fraud_metrics", expectations)
 
 
+def _build_gold_customer_behavior_profile(context: FileDataContext) -> None:
+    """Perfil de comportamento por cliente (issue #46), lido por broadcast pelo detector.
+
+    O V2 é cego a tudo que este perfil não traz: um perfil quebrado (nulo, fora de faixa, cliente
+    repetido) não derruba o stream, só o faz alertar errado, então o gate roda no batch.
+    `home_lat`/`home_lon` só existem para quem tem histórico (`has_profile`): cliente novo fica
+    com o valor do prior do segmento e coordenadas nulas.
+    """
+    with_profile = "has_profile == True"
+    expectations = [
+        *_exists(*PROFILE_COLUMNS),
+        ExpectationConfiguration(
+            expectation_type="expect_table_row_count_to_be_between", kwargs={"min_value": 1}
+        ),
+        *_not_null(
+            "customer_id",
+            "has_profile",
+            "n_history",
+            "mu_log",
+            "sigma_log",
+            "known_devices",
+            "known_ip_prefixes",
+            "known_destinations",
+            "night_share",
+            "account_opening_date",
+        ),
+        _unique("customer_id"),  # PK: o broadcast join precisa de uma linha por cliente
+        _between("n_history", min_value=0),
+        _between("mu_log", *PROFILE_MU_LOG_RANGE),
+        _between("sigma_log", *PROFILE_SIGMA_LOG_RANGE),
+        _between("night_share", min_value=0.0, max_value=1.0),
+        _not_null_when("home_lat", with_profile),
+        _not_null_when("home_lon", with_profile),
+        _between("home_lat", *PROFILE_LAT_RANGE),
+        _between("home_lon", *PROFILE_LON_RANGE),
+        # has_profile é definido por n_history >= MIN_HISTORY: os dois não podem divergir.
+        ExpectationConfiguration(
+            expectation_type="expect_column_values_to_be_between",
+            kwargs={
+                "column": "n_history",
+                "min_value": MIN_HISTORY,
+                "row_condition": with_profile,
+                "condition_parser": "pandas",
+            },
+        ),
+        ExpectationConfiguration(
+            expectation_type="expect_column_values_to_be_between",
+            kwargs={
+                "column": "n_history",
+                "max_value": MIN_HISTORY - 1,
+                "row_condition": "has_profile == False",
+                "condition_parser": "pandas",
+            },
+        ),
+    ]
+    _save(context, "gold_customer_behavior_profile", expectations)
+
+
 _BUILDERS = {
     "bronze_transactions": _build_bronze_transactions,
     "bronze_market_data": _build_bronze_market_data,
@@ -350,6 +421,7 @@ _BUILDERS = {
     "gold_dim_customers": _build_gold_dim_customers,
     "gold_dim_date": _build_gold_dim_date,
     "gold_agg_daily_fraud_metrics": _build_gold_agg_daily_fraud_metrics,
+    "gold_customer_behavior_profile": _build_gold_customer_behavior_profile,
 }
 
 
