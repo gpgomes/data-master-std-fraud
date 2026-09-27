@@ -1,0 +1,43 @@
+================================================================================
+CHECKLIST DE TESTES — Limpeza da revisão de 27/09 (issue #59)
+================================================================================
+
+Achados da revisão de código e documentação (cruzada com a análise do expert):
+
+  1. Watermark sem efeito: `withWatermark("timestamp", "1 hour")` no stream, sem operador com
+     estado antes do `foreachBatch`. REMOVIDO (decisão do usuário), com o comportamento de eventos
+     atrasados documentado e testado.
+  2. `docs/architecture.md`: linha "PostgreSQL + DuckDB" corrigida (só PostgreSQL); linha "Avro
+     embutido no JSON" reescrita: JSON no fio, contrato `.avsc` versionado e testado.
+  3. `confluent-kafka` e `fastavro` no `pyproject.toml` sem uso: REMOVIDOS (a linha do runbook
+     sobre `librdkafka` no CI saiu junto).
+  4. Producer: `acks=1` → `acks="all"` nos três perfis. Idempotência não está disponível nos
+     clientes usados (kafka-python 2.0.2 na imagem, kafka-python-ng 2.2.3 no host:
+     `enable_idempotence` não existe em `KafkaProducer.DEFAULT_CONFIG`), registrado no código e
+     na tabela de decisões.
+
+Duas linhas novas na tabela de decisões: eventos atrasados e durabilidade do producer.
+
+================================================================================
+1. TESTES UNITÁRIOS
+================================================================================
+
+  make lint        # ruff + mypy limpos
+  make test-unit   # 810 passed, cobertura 88,8%
+
+Novos:
+  - TestLateEvents (test_stream_processor.py, 3 testes):
+      * o leitor do stream não declara watermark;
+      * um evento atrasado (chega depois do das 12h30, aconteceu às 11h10 em Salvador) é
+        pontuado contra o seu antecessor no estado (11h, São Paulo) e dispara GEO_VELOCITY;
+      * um evento 7 h mais velho que o mais recente é pontuado (não descartado) e não entra
+        no estado.
+  - test_every_profile_waits_for_all_in_sync_replicas (test_producers.py).
+
+================================================================================
+2. SMOKE NO DOCKER
+================================================================================
+
+  make spark-submit-stream + producer em container (`--profile producers`) por ~75 s:
+  micro-batches 127–130 com 82–88 linhas e 0–4 alertas cada, 0 erros no stream;
+  producer "Enviadas 600 msgs | erros=0 | lat_media=12.7ms" com acks="all".

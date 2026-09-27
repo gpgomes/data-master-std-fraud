@@ -12,7 +12,13 @@ class ProducerConfig:
     bootstrap_servers: str = field(default_factory=lambda: settings.kafka.bootstrap_servers)
 
     # Confiabilidade
-    acks: int = 1              # líder confirma (throughput > durabilidade máxima)
+    # Todas as réplicas em sincronia confirmam antes do ack (#59). Com `acks=1` o líder confirmava
+    # sozinho, e uma queda dele antes de replicar perdia a mensagem na ENTRADA do pipeline. Com o
+    # broker único do ambiente local o custo é nulo; num cluster, é alguns ms de latência. Sem
+    # producer idempotente: nem o kafka-python 2.0.2 da imagem nem o kafka-python-ng do host
+    # suportam `enable_idempotence`, então um retry ainda pode duplicar (at-least-once; o stream
+    # deduplica por `transaction_id` no micro-batch e o loader do Postgres fica com uma linha).
+    acks: int | str = "all"
     retries: int = 3
     retry_backoff_ms: int = 300
 
@@ -51,7 +57,7 @@ class ProducerConfig:
 
 
 # Perfil de baixa latência (streaming crítico)
-LOW_LATENCY_CONFIG = ProducerConfig(linger_ms=0, batch_size=1, acks=1)
+LOW_LATENCY_CONFIG = ProducerConfig(linger_ms=0, batch_size=1)
 
 # Perfil de alto throughput (ingestão em lote)
-HIGH_THROUGHPUT_CONFIG = ProducerConfig(linger_ms=50, batch_size=65_536, acks=1)
+HIGH_THROUGHPUT_CONFIG = ProducerConfig(linger_ms=50, batch_size=65_536)

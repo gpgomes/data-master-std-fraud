@@ -61,7 +61,6 @@ Z_SCORE_WINDOW_SECONDS = 3600  # histórico considerado: 1h anterior à transaç
 Z_SCORE_MIN_TRANSACTIONS = 2  # mínimo de transações no histórico p/ calcular score
 Z_SCORE_THRESHOLD = 3.0  # |z_score| > limiar => anomalia
 Z_SCORE_SCALE = 6.0  # mapeia |z_score| para [0,1]: |z|=6 => fraud_score=1.0
-WATERMARK_DELAY = "1 hour"
 # Versão do detector antigo (Z-Score), que segue em paralelo como shadow (issue #46). O detector
 # que alerta é o `multisignal-v2` (`src.transformation.fraud.detector.DETECTOR_VERSION`).
 DETECTOR_VERSION = "zscore-v1"
@@ -220,8 +219,12 @@ class StreamProcessor:
             .option("failOnDataLoss", "false")
             .load()
         )
-        parsed = self._parse_raw_kafka_batch(raw)
-        return parsed.withWatermark("timestamp", WATERMARK_DELAY)
+        # Sem watermark: ele só age sobre operadores com estado do Spark (agregação por
+        # janela, join entre streams), e aqui não há nenhum antes do `foreachBatch`. O estado é
+        # o Parquet de 6 h, gerenciado à mão. Evento atrasado não é descartado: é pontuado com o
+        # contexto que houver no estado (os eventos anteriores a ele em tempo de evento) e sai do
+        # estado se ficar mais velho que `STATE_HORIZON_SECONDS` em relação ao mais recente (#59).
+        return self._parse_raw_kafka_batch(raw)
 
     # ── Estado curto entre micro-batches (eventos das últimas 6 h) ──────────────
 

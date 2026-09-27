@@ -102,8 +102,8 @@ def run(stop_event: Event | None = None) -> None:
     tiebreak = itertools.count()
 
     def send(tx: dict[str, Any]) -> None:
-        # O timestamp é o instante de emissão: o detector usa janela em tempo de evento e o
-        # watermark do streaming depende de o evento chegar "agora".
+        # O timestamp é o instante de emissão: o detector usa janelas em tempo de evento e mede a
+        # latência evento → processamento, então o evento tem de "acontecer" quando é enviado.
         tx["timestamp"] = datetime.now(tz=UTC).isoformat()
         msg = _build_message(tx)
         payload = _serialize(msg)

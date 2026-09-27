@@ -16,8 +16,6 @@ dependencies = [
     "pyspark==3.5.1",
     # Kafka
     "kafka-python-ng>=2.2.2",
-    "confluent-kafka==2.3.0",
-    "fastavro==1.9.4",
     "lz4>=4.0.0",
     # Data collection
     "yfinance==0.2.36",

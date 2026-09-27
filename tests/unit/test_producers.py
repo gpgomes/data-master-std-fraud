@@ -18,11 +18,16 @@ from src.ingestion.streaming.producer_config import (
 class TestProducerConfig:
     def test_default_values(self) -> None:
         cfg = ProducerConfig()
-        assert cfg.acks == 1
+        assert cfg.acks == "all"  # durabilidade na entrada (#59)
         assert cfg.retries == 3
         assert cfg.batch_size == 16_384
         assert cfg.linger_ms == 10
         assert cfg.compression_type == "lz4"
+
+    def test_every_profile_waits_for_all_in_sync_replicas(self) -> None:
+        """Nenhum perfil volta a confirmar só pelo líder (#59)."""
+        for cfg in (ProducerConfig(), LOW_LATENCY_CONFIG, HIGH_THROUGHPUT_CONFIG):
+            assert cfg.to_kafka_python_dict()["acks"] == "all"
 
     def test_to_kafka_python_dict_keys(self) -> None:
         cfg = ProducerConfig()

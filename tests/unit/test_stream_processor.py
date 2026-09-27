@@ -1035,6 +1035,52 @@ class TestIdempotentMicroBatch:
         assert sp._STAGES == ("parquet", "enriched", "alerts", "history")
 
 
+# ── TestLateEvents (#59) ─────────────────────────────────────────────────────────
+
+
+class TestLateEvents:
+    """Não há watermark: um evento atrasado nunca é descartado. Ele é pontuado com os eventos que o
+    antecedem em tempo de evento (do estado ou do próprio micro-batch) e sai do estado quando fica
+    mais velho que o horizonte."""
+
+    def test_the_stream_reader_declares_no_watermark(self):
+        import inspect
+
+        assert "withWatermark" not in inspect.getsource(StreamProcessor.read_transactions_stream)
+        assert not hasattr(sp, "WATERMARK_DELAY")
+
+    def test_a_late_event_is_scored_against_its_predecessor_in_the_state(self, spark, tmp_path):
+        from unittest.mock import patch
+
+        p = TestIdempotentMicroBatch._local_processor(spark, tmp_path)
+        with patch.object(p, "_write_to_kafka"):
+            p._process_batch(_make_tx(spark, [_legit(1, ts="2026-03-02T11:00:00")]), 0)
+            p._process_batch(_make_tx(spark, [_legit(2, ts="2026-03-02T12:30:00")]), 1)
+            # chega depois do evento das 12h30, mas aconteceu às 11h10, em Salvador:
+            # 10 min depois do evento das 11h em São Paulo, uma viagem impossível
+            late = event(3, "c1", "2026-03-02T11:10:00", 100.0, at=SALVADOR, dest="acc-new")
+            p._process_batch(_make_tx(spark, [late]), 2)
+
+        row = TestIdempotentMicroBatch._silver_stream(spark, p).filter("transaction_id = 't3'").first()
+        assert row is not None, "o evento atrasado não pode ser descartado"
+        assert "GEO_VELOCITY" in row["fraud_signals"]
+        assert row["is_fraud_predicted"] is True
+
+    def test_a_very_late_event_is_scored_and_then_leaves_the_state(self, spark, tmp_path):
+        from unittest.mock import patch
+
+        p = TestIdempotentMicroBatch._local_processor(spark, tmp_path)
+        with patch.object(p, "_write_to_kafka"):
+            p._process_batch(_make_tx(spark, [_legit(1, ts="2026-03-02T12:00:00")]), 0)
+            # 7 h mais velho que o evento mais recente já visto: fora do horizonte de 6 h
+            p._process_batch(_make_tx(spark, [_legit(2, ts="2026-03-02T05:00:00")]), 1)
+
+        scored = TestIdempotentMicroBatch._silver_stream(spark, p)
+        assert scored.filter("transaction_id = 't2'").count() == 1  # pontuado, não descartado
+        state_ids = {r["transaction_id"] for r in spark.read.parquet(p._history_path).collect()}
+        assert state_ids == {"t1"}  # mas não fica no estado
+
+
 # ── TestBatchStreamParity ───────────────────────────────────────────────────────
 
 

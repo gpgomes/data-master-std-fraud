@@ -100,7 +100,9 @@ Silver mudar; o stream só o lê na partida, então reinicie o job depois.
 **Estado curto.** Os sinais de janela (velocidade, viagem impossível, concentração de destinatários)
 precisam dos eventos anteriores, que o micro-batch sozinho não tem. Entre micro-batches o job grava as
 últimas **6 horas** de eventos (só as colunas que o detector enxerga, nunca o rótulo) em
-`silver/_stream_state/recent_events/`. Reiniciar o job continua desse estado. O caminho antigo
+`silver/_stream_state/recent_events/`. Reiniciar o job continua desse estado.
+
+**Eventos atrasados (#59).** Não há watermark: nenhum evento é descartado por chegar tarde. Um evento atrasado é pontuado contra os eventos que o antecedem **em tempo de evento** que estiverem no estado (e, por isso, a viagem impossível ainda é detectada), e sai do estado se for mais velho que 6 h em relação ao evento mais recente já visto. Um evento com mais de 6 h de atraso é pontuado com pouco contexto de janela curta. O caminho antigo
 (`silver/_stream_state/customer_amount_history/`, 3 colunas) ficou órfão e pode ser apagado.
 
 **Saída.**
@@ -495,7 +497,6 @@ Só `tests/unit/` roda no CI — testes de integração (`tests/integration/`) e
 | Container `producer-transactions`/`producer-market` reiniciando em loop com `Libraries for lz4 compression codec not found` | A imagem dos producers não tem a lib do codec de compressão (`docker/producer/requirements-producer.txt`) | Reconstruir com `docker compose --profile producers up -d --build`; ver "Rodar os producers" acima |
 | GX checkpoint falha | Ver seção "Quality Gates" acima | Diagnosticar via logs da task/data docs; corrigir a causa raiz e rerodar a DAG — nunca editar os JSON gerados em `gx/expectations/` diretamente, só `suites.py` |
 | `make test-unit` falha com `JAVA_GATEWAY_EXITED` | JDK ausente no PATH (PySpark local precisa de um JRE) | Instalar Java 17, ex. `brew install openjdk@17` no macOS, e garantir `JAVA_HOME`/`java` no PATH da shell |
-| CI falha no `pip install -e ".[dev]"` do job `test`, no pacote `confluent-kafka` | Runner sem a lib nativa `librdkafka` (a wheel manylinux pode não cobrir a imagem do runner) | Adicionar um step `apt-get install -y librdkafka-dev` antes do `pip install` em `.github/workflows/ci.yml`, job `test` |
 | Superset preso em `health: starting`, logs com `Error: No application module specified` | Bug real (corrigido na issue #16): indentação mais funda que a linha-mãe no `command: >` do serviço `superset` quebra o folding do YAML, inserindo uma quebra de linha literal no meio do `gunicorn`/`create-admin` | Ver seção "Dashboards (Superset)" acima — cada comando do `bash -c` deve ficar numa única linha lógica |
 | `make up` falha com `dependency failed to start: container minio is unhealthy` | Bug real (corrigido na validação end-to-end, PR #33): o healthcheck do MinIO usava `curl`, ausente na imagem `minio/minio` — falhava sempre, deixando o container `unhealthy` pra sempre e travando qualquer serviço com `depends_on: condition: service_healthy` | Já corrigido em `docker-compose.yml` (`test: ["CMD", "mc", "ready", "local"]` — `mc` vem embutido na imagem, sem precisar de alias); se reaparecer, confirme com `docker inspect minio --format='{{json .State.Health}}'` |
 | `make dashboards` (ou outro alvo novo) imprime `is up to date` e não roda nada | Bug real (corrigido na validação end-to-end, PR #33): alvo ausente do `.PHONY` no Makefile e um diretório/arquivo real no repo com o mesmo nome do alvo (ex.: `dashboards/`) faz o Make tratá-lo como já satisfeito | Confirme que o alvo está listado em `.PHONY` no topo do Makefile; todo alvo novo precisa entrar lá, principalmente se o nome colidir com um diretório existente no repo |
