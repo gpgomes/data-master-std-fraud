@@ -603,6 +603,14 @@ No GitHub: workflow **E2E** (`.github/workflows/e2e.yml`), manual (`workflow_dis
 | Kafka fora do ar por 45 s com o stream rodando | O stream espera e retoma | Stream vivo depois; eventos publicados após a volta processados | Nenhuma (se o stream morrer, subir de novo: o checkpoint retoma) |
 | Postgres fora do ar com o stream rodando | O stream segue (só as métricas dependem do Postgres); a carga do Postgres falha até ele voltar | Stream vivo e processando; métricas dos micro-batches desse intervalo perdidas (warning no log) | `make spark-submit-stream-postgres` depois que o Postgres volta |
 
+## MinIO: imagem (issue #64)
+
+A MinIO parou de distribuir a edição community (as imagens `minio/minio` e `minio/mc` saíram do Docker Hub e do quay.io; os binários em `dl.min.io` respondem 410). O compose usa `bitnamilegacy/minio:2024.3.30` e `bitnamilegacy/minio-client:2024.3.30`: a **mesma versão e o mesmo commit** da MinIO de antes, empacotada pela Bitnami.
+
+- **Roda como root** (`user: "0"`, com `MINIO_DATA_DIR=/data`): a imagem da Bitnami usaria o uid 1001, que não consegue gravar no volume `minio-data` criado pela imagem antiga (erro `/data/.root_user: Permission denied`). Assim os dados existentes continuam acessíveis sem migração.
+- **Risco:** o repositório `bitnamilegacy` é congelado e não recebe patch de segurança. Serve para o ambiente local; em qualquer ambiente exposto, use S3 gerenciado (V2, issue #17).
+- `mc` continua dentro do container (`docker compose exec minio mc ...`), então `make setup` e os comandos deste runbook não mudam.
+
 ## Troubleshooting
 
 | Problema | Causa Provável | Solução |
@@ -616,5 +624,7 @@ No GitHub: workflow **E2E** (`.github/workflows/e2e.yml`), manual (`workflow_dis
 | GX checkpoint falha | Ver seção "Quality Gates" acima | Diagnosticar via logs da task/data docs; corrigir a causa raiz e rerodar a DAG — nunca editar os JSON gerados em `gx/expectations/` diretamente, só `suites.py` |
 | `make test-unit` falha com `JAVA_GATEWAY_EXITED` | JDK ausente no PATH (PySpark local precisa de um JRE) | Instalar Java 17, ex. `brew install openjdk@17` no macOS, e garantir `JAVA_HOME`/`java` no PATH da shell |
 | Superset preso em `health: starting`, logs com `Error: No application module specified` | Bug real (corrigido na issue #16): indentação mais funda que a linha-mãe no `command: >` do serviço `superset` quebra o folding do YAML, inserindo uma quebra de linha literal no meio do `gunicorn`/`create-admin` | Ver seção "Dashboards (Superset)" acima — cada comando do `bash -c` deve ficar numa única linha lógica |
+| `make up` falha com `pull access denied for minio/minio` | A MinIO removeu as imagens community (issue #64) | Atualize o `docker-compose.yml` (imagem `bitnamilegacy/minio`); ver a seção "MinIO: imagem" |
+| Container `minio` reiniciando com `/data/.root_user: Permission denied` | Imagem da Bitnami rodando como uid 1001 sobre um volume criado como root | Manter `user: "0"` no serviço `minio` do compose |
 | `make up` falha com `dependency failed to start: container minio is unhealthy` | Bug real (corrigido na validação end-to-end, PR #33): o healthcheck do MinIO usava `curl`, ausente na imagem `minio/minio` — falhava sempre, deixando o container `unhealthy` pra sempre e travando qualquer serviço com `depends_on: condition: service_healthy` | Já corrigido em `docker-compose.yml` (`test: ["CMD", "mc", "ready", "local"]` — `mc` vem embutido na imagem, sem precisar de alias); se reaparecer, confirme com `docker inspect minio --format='{{json .State.Health}}'` |
 | `make dashboards` (ou outro alvo novo) imprime `is up to date` e não roda nada | Bug real (corrigido na validação end-to-end, PR #33): alvo ausente do `.PHONY` no Makefile e um diretório/arquivo real no repo com o mesmo nome do alvo (ex.: `dashboards/`) faz o Make tratá-lo como já satisfeito | Confirme que o alvo está listado em `.PHONY` no topo do Makefile; todo alvo novo precisa entrar lá, principalmente se o nome colidir com um diretório existente no repo |

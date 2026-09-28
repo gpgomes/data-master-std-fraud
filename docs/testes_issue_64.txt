@@ -1,0 +1,38 @@
+================================================================================
+CHECKLIST DE TESTES — Imagens da MinIO indisponíveis (issue #64)
+================================================================================
+
+Sintoma: a 1ª execução do workflow E2E no GitHub (run 36418059588) falhou no
+`docker compose up` com `pull access denied for minio/minio`.
+
+Diagnóstico (28/09/2026, `docker manifest inspect` e `curl -I`):
+  minio/minio:RELEASE.2024-03-30T09-41-56Z ........ não existe (Docker Hub)
+  quay.io/minio/minio (mesma tag) ................... não existe
+  minio/mc:latest, quay.io/minio/mc:latest .......... não existem
+  dl.min.io (servidor e mc) ......................... HTTP 410
+  postgres:16, confluentinc/cp-kafka:7.6.0 .......... OK (controle: a checagem funciona)
+  bitnamilegacy/minio:2024.3.30 ...................... OK
+  bitnamilegacy/minio-client:2024.3.30 ............... OK
+  chainguard/minio:latest ............................ OK
+
+Decisão (usuário): bitnamilegacy/minio 2024.3.30; issue e PR próprios.
+
+1. Mesma versão
+   `minio --version` na imagem nova: DEVELOPMENT.2024-03-30T09-41-56Z, commit cb577835 — o mesmo
+   RELEASE.2024-03-30T09-41-56Z de antes. `mc` embutido.
+
+2. Compatibilidade com o volume existente (volume descartável `minio-compat-test`)
+   - Gravado pela imagem antiga (bucket bronze, objeto x.txt).
+   - Imagem nova como uid 1001 (padrão Bitnami): falha no setup, `/data/.root_user: Permission
+     denied`.
+   - Imagem nova como root (`--user 0`, MINIO_DATA_DIR=/data): `mc ready local` = "The cluster is
+     ready", leu x.txt, gravou y.txt, criou bucket. Volume de teste removido.
+
+3. Stack local (volume de desenvolvimento real)
+   `docker compose up -d minio`: healthy em ~6 s; `minio-init` com a imagem nova de cliente: os 4
+   buckets e a permissão de download no bronze; os dados existentes (bronze, silver, gold,
+   checkpoints, e2e-*) listados normalmente. `make setup` concluído.
+
+4. `make e2e` local com a imagem nova: 16 passed em 4,5 min.
+
+5. Validação em máquina limpa: o workflow E2E no GitHub (runner sem cache) depois do merge.
