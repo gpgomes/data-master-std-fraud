@@ -118,14 +118,22 @@ services:
       - data-master-network
 
   # ── MinIO ─────────────────────────────────────────────────────────────────────
+  # A MinIO parou de distribuir a edição community: as imagens `minio/minio` e `minio/mc` saíram do
+  # Docker Hub e do quay.io, e os binários em dl.min.io respondem 410. Esta é a mesma versão
+  # (RELEASE.2024-03-30, mesmo commit) empacotada pela Bitnami, num repositório congelado: sem
+  # patches de segurança, aceitável só para o ambiente local. Ver docs/runbook.md, "MinIO".
   minio:
-    image: minio/minio:RELEASE.2024-03-30T09-41-56Z
+    image: bitnamilegacy/minio:2024.3.30
     container_name: minio
     restart: unless-stopped
-    command: server /data --console-address ":9001"
+    # A imagem da Bitnami roda como uid 1001, mas o volume `minio-data` de quem já usava o projeto
+    # foi criado como root pela imagem antiga: como root, ela lê e grava os dados existentes.
+    user: "0"
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_DATA_DIR: /data
+      MINIO_CONSOLE_PORT_NUMBER: "9001"
       TZ: America/Sao_Paulo
     ports:
       - "${MINIO_EXTERNAL_PORT:-9000}:9000"
@@ -135,9 +143,8 @@ services:
     networks:
       - data-master-network
     healthcheck:
-      # A imagem minio/minio não tem curl (nem wget) — mc vem embutido e
-      # `mc ready local` resolve a instância local sem precisar de alias
-      # configurado antes.
+      # `mc` vem embutido na imagem e `mc ready local` resolve a instância local sem precisar de
+      # alias configurado antes.
       test: ["CMD", "mc", "ready", "local"]
       interval: 10s
       timeout: 5s
@@ -146,7 +153,7 @@ services:
 
   # ── MinIO Init — cria buckets ─────────────────────────────────────────────────
   minio-init:
-    image: minio/mc:latest
+    image: bitnamilegacy/minio-client:2024.3.30
     container_name: minio-init
     depends_on:
       minio:
