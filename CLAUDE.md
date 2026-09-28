@@ -19,6 +19,7 @@ cp .env.example .env          # Configure environment variables
 make test                     # All tests (requires 70% coverage minimum)
 make test-unit                # Unit tests only: pytest tests/unit/
 make test-integration         # Integration tests only: pytest tests/integration/
+make e2e                      # End-to-end: real batch + stream in the e2e-* namespace, invariants + failure scenarios (~5 min; stack up)
 pytest tests/unit/test_schemas.py  # Single test file
 pytest tests/unit/test_schemas.py::TestClass::test_method  # Single test
 make test-cov                 # Generate HTML coverage report in htmlcov/
@@ -34,6 +35,8 @@ make format    # black + ruff --fix
 `.github/workflows/ci.yml` runs on every push/PR to `main` (plus manual `workflow_dispatch`), two parallel jobs mirroring the Makefile targets above so there's no drift between CI and local dev:
 - `lint` — `make lint` (ruff + mypy)
 - `test` — `make test-unit`, with Java 17 set up first (PySpark needs a JVM even in local mode); enforces the `--cov-fail-under=70` gate already defined in `pyproject.toml`; uploads `htmlcov/` as an artifact
+
+A second workflow, `.github/workflows/e2e.yml` (manual `workflow_dispatch` + nightly, issue #57), starts a minimal stack (zookeeper, kafka, minio, postgres, spark-master) and runs `make e2e`: `tests/e2e/` runs the real batch and stream in an isolated namespace (`e2e-*` buckets/topics, `fraud_e2e` database; see `E2E_ENV` in `tests/e2e/harness.py`), checks data invariants and six failure scenarios. The suite skips itself unless `E2E=1` and that namespace are set, so `make test` never triggers it. Locally it stops/starts the dev `kafka` and `postgres` containers.
 
 Integration tests (`tests/integration/`) are intentionally **not** run in CI — they need the full Docker Compose stack (Kafka, Zookeeper, Airflow, Superset, Postgres, MinIO, Spark cluster), which is too slow/heavy for a per-PR gate. Run them locally via `make up && make setup && make test-integration`.
 

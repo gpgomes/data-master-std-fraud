@@ -199,3 +199,5 @@ Medida com `make load-test` (producers no host, 4 min por nível, stream sozinho
 ## CI/CD
 
 Job `lint` (ruff + mypy) e job `test` (`pytest tests/unit/`, gate de cobertura ≥70%) rodam em paralelo a cada push/PR para `main`, via `.github/workflows/ci.yml`. Reflete só a camada de qualidade de código da futura Fase 6 do roadmap (`CaseFinancialDataLakeHouse.md`, item 6.1) — o deploy automatizado para AWS ainda não existe.
+
+Um segundo workflow, `.github/workflows/e2e.yml` (manual e noturno, issue #57), sobe a stack mínima (Kafka, MinIO, Postgres e o container do Spark em modo local) e roda o batch e o stream de verdade num namespace isolado, verificando invariantes de dados e seis cenários de falha. Fica fora do PR por custo (~5 min de pipeline mais o build da imagem do Spark); o gate por PR continua sendo lint + unitários.

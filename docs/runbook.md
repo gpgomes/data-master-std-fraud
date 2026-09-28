@@ -565,7 +565,43 @@ make lint
 make test-unit
 ```
 
-Só `tests/unit/` roda no CI — testes de integração (`tests/integration/`) exigem o stack Docker completo e continuam rodando só localmente (`make up && make setup && make test-integration`).
+Só `tests/unit/` roda no CI a cada PR — testes de integração (`tests/integration/`) exigem o stack Docker completo e continuam rodando só localmente (`make up && make setup && make test-integration`). O teste ponta a ponta tem workflow próprio (abaixo).
+
+## Teste ponta a ponta (issue #57)
+
+`make e2e` roda o pipeline de verdade e verifica **invariantes**, não só se algo respondeu. Usa um namespace isolado (buckets e tópicos `e2e-*`, banco `fraud_e2e`), então rodar local não apaga dado de desenvolvimento; sem `E2E=1` (o `make e2e` exporta) a suíte é pulada. Precisa de `kafka`, `minio`, `postgres` e `spark-master` de pé; os jobs Spark rodam no container em modo local. ~5 min.
+
+```bash
+make e2e                                   # local, contra a stack de pé
+# relatório do que aconteceu nos cenários: data/e2e/report.json; resultado: data/e2e/junit.xml
+```
+
+No GitHub: workflow **E2E** (`.github/workflows/e2e.yml`), manual (`workflow_dispatch`) e noturno. Sobe só `zookeeper kafka minio postgres spark-master` no runner, roda `make e2e` e publica o relatório como artefato.
+
+**Atenção local:** os cenários de falha param e religam os containers `kafka` e `postgres` da stack de desenvolvimento (~1 min cada). Não rode com um stream de desenvolvimento ou com o Superset em uso.
+
+**Invariantes verificadas:**
+
+| Camada | Invariante |
+|---|---|
+| Batch | Os mesmos `transaction_id` gerados estão no Bronze, Silver, Gold e Postgres, sem duplicata |
+| Batch | `SUM(amount_brl)` igual no Silver, no Gold e no Postgres; rótulos de fraude iguais; o agregado diário soma a fato |
+| Batch | Uma linha de perfil de comportamento por cliente da `dim_customers` |
+| Stream | Todo evento publicado está no Parquet, e nada além deles (o JSON inválido some) |
+| Stream | Nenhuma duplicata no Parquet além do evento reenviado de propósito; na serving layer, uma linha por evento |
+| Stream | `enriched-transactions` tem todos os eventos; os `alert_id` do tópico `fraud-alerts` são exatamente os do Postgres |
+| Stream | Métricas de plataforma gravadas (`stream_batch_metrics`) |
+
+**Cenários de falha** (automatizados; comportamento observado na validação da issue):
+
+| Cenário | Esperado | Observado | Recuperação |
+|---|---|---|---|
+| `kill -9` no stream no meio de um micro-batch (Parquet gravado, estado não) | Replay pula as etapas feitas; nada perdido nem duplicado | Pegou o meio do batch; log `Etapa do micro-batch já concluída — ignorada no replay`; 0 duplicata | Subir o stream de novo (mesmo checkpoint) |
+| Linha inválida no Bronze (valor negativo, fraude sem tipo) | O gate do Bronze falha e o Silver não é tocado | `QualityGateFailed`; Silver inalterado; sem o arquivo, o gate volta a passar | Corrigir/remover o dado e rerodar |
+| Evento duplicado (retry do producer) | Deduplicado no micro-batch; entre micro-batches, uma linha a mais no Parquet e uma só na serving layer | Caiu em outro micro-batch: 1.201 linhas no Parquet para 1.200 ids; Postgres com 1.200 | Nenhuma (at-least-once documentado) |
+| JSON inválido no tópico | Descartado no parse, sem derrubar o micro-batch | Descartado; eventos seguintes processados | Nenhuma |
+| Kafka fora do ar por 45 s com o stream rodando | O stream espera e retoma | Stream vivo depois; eventos publicados após a volta processados | Nenhuma (se o stream morrer, subir de novo: o checkpoint retoma) |
+| Postgres fora do ar com o stream rodando | O stream segue (só as métricas dependem do Postgres); a carga do Postgres falha até ele voltar | Stream vivo e processando; métricas dos micro-batches desse intervalo perdidas (warning no log) | `make spark-submit-stream-postgres` depois que o Postgres volta |
 
 ## Troubleshooting
 
