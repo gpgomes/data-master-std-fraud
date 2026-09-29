@@ -59,6 +59,7 @@ PIPELINE_COLUMNS = (
     "failed_tasks",
 )
 API_COLUMNS = ("method", "route", "status_code", "duration_ms")
+ACCESS_COLUMNS = ("api_key_id", "method", "route", "query", "status_code", "client_host")
 
 
 def _default_connect(host: str) -> Any:
@@ -144,6 +145,11 @@ class MetricsStore:
         return self._execute(
             _insert_sql("pipeline_runs", PIPELINE_COLUMNS, "dag_id, run_id"), params
         )
+
+    def record_api_access(self, row: dict[str, Any]) -> bool:
+        """Log de auditoria de acesso à API (issue #58)."""
+        params = tuple(row.get(c) for c in ACCESS_COLUMNS)
+        return self._execute(_insert_sql("api_access_audit", ACCESS_COLUMNS), params)
 
     def record_api_request(self, row: dict[str, Any]) -> bool:
         params = tuple(row.get(c) for c in API_COLUMNS)

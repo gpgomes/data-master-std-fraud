@@ -14,7 +14,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Dependências Python — apenas o necessário para os producers
 COPY requirements-producer.txt .
-RUN pip install --no-cache-dir -r requirements-producer.txt
+# setuptools só serve para instalar; em runtime ele só carrega cópias vendorizadas
+# (jaraco.context, wheel) com CVEs que o trivy acusa (issue #58).
+RUN pip install --no-cache-dir -r requirements-producer.txt \
+    && pip uninstall -y setuptools wheel
 
 # PRODUCER_TYPE controla qual producer rodar: "transactions" ou "market"
 ENV PRODUCER_TYPE=transactions \

@@ -305,8 +305,8 @@ services:
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-airflow:5432/airflow
-      AIRFLOW__CORE__FERNET_KEY: "46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLt0nfd4e0="
-      AIRFLOW__WEBSERVER__SECRET_KEY: "data-master-local-secret-key-2024"
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY:?rode make env}
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY:?rode make env}
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       TZ: America/Sao_Paulo
     entrypoint: ["/bin/bash", "-c"]
@@ -338,8 +338,8 @@ services:
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-airflow:5432/airflow
-      AIRFLOW__CORE__FERNET_KEY: "46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLt0nfd4e0="
-      AIRFLOW__WEBSERVER__SECRET_KEY: "data-master-local-secret-key-2024"
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY:?rode make env}
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY:?rode make env}
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
       MINIO_ENDPOINT: http://minio:9000
@@ -381,8 +381,8 @@ services:
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-airflow:5432/airflow
-      AIRFLOW__CORE__FERNET_KEY: "46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLt0nfd4e0="
-      AIRFLOW__WEBSERVER__SECRET_KEY: "data-master-local-secret-key-2024"
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY:?rode make env}
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY:?rode make env}
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: minioadmin
@@ -417,7 +417,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      SUPERSET_SECRET_KEY: "superset-secret-key-local-dev-only"
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:?rode make env}
       DATABASE_DIALECT: postgresql
       DATABASE_USER: datamaster
       DATABASE_PASSWORD: datamaster123
@@ -521,11 +521,14 @@ services:
     environment:
       POSTGRES_HOST: postgres
       TZ: America/Sao_Paulo
+      # hashes SHA-256 das chaves aceitas (issue #58); vazio = a API nega tudo
+      API_KEY_HASHES: ${API_KEY_HASHES:-}
     ports:
       - "${API_EXTERNAL_PORT:-8000}:8000"
     volumes:
       - ./src/common:/app/src/common
       - ./src/serving/api:/app/src/serving/api
+      - ./src/observability:/app/src/observability
     networks:
       - data-master-network
     profiles:

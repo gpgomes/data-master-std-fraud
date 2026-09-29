@@ -349,6 +349,22 @@ CATALOG: tuple[CatalogEntry, ...] = (
         ),
         optional=True,
     ),
+    CatalogEntry(
+        key="serving_api_access_audit",
+        name="Postgres — api_access_audit",
+        layer=DatasetLayer.SERVING,
+        kind=DatasetKind.POSTGRES_TABLE,
+        location="api_access_audit",
+        owner="Segurança da Informação",
+        classification=("PII", "Confidencial"),
+        glossary_terms=("PII",),
+        description=(
+            "Log de auditoria de acesso à API: quem (id da chave, nunca a chave), o quê (rota e "
+            "parâmetros de consulta), o resultado (inclusive 401) e o IP de origem. Append-only; "
+            "health checks ficam de fora (issue #58)."
+        ),
+        optional=True,
+    ),
     # ── Streaming (Kafka) ────────────────────────────────────────────────
     CatalogEntry(
         key="kafka_raw_transactions",
@@ -451,3 +467,31 @@ CATALOG: tuple[CatalogEntry, ...] = (
 )
 
 CATALOG_BY_KEY: dict[str, CatalogEntry] = {entry.key: entry for entry in CATALOG}
+
+# ── Colunas PII por dataset (issue #58) ────────────────────────────────────────
+# Dados pessoais diretos ou sensíveis. `customer_id`/`customer_key` ficam de fora de propósito: são
+# pseudônimos (UUID sem significado fora da plataforma), necessários para a API e para os alertas.
+# Um teste garante que nenhuma coluna daqui aparece nos modelos de resposta da API.
+_TRANSACTION_PII = (
+    "origin_account",
+    "destination_account",
+    "device_id",
+    "ip_address",
+    "latitude",
+    "longitude",
+)
+_CUSTOMER_PII = ("name", "cpf_masked", "birth_date")
+_PROFILE_PII = ("known_devices", "known_ip_prefixes", "known_destinations", "home_lat", "home_lon")
+
+PII_COLUMNS: dict[str, tuple[str, ...]] = {
+    "bronze_transactions": _TRANSACTION_PII,
+    "silver_transactions": _TRANSACTION_PII,
+    "silver_transactions_stream": _TRANSACTION_PII,
+    "kafka_raw_transactions": _TRANSACTION_PII,
+    "kafka_enriched_transactions": _TRANSACTION_PII,
+    "gold_dim_customers": _CUSTOMER_PII,
+    # no Postgres o nome vai só com iniciais e a data de nascimento só com o ano (gold_to_postgres)
+    "serving_dim_customers": _CUSTOMER_PII,
+    "gold_customer_behavior_profile": _PROFILE_PII,
+    "serving_api_access_audit": ("client_host",),
+}

@@ -276,6 +276,11 @@ class TestInvalidDataBlocksPromotion:
 
         silver_before = set(h.list_keys(settings.minio.bucket_silver, "transactions/"))
         good = h.read_parquet(settings.minio.bucket_bronze, "transactions/").head(1).copy()
+        # As colunas da partição (`year=/month=/day=` no caminho) ficam só no caminho, como num
+        # arquivo gravado pelo Spark. Gravadas dentro do arquivo, o pyarrow 23 (issue #58) as lê
+        # como int32 no arquivo e dicionário na partição e falha no merge antes de chegar ao gate.
+        partition_cols = [p.split("=", 1)[0] for p in self.BAD_KEY.split("/") if "=" in p]
+        good = good.drop(columns=partition_cols, errors="ignore")
         good["transaction_id"] = "e2e-invalido"
         good["amount"] = -10.0  # viola amount >= 0,01
         good["is_fraud"] = True

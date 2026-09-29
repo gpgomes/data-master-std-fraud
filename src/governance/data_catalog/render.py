@@ -66,6 +66,28 @@ def _render_layer_table(
     return "\n".join(lines)
 
 
+def _render_pii(entries: tuple[CatalogEntry, ...]) -> str:
+    """Seção com as colunas PII de cada dataset (issue #58), na ordem do catálogo."""
+    from src.governance.data_catalog.registry import PII_COLUMNS
+
+    lines = [
+        "## Colunas PII",
+        "",
+        "Dados pessoais diretos ou sensíveis, por dataset. `customer_id`/`customer_key` são "
+        "pseudônimos e ficam de fora. Nenhuma destas colunas aparece nas respostas da API "
+        "(teste `test_pii_enforcement.py`); no Postgres, o nome do cliente vai só com iniciais e a "
+        "data de nascimento só com o ano.",
+        "",
+        "| Dataset | Colunas PII |",
+        "|---|---|",
+    ]
+    for entry in entries:
+        columns = PII_COLUMNS.get(entry.key)
+        if columns:
+            lines.append(f"| {entry.name} | {', '.join(f'`{c}`' for c in columns)} |")
+    return "\n".join(lines)
+
+
 def _render_lineage(entries: tuple[CatalogEntry, ...]) -> str:
     lines = ["```mermaid", "graph LR"]
     for entry in entries:
@@ -105,6 +127,8 @@ def render_markdown(
         parts.append(_render_layer_table(layer_entries, status_by_key))
         parts.append("")
 
+    parts.append(_render_pii(entries))
+    parts.append("")
     parts.append("## Linhagem")
     parts.append("")
     if lineage_image:

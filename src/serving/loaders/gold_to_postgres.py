@@ -13,7 +13,8 @@ import sys
 from pathlib import Path
 
 import psycopg2
-from pyspark.sql import SparkSession
+from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import functions as F
 
 from src.common.config import settings
 from src.common.logger import get_logger
@@ -89,6 +90,22 @@ class GoldToPostgresLoader:
             "truncate": "true",
         }
 
+    @staticmethod
+    def _mask_customer_pii(df: DataFrame) -> DataFrame:
+        """Mascara os dados pessoais de `dim_customers` antes de irem para a serving layer (#58).
+
+        O Gold (MinIO) guarda o dado inteiro, com acesso restrito; o Postgres é lido pela API,
+        pelo Superset e por quem mais tiver a conexão. Lá ficam só as iniciais do nome
+        ("João Silva" → "J*** S***") e o ano de nascimento (a faixa etária já existe em
+        `age_group`). O CPF já chega mascarado do Silver.
+        """
+        initials = F.transform(
+            F.split(F.trim(F.col("name")), r"\s+"), lambda word: F.concat(F.substring(word, 1, 1), F.lit("***"))
+        )
+        return df.withColumn("name", F.array_join(initials, " ")).withColumn(
+            "birth_date", F.substring(F.col("birth_date"), 1, 4)
+        )
+
     def _load_table(self, dataset: str, table: str) -> dict[str, int]:
         """Lê uma tabela Gold do MinIO e recarrega no Postgres (truncate + reload)."""
         path = f"{self._gold}/{dataset}/"
@@ -101,6 +118,8 @@ class GoldToPostgresLoader:
             logger.exception("Falha ao ler Gold do MinIO", dataset=dataset, path=path)
             raise
         logger.info("Registros lidos", dataset=dataset, count=rows_read)
+        if dataset == "dim_customers":
+            df = self._mask_customer_pii(df)
 
         try:
             (

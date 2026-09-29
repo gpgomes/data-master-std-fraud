@@ -15,9 +15,11 @@ class ProducerConfig:
     # Todas as réplicas em sincronia confirmam antes do ack (#59). Com `acks=1` o líder confirmava
     # sozinho, e uma queda dele antes de replicar perdia a mensagem na ENTRADA do pipeline. Com o
     # broker único do ambiente local o custo é nulo; num cluster, é alguns ms de latência. Sem
-    # producer idempotente: nem o kafka-python 2.0.2 da imagem nem o kafka-python-ng do host
-    # suportam `enable_idempotence`, então um retry ainda pode duplicar (at-least-once; o stream
-    # deduplica por `transaction_id` no micro-batch e o loader do Postgres fica com uma linha).
+    # producer idempotente: os clientes da época (kafka-python 2.0.2 / kafka-python-ng) não tinham
+    # `enable_idempotence`. O kafka-python 2.3.2 adotado na issue #58 tem, mas ligá-lo muda a
+    # semântica de entrega e fica para uma issue própria. Então um retry ainda pode duplicar
+    # (at-least-once; o stream deduplica por `transaction_id` no micro-batch e o loader do
+    # Postgres fica com uma linha).
     acks: int | str = "all"
     retries: int = 3
     retry_backoff_ms: int = 300

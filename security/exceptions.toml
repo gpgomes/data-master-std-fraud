@@ -1,0 +1,55 @@
+# Exceções versionadas dos scans de segurança (issue #58).
+#
+# O workflow `.github/workflows/security.yml` bloqueia em qualquer achado do gitleaks, do pip-audit e
+# do trivy (HIGH/CRITICAL com correção disponível nas imagens da API e dos producers). O que não dá
+# para corrigir agora entra aqui, SEMPRE com o motivo e uma data de revisão: passada a data, o job
+# `exceptions` falha até alguém revisar (renovar com motivo atualizado ou remover a exceção).
+#
+# `python -m scripts.security_exceptions check` valida este arquivo; o mesmo script gera o
+# `.gitleaksignore`, o `.trivyignore` e os `--ignore-vuln` do pip-audit a partir dele.
+
+# ── pip-audit (dependências do pyproject.toml) ────────────────────────────────────────────────
+
+[[pip_audit]]
+id = "PYSEC-2025-184"
+package = "pyspark"
+reason = """CVE-2025-55039: cifra fraca no RPC entre nós quando spark.network.crypto.enabled=true.
+A plataforma não liga essa opção (o padrão é false), então o código afetado não roda. O pyspark
+fica em 3.5.1 porque tem de ser a mesma versão do cluster (apache/spark:3.5.1); a subida do cluster
+para 3.5.8 é a issue #66."""
+review_by = 2026-12-31
+
+[[pip_audit]]
+id = "PYSEC-2026-3966"
+package = "pyspark"
+reason = """CVE-2026-32773: XSS no Spark History Server. A plataforma não sobe o History Server
+(só master, workers e a UI do master em localhost). Mesma restrição de versão do cluster acima."""
+review_by = 2026-12-31
+
+# ── gitleaks (histórico do git) ────────────────────────────────────────────────────────────────
+
+[[gitleaks]]
+fingerprint = "e5c32be875239195fd98f42f86d6bd27e0ab4562:docker-compose.yml:generic-api-key:310"
+reason = """Fernet key de dev local fixada no docker-compose.yml até a issue #58 (as três ocorrências
+deste commit). Saiu do compose e deixou de ser usada: o `make env` gera uma chave própria por
+máquina. Reescrever o histórico não desfaria a exposição (o repositório é público), então a
+correção é a rotação, e o achado fica registrado aqui."""
+review_by = 2027-03-31
+
+[[gitleaks]]
+fingerprint = "e5c32be875239195fd98f42f86d6bd27e0ab4562:docker-compose.yml:generic-api-key:341"
+reason = "Mesma Fernet key de dev local rotacionada na issue #58 (ver a exceção acima)."
+review_by = 2027-03-31
+
+[[gitleaks]]
+fingerprint = "e5c32be875239195fd98f42f86d6bd27e0ab4562:docker-compose.yml:generic-api-key:378"
+reason = "Mesma Fernet key de dev local rotacionada na issue #58 (ver a exceção acima)."
+review_by = 2027-03-31
+
+# ── trivy (imagens da API e dos producers) ───────────────────────────────────────────────────
+# Nenhuma exceção hoje. Formato:
+# [[trivy]]
+# id = "CVE-AAAA-NNNNN"
+# package = "pacote"
+# reason = "..."
+# review_by = AAAA-MM-DD

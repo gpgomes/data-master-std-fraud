@@ -285,6 +285,7 @@ inexistente), `status_code` e `duration_ms`.
 | **Perfil de Comportamento** | O que é "normal" para um cliente (valor típico, devices, redes, destinatários, horário, local), calculado pelo batch em `gold/customer_behavior_profile/` e lido por broadcast pelo streaming |
 | **Shadow Scoring** | Rodar um detector novo e o antigo sobre os mesmos eventos, com só o novo alertando, para comparar os dois online sem risco |
 | **Rótulo (ground truth)** | `is_fraud`/`fraud_type` do gerador sintético. Serve para medir o detector, que nunca o lê. Não é a decisão do detector: essa está em `is_fraud_predicted`/`fraud_type_predicted` |
+| **PII** | *Personally Identifiable Information* (dado pessoal, LGPD): nome, CPF, data de nascimento, contas, device, IP, localização. As colunas PII de cada dataset estão em `PII_COLUMNS` (`src/governance/data_catalog/registry.py`) e na seção "Colunas PII" do catálogo; um teste impede que apareçam na API (issue #58). `customer_id` é pseudônimo e não entra |
 | **SLO** | *Service Level Objective*: meta mensurável de um indicador da plataforma numa janela (ex.: latência p95 do stream < 12 s nas últimas 24 h). No projeto: `make slo-report` (issue #55) |
 | **Velocity Check** | Verificação de frequência anormal de transações em curto intervalo |
 | **Account Takeover** | Acesso não autorizado e operações em conta alheia |

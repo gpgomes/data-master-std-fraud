@@ -5,7 +5,7 @@
 ```bash
 git clone https://github.com/gpgomes/data-master-std-fraud.git
 cd data-master-std-fraud
-cp .env.example .env
+make env        # cria o .env a partir do .env.example e gera os segredos locais (issue #58)
 make up
 make setup
 make seed-data
@@ -314,6 +314,12 @@ tabela — sem foreign keys entre fato e dimensões de propósito (ver
 | `GET /alerts` | Alertas reais do Fraud Engine (tabela `fraud_alerts`): `fraud_score`, `fraud_signals` (a lista dos sinais que dispararam o alerta), `fraud_type` (inferido pelos sinais; **nulo** quando nenhuma regra casou, ~1/3 dos alertas), `detector_version`, o `z_score` do detector antigo (shadow, pode ser nulo) e `alert_reason`; a visão pelo rótulo do batch é `GET /transactions?is_fraud=true` |
 | `GET /kpis/fraud-daily` | `agg_daily_fraud_metrics` (paginado) |
 
+Desde a issue #58, tudo exceto `/health/*` exige o header `X-API-Key` (ver [Segurança](#segurança-issue-58)):
+
+```bash
+curl -H "X-API-Key: $(grep ^API_DEV_KEY= .env | cut -d= -f2)" "localhost:8000/alerts?limit=5"
+```
+
 ### Carregar a saída do streaming (issue #38)
 
 `stream_to_postgres.py` lê `silver/transactions_stream/` e recarrega `stream_scored_transactions` (o veredito do Fraud Engine, o Z-Score antigo em paralelo, o rótulo do gerador e a latência) e `fraud_alerts`:
@@ -565,6 +571,8 @@ make lint
 make test-unit
 ```
 
+O workflow **Security** (`.github/workflows/security.yml`, issue #58) roda gitleaks, pip-audit e trivy em todo push/PR e toda semana; ver [Segurança](#segurança-issue-58).
+
 Só `tests/unit/` roda no CI a cada PR — testes de integração (`tests/integration/`) exigem o stack Docker completo e continuam rodando só localmente (`make up && make setup && make test-integration`). O teste ponta a ponta tem workflow próprio (abaixo).
 
 ## Teste ponta a ponta (issue #57)
@@ -611,12 +619,96 @@ A MinIO parou de distribuir a edição community (as imagens `minio/minio` e `mi
 - **Risco:** o repositório `bitnamilegacy` é congelado e não recebe patch de segurança. Serve para o ambiente local; em qualquer ambiente exposto, use S3 gerenciado (V2, issue #17).
 - `mc` continua dentro do container (`docker compose exec minio mc ...`), então `make setup` e os comandos deste runbook não mudam.
 
+## Segurança (issue #58)
+
+### Segredos locais: `make env`
+
+Nenhum segredo real fica versionado. `make env` (`scripts/ensure_env.py`) cria o `.env` a partir do `.env.example` se ele não existir e gera, só onde o valor está vazio ou é placeholder (`your-...`):
+
+| Variável | Uso |
+|---|---|
+| `AIRFLOW__CORE__FERNET_KEY` | Cifra conexões/variáveis no banco do Airflow |
+| `AIRFLOW__WEBSERVER__SECRET_KEY` | Sessão da UI do Airflow |
+| `SUPERSET_SECRET_KEY` | Cifra a senha da conexão Postgres guardada no Superset |
+| `API_DEV_KEY` / `API_KEY_HASHES` | Chave da API para uso local e o hash SHA-256 dela (a API só conhece o hash) |
+
+É idempotente: um valor já preenchido nunca é trocado. O `docker-compose.yml` lê as três primeiras com `${VAR:?rode make env}`: sem elas, **qualquer** comando `docker compose` falha com essa mensagem em vez de subir com uma chave pública. O `.env` é gravado com permissão `600`.
+
+**Ambiente que já existia antes da #58:** rode `make env` e recrie `airflow-*` e `superset` (`docker compose up -d airflow-init airflow-webserver airflow-scheduler superset`). A conexão do Airflow com o Spark vem de `AIRFLOW_CONN_SPARK_DEFAULT` (variável de ambiente, não cifrada no banco), então a Fernet nova não quebra nada. No Superset a senha da conexão com o Postgres foi cifrada com a chave antiga: rode `make dashboards` de novo, que recadastra a conexão.
+
+Continuam como valores fixos de dev, documentados e só válidos na máquina local: `minioadmin`, `datamaster123`, `admin/admin` (não são detectados como segredo e são as credenciais de serviços que não saem do `localhost`). Fora do ambiente local, tudo isso vem de um cofre (V2).
+
+### Autenticação da API
+
+- Header `X-API-Key`; a API guarda só os hashes SHA-256 (`API_KEY_HASHES`, separados por vírgula) e compara com `hmac.compare_digest` contra todos. Sem hash configurado, nega tudo (401).
+- `/health/live` e `/health/ready` ficam abertos (probes de orquestrador).
+- **Nova chave:** `python -m src.serving.api.security <chave>` imprime o hash; acrescente em `API_KEY_HASHES` e reinicie a API.
+- **Rotação sem janela de indisponibilidade:** adicione o hash novo, migre os clientes, remova o antigo.
+- Container da API (`--profile api`): recebe `API_KEY_HASHES` do `.env` pelo compose.
+
+### Auditoria de acesso
+
+Cada request fora de `/health/*` gera uma linha em `api_access_audit` (Postgres, append-only), gravada depois da resposta: `api_key_id` (8 primeiros caracteres do hash, **nunca a chave**), método, rota (template), query string (até 500 caracteres), status (inclusive 401) e IP de origem. A tabela é classificada como PII/Confidencial no catálogo (IP).
+
+```sql
+-- quem consultou o quê nas últimas 24 h
+SELECT api_key_id, route, count(*) AS requests, max(accessed_at) AS ultimo
+FROM api_access_audit WHERE accessed_at > (now() AT TIME ZONE 'UTC') - interval '24 hours'
+GROUP BY 1, 2 ORDER BY 3 DESC;
+-- tentativas negadas
+SELECT accessed_at, client_host, route, query FROM api_access_audit WHERE status_code = 401 ORDER BY 1 DESC LIMIT 50;
+```
+
+### PII
+
+- As colunas PII de cada dataset estão em `PII_COLUMNS` (`src/governance/data_catalog/registry.py`) e na seção "Colunas PII" do `docs/data_catalog.md`. `customer_id` fica de fora: é pseudônimo (UUID sem significado fora da plataforma).
+- Teste (`tests/unit/test_pii_enforcement.py`): nenhuma coluna PII aparece nos modelos de resposta da API nem nos `SELECT` do repositório; toda rota de dados declara `response_model`. Expor um campo PII novo na API quebra o CI.
+- `dim_customers` chega ao Postgres **mascarada** pelo loader: nome só com iniciais (`J*** d*** S***`) e data de nascimento só com o ano. O Gold no MinIO mantém o dado completo (a camada de serving é a que tem mais consumidores).
+
+### Scans no CI e exceções
+
+| Job | Ferramenta | O que bloqueia |
+|---|---|---|
+| `Exceptions` | `scripts/security_exceptions.py check` | Exceção sem motivo, sem data de revisão, vencida ou com revisão a mais de 1 ano |
+| `Secrets (gitleaks)` | gitleaks, histórico inteiro | Qualquer segredo novo |
+| `Dependencies (pip-audit)` | pip-audit no ambiente do `pyproject.toml` | Qualquer CVE conhecida |
+| `Image (trivy) — api/producer` | trivy nas imagens nossas | CVE HIGH/CRITICAL com correção disponível (SO e pacotes) |
+| `Report (trivy, fora do gate)` | trivy nas imagens do Airflow e do Spark | Nada: relatório como artefato, fora de PRs |
+
+As exceções ficam em `security/exceptions.toml`, a fonte única (o script gera `.gitleaksignore`, `.trivyignore` e os `--ignore-vuln`). Hoje: o pyspark 3.5.1 (preso à versão do cluster; as duas CVEs exigem recursos que não usamos) e a Fernet key antiga no histórico do git (rotacionada; o repositório é público, reescrever o histórico não desfaz a exposição).
+
+**Airflow e Spark fora do gate:** as bases `apache/airflow:2.9.1` e `apache/spark:3.5.1` trazem centenas de CVEs HIGH/CRITICAL (a maioria de SO e de dependências Java/Python da própria base). Listar cada uma como exceção não teria valor; a correção é atualizar as bases (issue #66).
+
+Reproduzir localmente:
+
+```bash
+python -m scripts.security_exceptions check
+python -m scripts.security_exceptions gitleaksignore && \
+  docker run --rm -v "$PWD":/repo ghcr.io/gitleaks/gitleaks:v8.30.1 git /repo --redact
+pip install pip-audit && pip-audit --skip-editable $(python -m scripts.security_exceptions pip-audit-args)
+docker compose build api producer-transactions && python -m scripts.security_exceptions trivyignore && \
+  docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD":/repo -w /repo aquasec/trivy:0.74.0 \
+  image --severity HIGH,CRITICAL --ignore-unfixed --ignorefile /repo/.trivyignore data-master-api:latest
+```
+
+**Achado novo:** corrija (atualize o pacote) sempre que possível. Se não der, adicione a exceção com o motivo concreto (por que não se aplica ou o que impede a correção) e uma data de revisão de no máximo 1 ano.
+
+### Dependências (atualizadas na #58)
+
+requests 2.33.0, pyarrow 23.0.1, fastapi 0.135.1 (starlette 1.x; a última que aceita o pydantic 2.7.1 fixado pela compatibilidade com o Python 3.8 do container Spark), python-dotenv 1.2.2, click 8.3.3, pytest 9, black 26; `kafka-python` 2.3.2 no host e na imagem dos producers (antes: `kafka-python-ng` no host e `kafka-python` 2.0.2 na imagem). As imagens da API e dos producers removem `setuptools`/`wheel` depois do `pip install` (cópias vendorizadas com CVE, sem uso em runtime).
+
+### Proteção da branch `main`
+
+Merge só por PR com os checks obrigatórios verdes: `Lint (ruff + mypy)`, `Unit tests`, `Exceptions (motivo + revisão em dia)`, `Secrets (gitleaks)`, `Dependencies (pip-audit)`, `Image (trivy) — api` e `Image (trivy) — producer`. Configuração atual: `gh api repos/gpgomes/data-master-std-fraud/branches/main/protection`.
+
 ## Troubleshooting
 
 | Problema | Causa Provável | Solução |
 |---------|----------------|---------|
 | Kafka não conecta | Zookeeper não iniciou | `make logs-zookeeper`, aguardar healthcheck |
 | MinIO 403 | Credenciais erradas | Verificar MINIO_ACCESS_KEY no .env |
+| `docker compose` falha com `required variable ... is missing a value: rode make env` | `.env` sem os segredos gerados (issue #58) | `make env` |
+| API responde 401 em tudo | Sem `X-API-Key`, chave errada, ou `API_KEY_HASHES` vazio | `make env` e usar o `API_DEV_KEY` do `.env` no header; reiniciar a API depois de mudar o `.env` |
 | Job Spark morre com `ExecutorLostFailure` / `Command exited with code 137` (SIGKILL) | OOM killer: a VM do Docker Desktop (`docker info` mostra `Total Memory`) ficou sem memória — stack completa + 2 executores de 2G + producers/streaming. Não é bug de código | Docker Desktop → Settings → Resources → Memory: **12 GB** (Apply & restart; volumes são preservados). Enquanto isso, pare os producers e o `spark-submit-stream` antes de rodar jobs batch pesados |
 | Job batch fica esperando recursos / DAG `batch_transformation_pipeline` não avança | O `spark-submit-stream` (streaming) segura os 4 cores e 4 GB do cluster (2 workers × 2 cores × 2G) | `Ctrl+C` no streaming antes de rodar batch, ou aumentar workers/cores no `docker-compose.yml` |
 | Airflow DB error | PostgreSQL não pronto | Aguardar healthcheck, `make logs-postgres` |

@@ -1,6 +1,7 @@
 # Data Master — Financial Fraud Detection Platform
 
 [![CI](https://github.com/gpgomes/data-master-std-fraud/actions/workflows/ci.yml/badge.svg)](https://github.com/gpgomes/data-master-std-fraud/actions/workflows/ci.yml)
+[![Security](https://github.com/gpgomes/data-master-std-fraud/actions/workflows/security.yml/badge.svg)](https://github.com/gpgomes/data-master-std-fraud/actions/workflows/security.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![PySpark](https://img.shields.io/badge/pyspark-3.5-orange.svg)](https://spark.apache.org/)
 [![Apache Kafka](https://img.shields.io/badge/kafka-3.6-black.svg)](https://kafka.apache.org/)
@@ -124,8 +125,8 @@ data-master-std-fraud/
 git clone https://github.com/gpgomes/data-master-std-fraud.git
 cd data-master-std-fraud
 
-# 2. Configurar variáveis de ambiente
-cp .env.example .env
+# 2. Criar o .env e gerar os segredos locais (Airflow, Superset, chave da API)
+make env
 
 # 3. Subir toda a infraestrutura
 make up
@@ -165,10 +166,10 @@ Depois desses passos: Superset em http://localhost:8088 (dashboard "Fraude e Tra
 | MinIO Console | http://localhost:9001 | minioadmin / minioadmin |
 | Airflow | http://localhost:8082 | admin / admin |
 | Superset | http://localhost:8088 | admin / admin |
-| API (Swagger) | http://localhost:8000/docs | — |
+| API (Swagger) | http://localhost:8000/docs | header `X-API-Key`: o `API_DEV_KEY` do `.env` |
 | Spark UI | http://localhost:8081 | — |
 
-> **Atenção:** essas credenciais (e as chaves fixas do `docker-compose.yml`, como a Fernet key do Airflow) são **apenas para desenvolvimento local**. Nunca use em produção/AWS: gere credenciais e chaves próprias.
+> **Atenção:** essas credenciais são **apenas para desenvolvimento local**. Nunca use em produção/AWS. As chaves que cifram dados (Fernet do Airflow, secret keys) e a chave da API não são fixas: o `make env` gera as de cada máquina (issue #58).
 
 O catálogo de dados não é um serviço web — é gerado como documento versionado, ver [`docs/data_catalog.md`](docs/data_catalog.md) e a seção [Governança de Dados](#governança-de-dados) abaixo.
 
@@ -238,6 +239,8 @@ O workflow [`.github/workflows/ci.yml`](.github/workflows/ci.yml) roda automatic
 O job `test` usa Python 3.11 + Java 17 (PySpark roda em modo local `local[*]`, sem precisar do cluster Spark real). O relatório de cobertura HTML é publicado como artefato do workflow.
 
 **Teste ponta a ponta (issue #57):** o workflow **E2E** (`.github/workflows/e2e.yml`, manual e noturno) sobe a stack mínima e roda `make e2e`: batch e stream de verdade num namespace isolado, com invariantes (mesmos ids e mesma soma de valor em todas as camadas, `alert_id` do Kafka = do Postgres, zero duplicata após reinício) e cenários de falha (kill no meio do micro-batch, dado inválido, duplicata, JSON inválido, Kafka e Postgres fora do ar). Ver [`docs/runbook.md`](docs/runbook.md#teste-ponta-a-ponta-issue-57).
+
+**Segurança (issue #58):** o workflow **Security** (`.github/workflows/security.yml`) roda em todo push/PR e toda semana, e bloqueia: gitleaks (segredos no histórico inteiro), pip-audit (CVEs nas dependências) e trivy (CVEs HIGH/CRITICAL nas imagens da API e dos producers). O que não tem correção entra em [`security/exceptions.toml`](security/exceptions.toml) com motivo e data de revisão. A API exige `X-API-Key`, grava auditoria de acesso e não expõe coluna PII (teste no CI); ver [`docs/runbook.md`](docs/runbook.md#segurança-issue-58).
 
 **Testes de integração (`tests/integration/`) não rodam no CI** — dependem do stack Docker completo (Kafka, Zookeeper, Airflow, Superset, Postgres, MinIO, cluster Spark), pesado demais para rodar em todo PR; ver `docs/runbook.md` para rodá-los localmente com `make up && make setup`.
 

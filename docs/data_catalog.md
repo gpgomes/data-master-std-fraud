@@ -1,6 +1,6 @@
 # Catálogo de Dados
 
-_Gerado em 2026-09-27T15:55:48.860762+00:00 por `python -m scripts.build_data_catalog`._
+_Gerado em 2026-09-28T22:27:55.026801+00:00 por `python -m scripts.build_data_catalog`._
 
 Substitui o OpenMetadata completo na V1 local (decisão documentada em `docs/architecture.md`) — ver definições de campo e o glossário de negócio completo em [`docs/data_dictionary.md`](data_dictionary.md).
 
@@ -43,6 +43,7 @@ Substitui o OpenMetadata completo na V1 local (decisão documentada em `docs/arc
 | **Postgres — pipeline_runs**<br>Uma linha por execução de DAG do Airflow (estado, duração, tasks que falharam), gravada pela task record_pipeline_run, que roda mesmo com falha upstream (issue #55). | `pipeline_runs` | Data Engineering | Interno | SLO | ✅ ok |
 | **Postgres — quality_gate_runs**<br>Uma linha por execução de quality gate do Great Expectations: dataset, sucesso, expectativas avaliadas e com falha, e se o gate é opcional (issue #55). | `quality_gate_runs` | Data Engineering | Interno | SLO | ✅ ok |
 | **Postgres — api_requests**<br>Uma linha por request da API: método, rota (o template, sem ids), status e duração. Gravada depois da resposta, fora da latência medida (issue #55). | `api_requests` | Analytics Engineering | Interno | SLO | ✅ ok |
+| **Postgres — api_access_audit**<br>Log de auditoria de acesso à API: quem (id da chave, nunca a chave), o quê (rota e parâmetros de consulta), o resultado (inclusive 401) e o IP de origem. Append-only; health checks ficam de fora (issue #58). | `api_access_audit` | Segurança da Informação | PII, Confidencial | PII | ✅ ok |
 
 ## Streaming (Kafka)
 
@@ -59,6 +60,22 @@ Substitui o OpenMetadata completo na V1 local (decisão documentada em `docs/arc
 |---------|-------------|-------|---------------|-----------|--------|
 | **Dashboard — Visão Geral de Fraude**<br>KPIs de volume, valor, taxa de fraude e alertas, mais latência, distribuição de fraud_score e alertas por hora do streaming (Superset — Grafana descoped, issue #16). | `http://localhost:8088/superset/dashboard/fraude-transacoes-visao-geral/` | Fraud Analytics | Confidencial | Fraud Score | — não validado |
 | **Dashboard — Platform Health**<br>Saúde da plataforma, separada dos KPIs de negócio: latência, duração, throughput e lag do stream; execuções das DAGs e gates com falha; latência e erros da API (issue #55). As metas ficam no `make slo-report`. | `http://localhost:8088/superset/dashboard/platform-health/` | Data Engineering | Interno | SLO | — não validado |
+
+## Colunas PII
+
+Dados pessoais diretos ou sensíveis, por dataset. `customer_id`/`customer_key` são pseudônimos e ficam de fora. Nenhuma destas colunas aparece nas respostas da API (teste `test_pii_enforcement.py`); no Postgres, o nome do cliente vai só com iniciais e a data de nascimento só com o ano.
+
+| Dataset | Colunas PII |
+|---|---|
+| Bronze — Transações | `origin_account`, `destination_account`, `device_id`, `ip_address`, `latitude`, `longitude` |
+| Silver — Transações | `origin_account`, `destination_account`, `device_id`, `ip_address`, `latitude`, `longitude` |
+| Silver — Transações (Streaming) | `origin_account`, `destination_account`, `device_id`, `ip_address`, `latitude`, `longitude` |
+| Gold — Dimensão Clientes | `name`, `cpf_masked`, `birth_date` |
+| Gold — Perfil de Comportamento do Cliente | `known_devices`, `known_ip_prefixes`, `known_destinations`, `home_lat`, `home_lon` |
+| Postgres — dim_customers | `name`, `cpf_masked`, `birth_date` |
+| Postgres — api_access_audit | `client_host` |
+| Kafka — raw-transactions | `origin_account`, `destination_account`, `device_id`, `ip_address`, `latitude`, `longitude` |
+| Kafka — enriched-transactions | `origin_account`, `destination_account`, `device_id`, `ip_address`, `latitude`, `longitude` |
 
 ## Linhagem
 
@@ -88,6 +105,7 @@ graph LR
     serving_pipeline_runs["Postgres — pipeline_runs"]
     serving_quality_gate_runs["Postgres — quality_gate_runs"]
     serving_api_requests["Postgres — api_requests"]
+    serving_api_access_audit["Postgres — api_access_audit"]
     kafka_raw_transactions["Kafka — raw-transactions"]
     kafka_raw_market_data["Kafka — raw-market-data"]
     kafka_enriched_transactions["Kafka — enriched-transactions"]

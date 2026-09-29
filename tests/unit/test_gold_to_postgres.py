@@ -135,6 +135,8 @@ class TestLoadTable:
         with (
             patch("pyspark.sql.DataFrameReader.parquet", return_value=mock_df),
             patch("pyspark.sql.DataFrameWriter.save"),
+            # a amostra genérica não tem as colunas de cliente; o mascaramento tem teste próprio
+            patch.object(GoldToPostgresLoader, "_mask_customer_pii", side_effect=lambda df: df),
         ):
             metrics = loader.load_dim_customers()
 
@@ -211,3 +213,51 @@ class TestSchemaSQL:
         ).upper()
         assert "REFERENCES" not in sql_only
         assert "FOREIGN KEY" not in sql_only
+
+
+class TestCustomerPiiMasking:
+    """`dim_customers` chega ao Postgres com o nome e a data de nascimento mascarados (issue #58)."""
+
+    def test_name_keeps_only_initials_and_birth_date_only_the_year(self, spark: SparkSession):
+        from pyspark.sql.types import StringType, StructField, StructType
+
+        schema = StructType(
+            [
+                StructField("customer_key", StringType()),
+                StructField("name", StringType()),
+                StructField("birth_date", StringType()),
+            ]
+        )
+        rows = [
+            {"customer_key": "c1", "name": "João da Silva", "birth_date": "1985-03-20"},
+            {"customer_key": "c2", "name": "  Ana   Maria ", "birth_date": "2001-12-01"},
+        ]
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8"
+        ) as f:
+            f.write("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n")
+        try:
+            df = spark.read.schema(schema).json(f.name).cache()
+            df.count()
+        finally:
+            os.unlink(f.name)
+        masked = {r["customer_key"]: r for r in GoldToPostgresLoader._mask_customer_pii(df).collect()}
+
+        assert masked["c1"]["name"] == "J*** d*** S***"
+        assert masked["c2"]["name"] == "A*** M***"
+        assert masked["c1"]["birth_date"] == "1985"
+        assert "Silva" not in repr(masked)
+
+    def test_only_dim_customers_is_masked(self, spark: SparkSession, loader):
+        from unittest.mock import patch
+
+        with (
+            patch("pyspark.sql.DataFrameReader.parquet") as read,
+            patch("pyspark.sql.DataFrameWriter.save"),
+            patch.object(GoldToPostgresLoader, "_mask_customer_pii", side_effect=lambda df: df) as mask,
+        ):
+            read.return_value.count.return_value = 1
+            loader.load_dim_date()
+            mask.assert_not_called()
+            loader.load_dim_customers()
+            mask.assert_called_once()

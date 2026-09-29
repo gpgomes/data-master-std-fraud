@@ -133,6 +133,7 @@ class TestRenderMarkdown:
             "Shadow Scoring",
             "Rótulo (ground truth)",
             "SLO",
+            "PII",
         }
         used_terms = {term for entry in CATALOG for term in entry.glossary_terms}
         assert used_terms.issubset(known_terms)
@@ -150,6 +151,7 @@ class TestOptionalAssets:
             "serving_pipeline_runs",
             "serving_quality_gate_runs",
             "serving_api_requests",
+            "serving_api_access_audit",  # só existe depois do primeiro acesso à API (#58)
         }
 
     def test_missing_optional_asset_rendered_as_warning_not_error(self):

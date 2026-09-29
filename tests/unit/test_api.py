@@ -313,10 +313,10 @@ class TestRepositoryDailyFraudMetrics:
 
 
 @pytest.fixture
-def client(db: Session) -> TestClient:
+def client(db: Session, api_key: str) -> TestClient:
     app.dependency_overrides[get_db] = lambda: db
     try:
-        yield TestClient(app)
+        yield TestClient(app, headers={"X-API-Key": api_key})
     finally:
         app.dependency_overrides.clear()
 
@@ -331,10 +331,10 @@ class _FailingSession:
 
 
 @pytest.fixture
-def failing_client() -> TestClient:
+def failing_client(api_key: str) -> TestClient:
     app.dependency_overrides[get_db] = lambda: _FailingSession()
     try:
-        yield TestClient(app)
+        yield TestClient(app, headers={"X-API-Key": api_key})
     finally:
         app.dependency_overrides.clear()
 
