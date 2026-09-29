@@ -82,6 +82,12 @@ test_security_exceptions, test_api_image), docs.
     airflow (fora do gate): ~360; spark (fora do gate): ~240 → issue #66 (atualização das bases)
   Smoke: `import kafka` na imagem do producer = 2.3.2; `import src.serving.api.main` na da API OK.
 
+  1ª execução no GitHub (PR #67): o pip-audit falhou em setuptools 79.0.1 (PYSEC-2026-3447,
+  corrigido no 83.0.0). Não é dependência do projeto: vem com o Python do runner, e o pip-audit
+  audita o ambiente inteiro (o venv local não tinha setuptools). Correção no workflow: atualizar
+  pip/setuptools antes de instalar. Reproduzido local com setuptools 79.0.1 e verificado limpo
+  depois do upgrade (setuptools 84.0.0).
+
   Unitários com as versões novas: 971 passed, cobertura 89,22%; make lint limpo.
   Black 26 x 24: os mesmos 39 arquivos fora do padrão nas duas versões (black não é gate).
 

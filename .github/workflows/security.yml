@@ -66,7 +66,12 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
       - name: Install dependencies
-        run: pip install -e ".[dev]" pip-audit
+        # O Python do runner vem com pip/setuptools próprios (fora do pyproject.toml) e o pip-audit
+        # audita o ambiente inteiro: atualizá-los evita CVE da ferramenta de build (setuptools 79
+        # tinha PYSEC-2026-3447), sem virar exceção.
+        run: |
+          python -m pip install --upgrade pip setuptools
+          pip install -e ".[dev]" pip-audit
       - name: Audit
         run: pip-audit --skip-editable $(python -m scripts.security_exceptions pip-audit-args)
 
