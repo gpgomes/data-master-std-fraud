@@ -276,7 +276,11 @@ def producer():
 
     from src.common.config import settings
 
-    return KafkaProducer(bootstrap_servers=settings.kafka.bootstrap_servers, acks="all")
+    # Idempotente como os producers de verdade (#68). A duplicata de propósito do E2E continua
+    # chegando: são dois `send` do mesmo payload (números de sequência diferentes), não um retry.
+    return KafkaProducer(
+        bootstrap_servers=settings.kafka.bootstrap_servers, acks="all", enable_idempotence=True
+    )
 
 
 def consume_all(topic: str, idle_ms: int = 10_000) -> list[bytes]:

@@ -14,15 +14,21 @@ class ProducerConfig:
     # Confiabilidade
     # Todas as réplicas em sincronia confirmam antes do ack (#59). Com `acks=1` o líder confirmava
     # sozinho, e uma queda dele antes de replicar perdia a mensagem na ENTRADA do pipeline. Com o
-    # broker único do ambiente local o custo é nulo; num cluster, é alguns ms de latência. Sem
-    # producer idempotente: os clientes da época (kafka-python 2.0.2 / kafka-python-ng) não tinham
-    # `enable_idempotence`. O kafka-python 2.3.2 adotado na issue #58 tem, mas ligá-lo muda a
-    # semântica de entrega e fica para uma issue própria. Então um retry ainda pode duplicar
-    # (at-least-once; o stream deduplica por `transaction_id` no micro-batch e o loader do
-    # Postgres fica com uma linha).
+    # broker único do ambiente local o custo é nulo; num cluster, é alguns ms de latência.
     acks: int | str = "all"
     retries: int = 3
     retry_backoff_ms: int = 300
+
+    # Producer idempotente (#68): o broker dá um id ao producer e numera cada lote por partição;
+    # um retry de um lote já gravado (o ack se perdeu, não a mensagem) é descartado em vez de
+    # duplicar no tópico. Vale só dentro da sessão do producer: reiniciar o processo gera outro
+    # id, e um reenvio depois disso ainda duplica (exigiria transações). Por isso o stream continua
+    # deduplicando por `transaction_id` e o loader do Postgres fica com uma linha.
+    # O kafka-python exige `acks="all"`, `retries > 0` e UM request em voo por conexão (o cliente
+    # Java aceita até 5). Os producers já enviam de forma síncrona (`future.get()` a cada
+    # mensagem), então o limite de 1 em voo não muda o throughput deles (medido na #68).
+    enable_idempotence: bool = True
+    max_in_flight_requests_per_connection: int = 1
 
     # Throughput — mensagens são agrupadas antes de enviar
     batch_size: int = 16_384   # 16 KB
@@ -40,6 +46,23 @@ class ProducerConfig:
     request_timeout_ms: int = 30_000
     max_block_ms: int = 60_000
 
+    def __post_init__(self) -> None:
+        """Recusa na criação a combinação que o KafkaProducer só recusaria ao conectar."""
+        if not self.enable_idempotence:
+            return
+        problems = []
+        if self.acks not in ("all", -1):
+            problems.append(f'acks={self.acks!r} (precisa ser "all")')
+        if self.retries <= 0:
+            problems.append(f"retries={self.retries} (precisa ser > 0)")
+        if self.max_in_flight_requests_per_connection != 1:
+            problems.append(
+                f"max_in_flight_requests_per_connection={self.max_in_flight_requests_per_connection}"
+                " (o kafka-python exige 1)"
+            )
+        if problems:
+            raise ValueError("producer idempotente com " + ", ".join(problems))
+
     def to_kafka_python_dict(self) -> dict:
         """Retorna dict compatível com kafka-python KafkaProducer."""
         return {
@@ -47,6 +70,8 @@ class ProducerConfig:
             "acks": self.acks,
             "retries": self.retries,
             "retry_backoff_ms": self.retry_backoff_ms,
+            "enable_idempotence": self.enable_idempotence,
+            "max_in_flight_requests_per_connection": self.max_in_flight_requests_per_connection,
             "batch_size": self.batch_size,
             "linger_ms": self.linger_ms,
             "buffer_memory": self.buffer_memory,

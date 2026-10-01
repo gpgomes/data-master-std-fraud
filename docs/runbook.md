@@ -147,6 +147,14 @@ docker compose exec -T kafka kafka-run-class kafka.tools.GetOffsetShell \
 - **O producer de mercado só publica durante o pregão**: das 13h às 20h UTC (10h às 17h em Brasília), sem checar o dia da semana. Fora desse horário ele fica de pé, sem reiniciar, e `raw-market-data` não cresce (o log diz "Fora do horário de pregão" em nível DEBUG). Isso é o comportamento esperado, não uma falha.
 - **`AssertionError: Libraries for lz4 compression codec not found`** e o container reiniciando em loop: a imagem não tem a lib do codec de compressão do `ProducerConfig` (`lz4`). Era o estado até a issue #48. Se voltar a acontecer, confira se `lz4` está em `docker/producer/requirements-producer.txt` e reconstrua com `--build`; o teste `tests/unit/test_producer_image_requirements.py` existe para impedir que isso chegue ao `main`.
 
+### Producer idempotente (issue #68)
+
+O `ProducerConfig` liga `enable_idempotence=True` em todos os perfis: o broker atribui um id ao producer e descarta o retry de um lote que já gravou (o caso do ack que se perde na rede). Para isso o kafka-python exige `acks="all"`, `retries > 0` e `max_in_flight_requests_per_connection=1`; o `ProducerConfig` recusa outra combinação já na criação (`ValueError`), e um teste monta um `KafkaProducer` de verdade com cada perfil.
+
+- **Custo:** nenhum para os producers do projeto, que esperam o ack de cada mensagem. O limite de 1 request em voo só pesa em envio assíncrono. Reproduzir: `make producer-bench` (tópico temporário, ligado × desligado, síncrono × assíncrono).
+- **O que não cobre:** reinício do producer (id novo) e o replay do próprio stream. A deduplicação por `transaction_id` no stream e no loader continua necessária.
+- **Conferir no broker:** com idempotência, o producer recebe um id (`producer id` na saída do `make producer-bench`); sem ela, o id é nulo.
+
 ### Dados sintéticos: perfis, fraude por episódio e ground truth (issue #43)
 
 O gerador (`src/common/data_generator.py`) dá a cada cliente um perfil de comportamento

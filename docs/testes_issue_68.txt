@@ -1,0 +1,77 @@
+================================================================================
+CHECKLIST DE TESTES — Producer idempotente (enable_idempotence) no kafka-python 2.3.2 (issue #68)
+================================================================================
+
+Decisão (com o usuário): medir com um benchmark focado no producer + um load-test curto do stream,
+em vez do make load-test completo (~30 min).
+
+Arquivos: src/ingestion/streaming/producer_config.py, scripts/producer_idempotence_benchmark.py,
+Makefile (producer-bench), tests/unit/test_producers.py, tests/e2e/harness.py, docs.
+
+================================================================================
+1. O QUE MUDOU
+================================================================================
+
+  ProducerConfig: enable_idempotence=True e max_in_flight_requests_per_connection=1 em todos os
+  perfis (padrão, LOW_LATENCY, HIGH_THROUGHPUT). __post_init__ recusa, já na criação, acks != "all",
+  retries <= 0 ou mais de 1 request em voo com idempotência (ValueError).
+
+  Achado: o kafka-python 2.3.2 exige max_in_flight == 1 com idempotência (o cliente Java aceita
+  até 5) e recusa no construtor do KafkaProducer (KafkaConfigurationError). Sem informar o valor, o
+  próprio cliente o força para 1.
+
+  Harness do E2E: o producer de teste também passou a ser idempotente. A duplicata de propósito do
+  E2E continua chegando ao tópico: são dois `send` do mesmo payload (sequências diferentes), não um
+  retry, e é exatamente o caso que a idempotência não cobre.
+
+================================================================================
+2. BENCHMARK DO PRODUCER (make producer-bench; Kafka local, 3 rodadas, mediana)
+================================================================================
+
+  cenário              msgs/s   p50 ms   p95 ms   producer id (broker)
+  síncrono, sem          85     11,79    12,40    nulo
+  síncrono, idempotente  85     11,91    12,53    9000, 9001, 9002
+  assíncrono, sem     33.713        -        -    nulo
+  assíncrono, idemp.  18.699        -        -    9003, 9004, 9005
+
+  síncrono (como os producers do projeto enviam): −1,0% (ruído)
+  assíncrono: −44,5% (o limite de 1 request em voo)
+  O producer id só existe com idempotência: é a prova de que o broker está deduplicando retries.
+
+  Observação: no envio síncrono ~10 dos ~12 ms por mensagem são o linger_ms=10 do ProducerConfig
+  (o cliente espera encher o lote antes de enviar), não o Kafka.
+
+================================================================================
+3. PRODUCER REAL A 20 TPS (A/B, 60 s cada, tópico temporário)
+================================================================================
+
+  idempotente=False: 15,05 TPS, send médio 13,0 ms, erros 0
+  idempotente=True:  15,05 TPS, send médio 12,9 ms, erros 0
+  idempotente=False: 15,02 TPS, send médio 12,9 ms, erros 0
+  idempotente=True:  15,07 TPS, send médio 12,8 ms, erros 0
+
+  Sem diferença. O producer entrega ~15 TPS para um alvo de 20 com ou sem idempotência: o laço
+  espera o intervalo inteiro (1/RATE = 50 ms) DEPOIS de enviar, sem descontar o tempo do envio
+  (~13 ms), então o ritmo real é ~1/(50 + 13 ms). Na #56 o mesmo nível entregava 17 a 18 TPS
+  porque o envio era mais rápido no cliente anterior (kafka-python-ng). É um defeito anterior,
+  fora do escopo desta issue.
+
+================================================================================
+4. STREAM (load-test curto, 1 nível de 20 TPS, 180 s + 60 s de aquecimento, Spark 3.5.8)
+================================================================================
+
+  produzido 15,15 TPS, 18 micro-batches, micro-batch p95 5,01 s, latência p95 (batch) 11,23 s,
+  lag 0, estado máx 3.471 linhas, sem saturação. Dentro do SLO de latência (p95 < 12 s).
+
+================================================================================
+5. TESTES
+================================================================================
+
+  tests/unit/test_producers.py::TestIdempotentProducer:
+    - todo perfil sai com enable_idempotence=True e 1 request em voo;
+    - um KafkaProducer real (api_version fixo, sem rede) aceita cada perfil: a própria biblioteca
+      valida a combinação;
+    - não vacuoso: a biblioteca recusa 5 em voo com idempotência;
+    - acks=1, retries=0 ou 5 em voo falham na criação do ProducerConfig;
+    - desligar a idempotência explicitamente libera as restrições (usado no benchmark).
+  make e2e: 16 passed em 4 min 50 s (inclusive o cenário da duplicata reenviada de propósito).

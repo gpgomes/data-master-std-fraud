@@ -5,6 +5,10 @@ from datetime import UTC, datetime
 from threading import Event
 from unittest.mock import MagicMock, patch
 
+import pytest
+from kafka import KafkaProducer
+from kafka.errors import KafkaConfigurationError
+
 from src.common.schemas import TransactionType
 from src.ingestion.streaming.kafka_producer_market import TickSimulator, _serialize
 from src.ingestion.streaming.producer_config import (
@@ -23,6 +27,7 @@ class TestProducerConfig:
         assert cfg.batch_size == 16_384
         assert cfg.linger_ms == 10
         assert cfg.compression_type == "lz4"
+        assert cfg.enable_idempotence is True  # #68
 
     def test_every_profile_waits_for_all_in_sync_replicas(self) -> None:
         """Nenhum perfil volta a confirmar só pelo líder (#59)."""
@@ -60,6 +65,53 @@ class TestProducerConfig:
     def test_high_throughput_profile(self) -> None:
         assert HIGH_THROUGHPUT_CONFIG.linger_ms == 50
         assert HIGH_THROUGHPUT_CONFIG.batch_size == 65_536
+
+
+class TestIdempotentProducer:
+    """Producer idempotente (#68): um retry de lote já gravado não duplica no tópico."""
+
+    PROFILES = (ProducerConfig(), LOW_LATENCY_CONFIG, HIGH_THROUGHPUT_CONFIG)
+
+    def test_every_profile_is_idempotent(self) -> None:
+        for cfg in self.PROFILES:
+            d = cfg.to_kafka_python_dict()
+            assert d["enable_idempotence"] is True
+            assert d["max_in_flight_requests_per_connection"] == 1
+
+    def test_the_real_kafka_producer_accepts_every_profile(self) -> None:
+        """Quem valida é a própria biblioteca: o KafkaProducer recusa no construtor uma combinação
+        incompatível com idempotência. `api_version` fixo evita a sondagem do broker (sem rede)."""
+        for cfg in self.PROFILES:
+            d = cfg.to_kafka_python_dict() | {"bootstrap_servers": "localhost:1"}
+            producer = KafkaProducer(**d, api_version=(3, 6))
+            try:
+                assert producer.config["enable_idempotence"] is True
+                assert producer.config["acks"] == -1  # "all"
+            finally:
+                producer.close(timeout=0)
+
+    def test_the_library_would_refuse_more_than_one_request_in_flight(self) -> None:
+        """Não vacuoso: o kafka-python 2.3.2 recusa 5 em voo com idempotência (o Java aceita)."""
+        d = ProducerConfig().to_kafka_python_dict() | {
+            "bootstrap_servers": "localhost:1",
+            "max_in_flight_requests_per_connection": 5,
+        }
+        with pytest.raises(KafkaConfigurationError, match="max_in_flight"):
+            KafkaProducer(**d, api_version=(3, 6))
+
+    def test_incompatible_combinations_fail_when_the_config_is_built(self) -> None:
+        for kwargs, fragment in (
+            ({"acks": 1}, "acks=1"),
+            ({"retries": 0}, "retries=0"),
+            ({"max_in_flight_requests_per_connection": 5}, "max_in_flight"),
+        ):
+            with pytest.raises(ValueError, match=fragment):
+                ProducerConfig(**kwargs)
+
+    def test_idempotence_can_be_turned_off_explicitly(self) -> None:
+        """Desligada, as restrições não se aplicam (ex.: benchmark comparativo da #68)."""
+        cfg = ProducerConfig(enable_idempotence=False, acks=1, max_in_flight_requests_per_connection=5)
+        assert cfg.to_kafka_python_dict()["enable_idempotence"] is False
 
 
 # ── Serialização de mensagens ──────────────────────────────────────────────────
