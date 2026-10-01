@@ -34,28 +34,11 @@ reason = "Mesma Fernet key de dev local rotacionada na issue #58 (ver a exceçã
 review_by = 2027-03-31
 
 # ── trivy (imagens da API, dos producers, do Airflow e do Spark) ────────────────────────────────
-# Os três CVEs do próprio apache-airflow só têm correção no 3.x; a migração para o Airflow 3 (DAGs,
-# provider do Spark, API) é a issue #69.
-
-[[trivy]]
-id = "CVE-2025-54550"
-package = "apache-airflow"
-reason = """RCE por condição de corrida na DAG de exemplo `example_xcom`. As DAGs de exemplo não são
-carregadas (AIRFLOW__CORE__LOAD_EXAMPLES=false no docker-compose.yml), então o código afetado não
-roda. Correção só no Airflow 3.2."""
-review_by = 2027-03-31
-
-[[trivy]]
-id = "CVE-2026-33264"
-package = "apache-airflow"
-reason = """Execução de código na desserialização de DAG serializada. Exige gravar no banco de metadados
-do Airflow (postgres-airflow), que só é acessível pela rede interna do compose. Correção só no
-Airflow 3.3."""
-review_by = 2027-03-31
-
-[[trivy]]
-id = "CVE-2026-40961"
-package = "apache-airflow"
-reason = """Usuário autenticado contorna o `is_safe_url` (redirecionamento aberto na UI). A UI só existe
-no ambiente local, com o usuário admin de dev. Correção só no Airflow 3.2.2."""
-review_by = 2027-03-31
+# Nenhuma exceção hoje: os três CVEs do apache-airflow 2.x saíram com o Airflow 3.3 (#69). Os .jar da
+# distribuição do Spark ficam fora do gate por --skip-files (ver o workflow), não por exceção.
+# Formato:
+# [[trivy]]
+# id = "CVE-AAAA-NNNNN"
+# package = "pacote"
+# reason = "..."
+# review_by = AAAA-MM-DD

@@ -1,7 +1,7 @@
 """Cria/completa o `.env` local com segredos gerados na máquina (issue #58).
 
 `make env` roda este script. Ele copia o `.env.example` quando não há `.env` e gera o que é segredo
-e nunca deve ser versionado: a Fernet key e a secret key do Airflow, a secret key do Superset e a
+e nunca deve ser versionado: a Fernet key, a secret key e o segredo JWT do Airflow 3 (#69), a secret key do Superset e a
 chave da API (só o hash SHA-256 vai para `API_KEY_HASHES`; a chave em texto fica em `API_DEV_KEY`,
 no `.env` local, para o desenvolvedor usar no header `X-API-Key`).
 
@@ -41,7 +41,8 @@ def token() -> str:
 
 GENERATED: dict[str, Callable[[], str]] = {
     "AIRFLOW__CORE__FERNET_KEY": fernet_key,
-    "AIRFLOW__WEBSERVER__SECRET_KEY": token,
+    "AIRFLOW__API__SECRET_KEY": token,
+    "AIRFLOW__API_AUTH__JWT_SECRET": token,
     "SUPERSET_SECRET_KEY": token,
     "API_DEV_KEY": token,
 }

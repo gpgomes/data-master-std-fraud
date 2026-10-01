@@ -1,7 +1,7 @@
 # Variante slim (issue #66): só o core e 9 providers básicos. A imagem completa traz ~80 providers
 # (Google, Snowflake, Ray, litellm...) que as DAGs não usam (só BashOperator, PythonOperator e o
 # SparkSubmitOperator) e respondiam pela maior parte dos CVEs de pacotes Python da imagem.
-FROM apache/airflow:slim-2.11.2-python3.11
+FROM apache/airflow:slim-3.3.2-python3.11
 
 USER root
 
@@ -38,11 +38,14 @@ ENV PATH="/home/airflow/.local/lib/python3.11/site-packages/pyspark/bin:${PATH}"
 ENV PYTHONPATH="/opt/airflow"
 
 # `apache-airflow==` na mesma instalação: sem ele o pip pode trocar dependências do próprio Airflow
-# (issue #66). O s3fs acompanha a versão do fsspec da base (os dois são lançados juntos); o `uv`
-# vem na base e é atualizado só por causa dos CVEs das libs Rust embutidas nele.
+# (issue #66). O s3fs acompanha a versão do fsspec da base (os dois são lançados juntos).
+# Provider do Spark 5.6.0: a última linha que aceita o pyspark 3.5.x do cluster; a 6.x exige o
+# pyspark-client 4 e vem junto com a subida do Spark (#69, segunda parte).
+# Extra `postgres`: o Airflow 3 também abre o banco de metadados em modo assíncrono (asyncpg), que a
+# imagem slim não traz.
 RUN pip install --no-cache-dir \
-    apache-airflow==2.11.2 \
-    apache-airflow-providers-apache-spark==4.7.1 \
+    "apache-airflow[postgres]==3.3.2" \
+    apache-airflow-providers-apache-spark==5.6.0 \
     pyspark==3.5.8 \
     psycopg2-binary==2.9.10 \
     pydantic-settings==2.2.1 \
@@ -51,27 +54,16 @@ RUN pip install --no-cache-dir \
     faker==24.0.0 \
     pyarrow==23.0.1 \
     yfinance==0.2.36 \
-    s3fs==2026.2.0 \
+    s3fs==2026.7.0 \
     great-expectations==0.18.13 \
     pandas==2.2.1 \
     numpy==1.26.4 \
-    pydantic==2.12.5 \
-    boto3==1.43.75 \
-    tenacity==8.2.3
-
-# Correções de segurança sobre a base (issue #66): versões que o resolvedor aceita com o
-# apache-airflow 2.11.2 fixado e que fecham os CVEs que o trivy acusa nesses pacotes. Os três CVEs do
-# próprio apache-airflow só têm correção no 3.x (ver security/exceptions.toml).
-RUN pip install --no-cache-dir \
-    apache-airflow==2.11.2 \
-    PyJWT==2.15.1 \
-    sqlparse==0.6.0 \
-    urllib3==2.8.0 \
-    Mako==1.4.3 \
-    anyio==4.15.1 \
-    python-multipart==0.0.32 \
-    apache-airflow-providers-ftp==3.16.0 \
-    cryptography==50.0.2 \
+    boto3 \
     setuptools==84.0.0 \
     wheel==0.48.0 \
-    uv==0.12.21
+    urllib3==2.8.0
+
+# O pip do ambiente do usuário airflow (26.2.1) vendoriza msgpack e setuptools com CVE (o trivy lê o
+# pip/_vendor/vendor.txt), e a versão mais nova do pip ainda traz os mesmos. O Airflow não usa pip em
+# runtime; o pip do sistema (/usr/python) continua disponível para manutenção.
+RUN python -m pip uninstall -y pip

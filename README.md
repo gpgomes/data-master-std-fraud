@@ -5,7 +5,7 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![PySpark](https://img.shields.io/badge/pyspark-3.5-orange.svg)](https://spark.apache.org/)
 [![Apache Kafka](https://img.shields.io/badge/kafka-3.6-black.svg)](https://kafka.apache.org/)
-[![Apache Airflow](https://img.shields.io/badge/airflow-2.8-green.svg)](https://airflow.apache.org/)
+[![Apache Airflow](https://img.shields.io/badge/airflow-3.3-green.svg)](https://airflow.apache.org/)
 [![Docker](https://img.shields.io/badge/docker-compose-blue.svg)](https://docs.docker.com/compose/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -164,7 +164,7 @@ Depois desses passos: Superset em http://localhost:8088 (dashboard "Fraude e Tra
 |---------|-----|-------------|
 | Kafka UI | http://localhost:8080 | — |
 | MinIO Console | http://localhost:9001 | minioadmin / minioadmin |
-| Airflow | http://localhost:8082 | admin / admin |
+| Airflow | http://localhost:8082 | admin / admin (`AIRFLOW_ADMIN_PASSWORD` no `.env`) |
 | Superset | http://localhost:8088 | admin / admin |
 | API (Swagger) | http://localhost:8000/docs | header `X-API-Key`: o `API_DEV_KEY` do `.env` |
 | Spark UI | http://localhost:8081 | — |
