@@ -16,6 +16,7 @@ from loguru import logger
 from src.common.config import settings
 from src.common.data_generator import DataGenerator, TransactionStream
 from src.common.schemas import TransactionEvent
+from src.ingestion.streaming.pacing import Pacer
 from src.ingestion.streaming.producer_config import ProducerConfig
 
 # ── Configuração ───────────────────────────────────────────────────────────────
@@ -131,18 +132,18 @@ def run(stop_event: Event | None = None) -> None:
             _metrics["errors"] += 1
             logger.error(f"Erro ao enviar mensagem: {exc}")
 
-    interval = 1.0 / RATE
+    # Um sorteio do gerador por tick, RATE ticks por segundo pelo relógio (#72): o tempo do envio
+    # síncrono não se soma mais ao intervalo.
+    pacer = Pacer(RATE)
     logger.info(f"Producer iniciado | tópico={TOPIC} | rate={RATE} tps")
 
     try:
-        while not stop_event.is_set():
+        while pacer.wait(stop_event):
             now = datetime.now(tz=UTC)
             for delay_s, tx in stream.next_events(now):
                 heapq.heappush(pending, (now.timestamp() + delay_s, next(tiebreak), tx))
             while pending and pending[0][0] <= now.timestamp():
                 send(heapq.heappop(pending)[2])
-
-            stop_event.wait(timeout=interval)
 
     finally:
         producer.flush()

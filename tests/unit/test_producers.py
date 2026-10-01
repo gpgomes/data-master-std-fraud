@@ -25,7 +25,7 @@ class TestProducerConfig:
         assert cfg.acks == "all"  # durabilidade na entrada (#59)
         assert cfg.retries == 3
         assert cfg.batch_size == 16_384
-        assert cfg.linger_ms == 10
+        assert cfg.linger_ms == 0  # envio síncrono: esperar o lote só somava latência (#72)
         assert cfg.compression_type == "lz4"
         assert cfg.enable_idempotence is True  # #68
 

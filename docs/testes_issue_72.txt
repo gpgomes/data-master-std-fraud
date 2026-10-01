@@ -1,0 +1,61 @@
+================================================================================
+CHECKLIST DE TESTES — Ritmo dos producers: o TPS pedido é o TPS entregue (issue #72)
+================================================================================
+
+Decisão (com o usuário): o linger_ms padrão do ProducerConfig vira 0 (os dois producers, únicos
+usuários do padrão, enviam de forma síncrona); o HIGH_THROUGHPUT_CONFIG continua com 50.
+
+Arquivos: src/ingestion/streaming/{pacing,kafka_producer_transactions,kafka_producer_market,
+producer_config}.py, tests/unit/{test_pacing,test_producers}.py, docs.
+
+================================================================================
+1. CAUSA
+================================================================================
+
+  O laço enviava os eventos devidos (envio síncrono, ~13 ms cada) e depois esperava o intervalo
+  inteiro (1/RATE). Ritmo real ≈ 1/(intervalo + envio): ~15,9 TPS para 20. Medido na #68 com o
+  producer real: 15,05 TPS para 20, com ou sem idempotência.
+
+================================================================================
+2. CORREÇÃO
+================================================================================
+
+  Pacer (src/ingestion/streaming/pacing.py): o tick n sai em início + n × (1/RATE) pelo relógio
+  monotônico; espera só o que falta até o tick. Atraso > 1 s (Kafka fora, producer parado) realinha
+  o relógio em vez de emitir os ticks perdidos em rajada. O producer de mercado chama reset() depois
+  da pausa planejada fora do pregão (60 s), que não conta como atraso.
+
+  linger_ms 10 → 0 no padrão: com future.get() a cada mensagem nunca há um segundo envio esperando
+  no lote; os 10 ms eram só espera.
+
+================================================================================
+3. MEDIÇÕES (Kafka local, producer real, 60 s por cenário, tópico temporário)
+================================================================================
+
+  alvo  linger_ms  entregue   send médio
+   20      10      20,00 TPS   14,3 ms
+   50      10      50,00 TPS   12,5 ms
+   20       0      20,00 TPS    3,1 ms
+   50       0      49,99 TPS    2,3 ms
+  (antes da correção, alvo 20: 15,05 TPS)
+
+  Load-test com o stream (Spark 3.5.8, 1 instância de producer por nível, 150 s + 45 s de
+  aquecimento):
+    alvo 20: produzido 20,02 TPS, micro-batch p95 3,70 s, latência p95 10,65 s, lag 0
+    alvo 50: produzido 50,05 TPS, micro-batch p95 3,53 s, latência p95 10,48 s, lag 0
+  Antes uma instância não chegava a 50 TPS (envio de ~13 ms + intervalo); o load-test da #56 usava
+  25 TPS por instância por isso.
+
+================================================================================
+4. TESTES
+================================================================================
+
+  tests/unit/test_pacing.py (relógio falso: o wait avança o relógio em vez de dormir):
+    - 20 e 50 TPS com envio de 13 ms entregam o alvo (±1%) em 60 s;
+    - não vacuoso: o laço antigo (intervalo inteiro depois do envio) perde > 20% a 20 TPS;
+    - envio mais lento que o intervalo: sai o mais rápido possível, sem espera;
+    - 45 s parado não vira rajada (≤ 11 ticks no segundo seguinte, 1 realinhamento);
+    - reset() recomeça sem contar como atraso; stop encerra; rate <= 0 é recusado.
+  tests/unit/test_producers.py: linger_ms padrão 0; os testes de laço do producer (envio, parada,
+  follow-ups com atraso) continuam passando com o Pacer.
+  Unitários: 954 passed; make lint limpo.
