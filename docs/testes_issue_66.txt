@@ -1,0 +1,104 @@
+================================================================================
+CHECKLIST DE TESTES — Imagens base do Spark (3.5.8) e do Airflow (2.11.2) no gate do trivy (issue #66)
+================================================================================
+
+Decisões (com o usuário):
+  1. Gate: Airflow e Spark entram no trivy bloqueante para SO, pacotes Python e binários; os .jar
+     da distribuição do Spark ficam fora do gate (--skip-files '**/*.jar') e no relatório não
+     bloqueante. Os 3 CVEs do apache-airflow 2.x viram exceções com motivo e data.
+  2. Spark 4 + Airflow 3 (o que corrige os .jar e o Airflow) é a issue #69, não esta.
+
+Arquivos: docker/{spark,airflow,api}/Dockerfile, docker/producer/requirements-producer.txt,
+pyproject.toml, Makefile, dags/dag_batch_transformation.py, tests/e2e/{harness,test_e2e_pipeline}.py,
+.github/workflows/security.yml, security/exceptions.toml, tests/unit/{test_spark_container_compat,
+test_security_exceptions}.py, comentários "Python 3.8" em src/, docs.
+
+================================================================================
+1. VERSÕES
+================================================================================
+
+  Spark:   apache/spark:3.5.1 (Python 3.8, Ubuntu 20.04) → apache/spark:3.5.8 (Python 3.10,
+           Ubuntu 22.04, Java 11, mesmo Hadoop 3.3.4); pyspark 3.5.8 no host e no Airflow; conector
+           spark-sql-kafka-0-10_2.12:3.5.8; delta-spark removido da imagem (sem uso desde a #9).
+  Airflow: apache/airflow:2.9.1-python3.11 → apache/airflow:slim-2.11.2-python3.11 (só o core; as
+           DAGs usam BashOperator, PythonOperator e SparkSubmitOperator).
+  Jars:    aws-java-sdk-bundle 1.12.262 → 1.12.797 (último da v1); postgresql 42.7.3 → 42.7.13.
+  Python:  pydantic 2.7.1 → 2.12.5 em tudo (o 2.7.1 era preso pelo Python 3.8 do container);
+           psycopg2-binary 2.9.9 → 2.9.10; pyyaml declarado no dev (teste lê o workflow).
+
+  Airflow: `apache-airflow==2.11.2` na mesma instalação dos pacotes do projeto, para o pip não
+  trocar dependências do Airflow. Pegou um conflito real que a imagem antiga ignorava:
+  s3fs 2024.3.1 × fsspec 2026.2.0 da base (s3fs alinhado em 2026.2.0). A imagem antiga forçava
+  boto3/tenacity/pydantic/pandas por cima da base sem essa trava.
+
+================================================================================
+2. TRIVY (HIGH/CRITICAL com correção, trivy 0.74)
+================================================================================
+
+                               antes     base nova   + apt upgrade   + slim/pins   gate (sem .jar)
+  data-master-airflow         ~360        218            148             75 (*)          0
+  data-master-spark           ~240        275             94             84              0
+
+  (*) 72 .jar do pyspark (mesma distribuição do Spark) + 3 CVEs do apache-airflow 2.11.2:
+      CVE-2025-54550 (DAG de exemplo; examples desligados), CVE-2026-33264 (desserialização,
+      exige escrita no banco de metadados), CVE-2026-40961 (is_safe_url, UI só local) → exceções.
+  Spark: o salto 236 → 275 na base nova é o linux-libc-dev do Ubuntu 22.04 (~170); some com o
+  apt-get upgrade. O que fica são os .jar (hadoop-client-runtime 24, aws-java-sdk-bundle 12,
+  netty, jackson, libthrift, protobuf do mesos...): ~55 CVEs distintos, corrigidos só no Spark 4.
+  Airflow: apt-get upgrade falhou no msodbcsql18 (driver do SQL Server, pede aceite da EULA da
+  Microsoft) → apt-mark hold. setuptools/wheel do Python do sistema (/usr/local) também atualizados.
+
+  API e producers: ao reconstruir com pydantic 2.12.5, o trivy acusou 2 CVEs novos do OpenSSL no
+  Debian 13 da python:3.11-slim (CVE-2026-75804, CVE-2026-84782; correção 3.5.7-1~deb13u3), que
+  saíram depois da #58 e quebrariam também o scan semanal da main. Correção: apt-get upgrade no
+  build das duas imagens. Gate das quatro imagens: exit 0.
+
+  pip-audit sem nenhuma exceção (as duas do pyspark 3.5.1 saíram).
+  Comando do gate verificado local nas duas imagens: exit 0, 0 achados.
+
+================================================================================
+3. DEFEITOS ENCONTRADOS NA TROCA DA BASE DO SPARK
+================================================================================
+
+  a) spark-submit fora do PATH: o E2E caiu em "exec: spark-submit: executable file not found".
+     A base 3.5.8 não põe /opt/spark/bin no PATH, e a 3.5.1 também não: o spark-submit que
+     funcionava vinha do pyspark que o delta-spark instalava via pip em /usr/local/bin. Sem o
+     delta-spark, sumiu. Correção: ENV PATH="/opt/spark/bin:${PATH}" (agora roda o spark-submit
+     da distribuição).
+  b) HOME do usuário spark = /nonexistent na 3.5.8 (/home/spark na 3.5.1): o Ivy do --packages
+     tentava gravar em /nonexistent/.ivy2 e o stream não subia. Correção: usermod -d + ENV HOME.
+  Os dois viraram asserções em test_spark_container_compat.py (sentinela da imagem).
+
+  c) Harness do E2E (anterior à #66, apareceu agora por rodar em outro dia): o gerador grava um
+     CSV por dia numa janela que termina hoje, e o fixture não limpava data/e2e/. Arquivos de dias
+     fora da janela atual sobravam: 3.205 ids gerados para 3.000 esperados. Correção: o fixture
+     apaga transactions/customers/market_data/ground_truth antes de gerar.
+  d) (ambiente) uma execução falhou inteira com "The difference between the request time and the
+     server's time is too large": relógio da VM do Docker atrasado depois de suspender o Mac. Já
+     estava sincronizado na verificação seguinte; reexecutado.
+
+================================================================================
+4. VALIDAÇÃO
+================================================================================
+
+  Unitários: 941 passed, cobertura 89,22%; make lint limpo.
+  Compatibilidade do container: test_spark_container_compat.py com CONTAINER_PYTHON = (3, 10),
+  sentinela da imagem (FROM, PATH, HOME). Os testes que barravam dict[...]/X | Y/zip(strict=)/
+  removeprefix saíram (tudo isso vale no 3.10).
+
+  Stack local recriada com as imagens novas:
+    airflow-init: "Database migrating done!" (2.9.1 → 2.11.2); airflow version 2.11.2;
+    3 DAGs sem erro de import; webserver e scheduler healthy.
+    spark-master: spark-submit 3.5.8 em /opt/spark/bin; 2 workers vivos.
+  make e2e: 16 passed em 4 min 58 s (batch, stream e os seis cenários de falha) no Spark 3.5.8.
+  DAG batch_transformation_pipeline (airflow dags test, cluster Spark + Airflow 2.11.2 + jars
+  novos via Ivy): state=success em 6 min 42 s; todas as tasks SUCCESS (bronze_to_silver, gates,
+  silver_to_gold, load_gold_postgres, load_stream_postgres, record_pipeline_run, notify_completion).
+
+================================================================================
+5. PENDENTE / FORA DO ESCOPO
+================================================================================
+
+  - Spark 4 + Airflow 3: issue #69.
+  - Proteção da main: os dois checks novos (Image (trivy) — airflow / — spark) só podem virar
+    obrigatórios depois de rodarem uma vez no PR.

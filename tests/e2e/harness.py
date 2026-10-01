@@ -31,7 +31,7 @@ E2E_ENV = {
     "KAFKA_TOPIC_FRAUD_ALERTS": "e2e-fraud-alerts",
     "POSTGRES_DB": "fraud_e2e",
 }
-KAFKA_PACKAGE = "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1"
+KAFKA_PACKAGE = "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.8"
 STREAM_APP_NAME = "e2e-stream"
 STREAM_LOG = "/tmp/e2e_stream.log"
 DATA_DIR = ROOT / "data" / "e2e"

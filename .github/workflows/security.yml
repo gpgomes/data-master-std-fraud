@@ -4,9 +4,10 @@ name: Security
 # `security/exceptions.toml` com motivo e data de revisão (o job `exceptions` falha quando vence).
 #   - gitleaks: segredos em todo o histórico do git
 #   - pip-audit: CVEs nas dependências do pyproject.toml
-#   - trivy: CVEs HIGH/CRITICAL com correção nas imagens nossas (API e producers)
-# As imagens do Airflow e do Spark herdam centenas de CVEs das bases (apache/airflow 2.9.1,
-# apache/spark 3.5.1): entram só como relatório, fora do gate, até a atualização das bases.
+#   - trivy: CVEs HIGH/CRITICAL com correção nas quatro imagens (API, producers, Airflow, Spark)
+# Nas imagens do Airflow e do Spark o gate não olha os .jar (`--skip-files '**/*.jar'`): são as libs
+# Java da distribuição do Spark 3.5.8 / Hadoop 3.3.4 e do AWS SDK v1, que só a subida para o Spark 4
+# corrige (issue #69). Eles continuam no relatório não bloqueante (job base-images-report).
 # Semanal além de push/PR: CVE novo aparece sem mudança de código.
 
 on:
@@ -86,6 +87,12 @@ jobs:
             context: .
           - image: producer
             context: docker/producer
+          - image: airflow
+            context: docker/airflow
+            extra: --skip-files '**/*.jar'
+          - image: spark
+            context: docker/spark
+            extra: --skip-files '**/*.jar'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -99,9 +106,10 @@ jobs:
         run: >
           docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD":/repo -w /repo
           "$TRIVY_IMAGE" image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1
-          --ignorefile /repo/.trivyignore "scan/${{ matrix.image }}"
+          --ignorefile /repo/.trivyignore ${{ matrix.extra }} "scan/${{ matrix.image }}"
 
   base-images-report:
+    # Varredura completa, com os .jar, só para acompanhar a #69: não bloqueia.
     name: Report (trivy, fora do gate) — ${{ matrix.image }}
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest

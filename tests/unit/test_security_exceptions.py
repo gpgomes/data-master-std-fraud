@@ -39,9 +39,13 @@ class TestVersionedFile:
         structural = [p for p in found if "vencida" not in p and "a mais de" not in p]
         assert structural == []
 
-    def test_pyspark_is_the_only_dependency_exception(self):
-        """A decisão da #58: atualizar tudo e manter só o pyspark, preso à versão do cluster."""
-        assert {e["package"] for e in load()["pip_audit"]} == {"pyspark"}
+    def test_no_dependency_exception_is_left(self):
+        """As exceções do pyspark 3.5.1 (#58) saíram com o Spark 3.5.8 (#66)."""
+        assert load()["pip_audit"] == []
+
+    def test_image_exceptions_are_only_the_airflow_2_cves(self):
+        """O que sobrou no trivy é do próprio apache-airflow 2.x, corrigido só no 3.x (#69)."""
+        assert {e["package"] for e in load()["trivy"]} == {"apache-airflow"}
 
     def test_gitleaks_fingerprints_have_the_git_scan_format(self):
         for entry in load()["gitleaks"]:
@@ -128,6 +132,17 @@ class TestWorkflow:
     def test_trivy_blocks_on_our_images(self, text):
         assert "--exit-code 1" in text
         assert "--severity HIGH,CRITICAL" in text
+
+    def test_every_image_we_build_is_in_the_gate(self, text):
+        """As quatro imagens do docker/ entram no gate (#66); só os .jar do Airflow/Spark ficam de
+        fora, e só eles."""
+        import yaml
+
+        matrix = yaml.safe_load(text)["jobs"]["trivy"]["strategy"]["matrix"]["include"]
+        images = {m["image"] for m in matrix}
+        assert images == {p.name for p in (ROOT / "docker").iterdir() if (p / "Dockerfile").exists()}
+        skipped = {m["image"]: m.get("extra") for m in matrix if m.get("extra")}
+        assert skipped == {"airflow": "--skip-files '**/*.jar'", "spark": "--skip-files '**/*.jar'"}
 
     def test_no_blocking_step_is_allowed_to_fail(self, text):
         """`continue-on-error` só no relatório das imagens base (Airflow/Spark), nunca num gate."""

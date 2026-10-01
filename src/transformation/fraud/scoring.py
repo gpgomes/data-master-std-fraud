@@ -46,7 +46,7 @@ def noisy_or_np(
     """O mesmo score, em numpy: `matrix` é (n_eventos × n_sinais) na ordem de `SIGNALS`.
 
     O numpy é importado aqui dentro de propósito: este módulo é carregado pelo job de streaming,
-    que roda no container do Spark (Python 3.8, **sem numpy**). Só a calibração e o avaliador,
+    que roda no container do Spark (Python 3.10, **sem numpy**). Só a calibração e o avaliador,
     que rodam fora do container, chamam esta função.
     """
     import numpy as np

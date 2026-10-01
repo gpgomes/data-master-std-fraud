@@ -16,7 +16,7 @@ Roda em dois passos, porque o Spark do container não tem o gerador de clientes 
     docker compose exec -T -e PYTHONPATH=/opt/spark/work-dir spark-master \
         spark-submit --master 'local[2]' /opt/spark/work-dir/seed_stream_state.py seed --rows 1080000
 
-Compatível com Python 3.8 no passo `seed` (roda no container do Spark).
+Compatível com Python 3.10 no passo `seed` (roda no container do Spark).
 """
 
 from __future__ import annotations
