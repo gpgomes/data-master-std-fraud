@@ -8,7 +8,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # Dependências do sistema
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# apt-get upgrade: atualizações de segurança do SO que saíram depois da imagem base (issue #66;
+# ex.: OpenSSL do Debian 13 da python:3.11-slim).
+RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+    && apt-get install -y --no-install-recommends \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 

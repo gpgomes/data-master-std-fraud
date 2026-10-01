@@ -10,7 +10,7 @@ evento → processamento do micro-batch) chega por um dicionário compartilhado,
 preenchido pelo processor e consumido aqui pelo `batch_id`. As duas coisas rodam no mesmo
 processo (o driver).
 
-Compatível com Python 3.8: roda no container do Spark.
+Compatível com Python 3.10: roda no container do Spark.
 """
 
 from __future__ import annotations

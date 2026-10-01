@@ -22,7 +22,7 @@ do scoring e os devolve por `transaction_id` no fim. Nenhum detector recebe uma 
 eventos, com as colunas que os sinais de janela precisam. Vai para um caminho novo
 (`_stream_state/recent_events/`) porque o Parquet antigo, de 3 colunas, é incompatível.
 
-**Python 3.8:** este módulo e os do Fraud Engine rodam no container do Spark (Python 3.8, sem
+**Python 3.10:** este módulo e os do Fraud Engine rodam no container do Spark (Python 3.10, sem
 numpy); `tests/unit/test_spark_container_compat.py` vigia isso.
 
 Execução via CLI:

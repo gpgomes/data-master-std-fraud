@@ -11,6 +11,7 @@ Uso: `make e2e` (stack de pé; ~15–20 min). Ver `docs/runbook.md`, seção "Te
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 import threading
@@ -58,6 +59,10 @@ def batch(namespace):
     from src.ingestion.batch.customer_loader import CustomerLoader
     from src.ingestion.batch.transaction_loader import TransactionLoader
 
+    # O gerador grava um CSV por dia numa janela que termina hoje: sem limpar, os arquivos de uma
+    # execução em outro dia (fora da janela atual) sobram e entram na contagem e no Bronze.
+    for generated_dir in ("transactions", "customers", "market_data", "ground_truth"):
+        shutil.rmtree(h.DATA_DIR / generated_dir, ignore_errors=True)
     subprocess.run(
         [
             sys.executable,

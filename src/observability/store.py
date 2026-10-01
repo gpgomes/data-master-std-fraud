@@ -8,7 +8,7 @@ Roda em quatro processos diferentes, cada um com o seu host do Postgres: o drive
 container do Spark, `settings.postgres.internal_host`), o Airflow e a API em container
 (`POSTGRES_HOST=postgres`) e a API/CLI no host (`localhost`). Por isso o host é um parâmetro.
 
-Compatível com Python 3.8: é importado pelo stream, que roda no container do Spark.
+Compatível com Python 3.10: é importado pelo stream, que roda no container do Spark.
 """
 
 from __future__ import annotations

@@ -672,12 +672,13 @@ SELECT accessed_at, client_host, route, query FROM api_access_audit WHERE status
 | `Exceptions` | `scripts/security_exceptions.py check` | Exceção sem motivo, sem data de revisão, vencida ou com revisão a mais de 1 ano |
 | `Secrets (gitleaks)` | gitleaks, histórico inteiro | Qualquer segredo novo |
 | `Dependencies (pip-audit)` | pip-audit no ambiente do `pyproject.toml` | Qualquer CVE conhecida |
-| `Image (trivy) — api/producer` | trivy nas imagens nossas | CVE HIGH/CRITICAL com correção disponível (SO e pacotes) |
-| `Report (trivy, fora do gate)` | trivy nas imagens do Airflow e do Spark | Nada: relatório como artefato, fora de PRs |
+| `Image (trivy) — api/producer` | trivy nas imagens da API e dos producers | CVE HIGH/CRITICAL com correção disponível (SO e pacotes) |
+| `Image (trivy) — airflow/spark` | trivy nas imagens do Airflow e do Spark, sem os `.jar` (#66) | CVE HIGH/CRITICAL com correção no SO, nos pacotes Python e em binários |
+| `Report (trivy, fora do gate)` | trivy completo (com os `.jar`) nas imagens do Airflow e do Spark | Nada: relatório como artefato, fora de PRs |
 
-As exceções ficam em `security/exceptions.toml`, a fonte única (o script gera `.gitleaksignore`, `.trivyignore` e os `--ignore-vuln`). Hoje: o pyspark 3.5.1 (preso à versão do cluster; as duas CVEs exigem recursos que não usamos) e a Fernet key antiga no histórico do git (rotacionada; o repositório é público, reescrever o histórico não desfaz a exposição).
+As exceções ficam em `security/exceptions.toml`, a fonte única (o script gera `.gitleaksignore`, `.trivyignore` e os `--ignore-vuln`). Hoje: a Fernet key antiga no histórico do git (rotacionada; o repositório é público, reescrever o histórico não desfaz a exposição) e três CVEs do próprio `apache-airflow` 2.11.2, corrigidos só no 3.x (#69). As duas do pyspark 3.5.1 saíram com o Spark 3.5.8 (#66).
 
-**Airflow e Spark fora do gate:** as bases `apache/airflow:2.9.1` e `apache/spark:3.5.1` trazem centenas de CVEs HIGH/CRITICAL (a maioria de SO e de dependências Java/Python da própria base). Listar cada uma como exceção não teria valor; a correção é atualizar as bases (issue #66).
+**Airflow e Spark (issue #66):** as bases foram para `apache/spark:3.5.8` (Python 3.10, Ubuntu 22.04) e `apache/airflow:slim-2.11.2-python3.11` (variante slim: só o core, porque as DAGs só usam `BashOperator`, `PythonOperator` e o `SparkSubmitOperator`; a imagem completa trazia ~80 providers). O build roda `apt-get upgrade` (o `msodbcsql18`, driver do SQL Server que não usamos, fica preso porque atualizá-lo exige aceitar a EULA da Microsoft) e fixa versões corrigidas dos pacotes Python que a base traz. Resultado (HIGH/CRITICAL com correção): Airflow ~360 → 75, Spark ~240 → 84, com **zero** no SO e nos pacotes Python fora o próprio Airflow. O que sobra são as libs Java da distribuição do Spark 3.5.8 / Hadoop 3.3.4 e do AWS SDK v1 (já na última versão, 1.12.797), que só o Spark 4 corrige: por isso o gate dessas duas imagens usa `--skip-files '**/*.jar'`, e os `.jar` continuam visíveis no relatório não bloqueante. A migração para Spark 4 e Airflow 3 é a issue #69.
 
 Reproduzir localmente:
 
@@ -689,13 +690,21 @@ pip install pip-audit && pip-audit --skip-editable $(python -m scripts.security_
 docker compose build api producer-transactions && python -m scripts.security_exceptions trivyignore && \
   docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD":/repo -w /repo aquasec/trivy:0.74.0 \
   image --severity HIGH,CRITICAL --ignore-unfixed --ignorefile /repo/.trivyignore data-master-api:latest
+# Airflow e Spark: o mesmo comando com --skip-files '**/*.jar' e a imagem data-master-airflow:latest / data-master-spark:latest
 ```
 
 **Achado novo:** corrija (atualize o pacote) sempre que possível. Se não der, adicione a exceção com o motivo concreto (por que não se aplica ou o que impede a correção) e uma data de revisão de no máximo 1 ano.
 
-### Dependências (atualizadas na #58)
+### Dependências (atualizadas na #58 e na #66)
 
-requests 2.33.0, pyarrow 23.0.1, fastapi 0.135.1 (starlette 1.x; a última que aceita o pydantic 2.7.1 fixado pela compatibilidade com o Python 3.8 do container Spark), python-dotenv 1.2.2, click 8.3.3, pytest 9, black 26; `kafka-python` 2.3.2 no host e na imagem dos producers (antes: `kafka-python-ng` no host e `kafka-python` 2.0.2 na imagem). As imagens da API e dos producers removem `setuptools`/`wheel` depois do `pip install` (cópias vendorizadas com CVE, sem uso em runtime).
+pyspark 3.5.8 (a mesma versão do cluster) e pydantic 2.12.5 em todos os lugares desde a #66, com o container do Spark em Python 3.10 (antes 3.8, que prendia o pydantic em 2.7.1); psycopg2-binary 2.9.10; driver JDBC do Postgres 42.7.13 e `aws-java-sdk-bundle` 1.12.797 na imagem do Spark e nas DAGs. Da #58: requests 2.33.0, pyarrow 23.0.1, fastapi 0.135.1 (starlette 1.x), python-dotenv 1.2.2, click 8.3.3, pytest 9, black 26; `kafka-python` 2.3.2 no host e na imagem dos producers (antes: `kafka-python-ng` no host e `kafka-python` 2.0.2 na imagem). As imagens da API e dos producers removem `setuptools`/`wheel` depois do `pip install` (cópias vendorizadas com CVE, sem uso em runtime).
+
+### Spark 3.5.8: o que mudou na imagem (issue #66)
+
+- **`spark-submit` no PATH:** a base não o coloca no PATH. O que existia na imagem antiga vinha, sem ninguém saber, do pyspark que o `delta-spark` (sem uso desde a #9) instalava em `/usr/local/bin`; ao remover o `delta-spark` o comando sumiu. O Dockerfile agora põe `/opt/spark/bin` no PATH, e o `spark-submit` é o da distribuição.
+- **HOME do usuário `spark`:** na 3.5.8 é `/nonexistent` (na 3.5.1 era `/home/spark`). O Ivy do `--packages` (conector do Kafka) gravaria em `/nonexistent/.ivy2` e o job morria na partida. O Dockerfile corrige o HOME.
+- Os dois são vigiados por `tests/unit/test_spark_container_compat.py`, junto da versão do Python do container (`CONTAINER_PYTHON`).
+- **Airflow 2.9.1 → 2.11.2:** o `airflow-init` aplica a migração do banco de metadados (`airflow db migrate`) ao subir; nenhum passo manual.
 
 ### Proteção da branch `main`
 

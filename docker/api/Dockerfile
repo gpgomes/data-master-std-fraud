@@ -6,7 +6,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# apt-get upgrade: atualizações de segurança do SO que saíram depois da imagem base (issue #66;
+# ex.: OpenSSL do Debian 13 da python:3.11-slim).
+RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+    && apt-get install -y --no-install-recommends \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
@@ -18,10 +21,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip install --no-cache-dir \
     fastapi==0.135.1 \
     "uvicorn[standard]==0.29.0" \
-    pydantic==2.7.1 \
+    pydantic==2.12.5 \
     pydantic-settings==2.2.1 \
     sqlalchemy==2.0.29 \
-    psycopg2-binary==2.9.9 \
+    psycopg2-binary==2.9.10 \
     python-dotenv==1.2.2 \
     loguru==0.7.2 \
     && pip uninstall -y setuptools wheel
