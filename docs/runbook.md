@@ -643,13 +643,14 @@ Nenhum segredo real fica versionado. `make env` (`scripts/ensure_env.py`) cria o
 | Variável | Uso |
 |---|---|
 | `AIRFLOW__CORE__FERNET_KEY` | Cifra conexões/variáveis no banco do Airflow |
-| `AIRFLOW__WEBSERVER__SECRET_KEY` | Sessão da UI do Airflow |
+| `AIRFLOW__API__SECRET_KEY` | Sessão da UI/API do Airflow 3 (antes `AIRFLOW__WEBSERVER__SECRET_KEY`, #69) |
+| `AIRFLOW__API_AUTH__JWT_SECRET` | Assina os tokens com que as tasks falam com o api-server (execution API do Airflow 3, #69) |
 | `SUPERSET_SECRET_KEY` | Cifra a senha da conexão Postgres guardada no Superset |
 | `API_DEV_KEY` / `API_KEY_HASHES` | Chave da API para uso local e o hash SHA-256 dela (a API só conhece o hash) |
 
 É idempotente: um valor já preenchido nunca é trocado. O `docker-compose.yml` lê as três primeiras com `${VAR:?rode make env}`: sem elas, **qualquer** comando `docker compose` falha com essa mensagem em vez de subir com uma chave pública. O `.env` é gravado com permissão `600`.
 
-**Ambiente que já existia antes da #58:** rode `make env` e recrie `airflow-*` e `superset` (`docker compose up -d airflow-init airflow-webserver airflow-scheduler superset`). A conexão do Airflow com o Spark vem de `AIRFLOW_CONN_SPARK_DEFAULT` (variável de ambiente, não cifrada no banco), então a Fernet nova não quebra nada. No Superset a senha da conexão com o Postgres foi cifrada com a chave antiga: rode `make dashboards` de novo, que recadastra a conexão.
+**Ambiente que já existia antes da #58:** rode `make env` e recrie `airflow-*` e `superset` (`docker compose up -d airflow-init airflow-apiserver airflow-scheduler airflow-dag-processor superset`). A conexão do Airflow com o Spark vem de `AIRFLOW_CONN_SPARK_DEFAULT` (variável de ambiente, não cifrada no banco), então a Fernet nova não quebra nada. No Superset a senha da conexão com o Postgres foi cifrada com a chave antiga: rode `make dashboards` de novo, que recadastra a conexão.
 
 Continuam como valores fixos de dev, documentados e só válidos na máquina local: `minioadmin`, `datamaster123`, `admin/admin` (não são detectados como segredo e são as credenciais de serviços que não saem do `localhost`). Fora do ambiente local, tudo isso vem de um cofre (V2).
 
@@ -691,9 +692,9 @@ SELECT accessed_at, client_host, route, query FROM api_access_audit WHERE status
 | `Image (trivy) — airflow/spark` | trivy nas imagens do Airflow e do Spark, sem os `.jar` (#66) | CVE HIGH/CRITICAL com correção no SO, nos pacotes Python e em binários |
 | `Report (trivy, fora do gate)` | trivy completo (com os `.jar`) nas imagens do Airflow e do Spark | Nada: relatório como artefato, fora de PRs |
 
-As exceções ficam em `security/exceptions.toml`, a fonte única (o script gera `.gitleaksignore`, `.trivyignore` e os `--ignore-vuln`). Hoje: a Fernet key antiga no histórico do git (rotacionada; o repositório é público, reescrever o histórico não desfaz a exposição) e três CVEs do próprio `apache-airflow` 2.11.2, corrigidos só no 3.x (#69). As duas do pyspark 3.5.1 saíram com o Spark 3.5.8 (#66).
+As exceções ficam em `security/exceptions.toml`, a fonte única (o script gera `.gitleaksignore`, `.trivyignore` e os `--ignore-vuln`). Hoje: a Fernet key antiga no histórico do git (rotacionada; o repositório é público, reescrever o histórico não desfaz a exposição) As duas do pyspark 3.5.1 saíram com o Spark 3.5.8 (#66) e as três do `apache-airflow` 2.11.2 com o Airflow 3.3 (#69).
 
-**Airflow e Spark (issue #66):** as bases foram para `apache/spark:3.5.8` (Python 3.10, Ubuntu 22.04) e `apache/airflow:slim-2.11.2-python3.11` (variante slim: só o core, porque as DAGs só usam `BashOperator`, `PythonOperator` e o `SparkSubmitOperator`; a imagem completa trazia ~80 providers). O build roda `apt-get upgrade` (o `msodbcsql18`, driver do SQL Server que não usamos, fica preso porque atualizá-lo exige aceitar a EULA da Microsoft) e fixa versões corrigidas dos pacotes Python que a base traz. Resultado (HIGH/CRITICAL com correção): Airflow ~360 → 75, Spark ~240 → 84, com **zero** no SO e nos pacotes Python fora o próprio Airflow. O que sobra são as libs Java da distribuição do Spark 3.5.8 / Hadoop 3.3.4 e do AWS SDK v1 (já na última versão, 1.12.797), que só o Spark 4 corrige: por isso o gate dessas duas imagens usa `--skip-files '**/*.jar'`, e os `.jar` continuam visíveis no relatório não bloqueante. A migração para Spark 4 e Airflow 3 é a issue #69.
+**Airflow e Spark (issue #66):** as bases foram para `apache/spark:3.5.8` (Python 3.10, Ubuntu 22.04) e `apache/airflow:slim-2.11.2-python3.11`, depois `slim-3.3.2` na #69 (variante slim: só o core, porque as DAGs só usam `BashOperator`, `PythonOperator` e o `SparkSubmitOperator`; a imagem completa trazia ~80 providers). O build roda `apt-get upgrade` (o `msodbcsql18`, driver do SQL Server que não usamos, fica preso porque atualizá-lo exige aceitar a EULA da Microsoft) e fixa versões corrigidas dos pacotes Python que a base traz. Resultado (HIGH/CRITICAL com correção): Airflow ~360 → 75, Spark ~240 → 84, com **zero** no SO e nos pacotes Python fora o próprio Airflow. O que sobra são as libs Java da distribuição do Spark 3.5.8 / Hadoop 3.3.4 e do AWS SDK v1 (já na última versão, 1.12.797), que só o Spark 4 corrige: por isso o gate dessas duas imagens usa `--skip-files '**/*.jar'`, e os `.jar` continuam visíveis no relatório não bloqueante. A migração para Spark 4 e Airflow 3 é a issue #69.
 
 Reproduzir localmente:
 
@@ -720,6 +721,25 @@ pyspark 3.5.8 (a mesma versão do cluster) e pydantic 2.12.5 em todos os lugares
 - **HOME do usuário `spark`:** na 3.5.8 é `/nonexistent` (na 3.5.1 era `/home/spark`). O Ivy do `--packages` (conector do Kafka) gravaria em `/nonexistent/.ivy2` e o job morria na partida. O Dockerfile corrige o HOME.
 - Os dois são vigiados por `tests/unit/test_spark_container_compat.py`, junto da versão do Python do container (`CONTAINER_PYTHON`).
 - **Airflow 2.9.1 → 2.11.2:** o `airflow-init` aplica a migração do banco de metadados (`airflow db migrate`) ao subir; nenhum passo manual.
+
+### Airflow 3 (issue #69)
+
+`apache/airflow:slim-3.3.2-python3.11`, com quatro serviços no compose:
+
+| Serviço | Papel |
+|---|---|
+| `airflow-init` | `airflow db migrate` (com `set -e`: falha de migração derruba o init e nada sobe) |
+| `airflow-apiserver` | UI, API REST e execution API em http://localhost:8082 (substitui o `airflow-webserver` do 2.x) |
+| `airflow-scheduler` | Agenda e executa as tasks (LocalExecutor) |
+| `airflow-dag-processor` | Faz o parsing das DAGs (no 2.x era o scheduler) |
+
+- **As tasks não acessam mais o banco de metadados.** Falam com o api-server pela execution API (`AIRFLOW__CORE__EXECUTION_API_SERVER_URL`), com tokens assinados por `AIRFLOW__API_AUTH__JWT_SECRET`, que tem de ser o mesmo nos três serviços (o compose o lê do `.env`). Por isso o `record_pipeline_run` (#55) passou a ler o estado das outras tasks pelo Task SDK (`ti.get_task_states`) em vez de `dag_run.get_task_instances()`.
+- **Login:** SimpleAuthManager (padrão do Airflow 3), usuário `admin`, senha `AIRFLOW_ADMIN_PASSWORD` do `.env` (padrão `admin`). O api-server grava o arquivo de senhas ao subir. Pela API: `curl -X POST localhost:8082/auth/token -H 'Content-Type: application/json' -d '{"username":"admin","password":"admin"}'` e o `access_token` no header `Authorization: Bearer`.
+- **DAGs:** imports do 3.x (`airflow.sdk.DAG`, operadores em `airflow.providers.standard`). O provider do Spark é o 5.6.0, a última linha que aceita o pyspark 3.5.x; a 6.x exige o pyspark-client 4 e entra com a subida do Spark.
+- **Imagem:** extra `postgres` (o Airflow 3 também abre o banco em modo assíncrono, `asyncpg`); o pip do ambiente do usuário é removido no build (vendoriza msgpack/setuptools com CVE e não é usado em runtime).
+- **Agendamento:** com `catchup=False`, despausar uma DAG agendada cria a execução do último horário que passou (no 3.x o padrão é `CronTriggerTimetable`). Com `max_active_runs=1` ela só entra na fila.
+
+**Atualizar um ambiente 2.x:** `make env` (gera `AIRFLOW__API__SECRET_KEY` e `AIRFLOW__API_AUTH__JWT_SECRET`), `docker rm -f airflow-webserver` (o serviço não existe mais) e `docker compose up -d --build airflow-init airflow-apiserver airflow-scheduler airflow-dag-processor`. O `airflow-init` migra o banco para o schema do 3.x; voltar ao 2.x depois disso exige recriar o volume do `postgres-airflow`.
 
 ### Proteção da branch `main`
 

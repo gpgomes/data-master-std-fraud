@@ -291,7 +291,10 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── Airflow Init ──────────────────────────────────────────────────────────────
+  # ── Airflow 3 (issue #69) ─────────────────────────────────────────────────────
+  # O webserver do 2.x virou o api-server (UI + API REST + execution API) e o parsing das DAGs saiu
+  # do scheduler para o dag-processor. As tasks rodam no scheduler (LocalExecutor) e não acessam o
+  # banco de metadados: falam com o api-server pela execution API, autenticadas por JWT.
   airflow-init:
     build:
       context: ./docker/airflow
@@ -306,42 +309,53 @@ services:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-airflow:5432/airflow
       AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY:?rode make env}
-      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY:?rode make env}
+      AIRFLOW__API__SECRET_KEY: ${AIRFLOW__API__SECRET_KEY:?rode make env}
+      # Assina os tokens da execution API: api-server, scheduler e dag-processor precisam do mesmo valor
+      AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET:?rode make env}
+      # As tasks (LocalExecutor, dentro do scheduler) falam com o banco só pela execution API
+      AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       TZ: America/Sao_Paulo
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
+        set -e
         airflow db migrate
-        airflow users create \
-          --username admin \
-          --firstname Admin \
-          --lastname User \
-          --role Admin \
-          --email admin@datamaster.local \
-          --password admin 2>/dev/null || true
         echo "=== Airflow inicializado ==="
     networks:
       - data-master-network
     restart: on-failure
 
-  # ── Airflow Webserver ─────────────────────────────────────────────────────────
-  airflow-webserver:
+  # ── Airflow API server (UI em http://localhost:8082) ──────────────────────────
+  airflow-apiserver:
     image: data-master-airflow:latest
     pull_policy: never
-    container_name: airflow-webserver
+    container_name: airflow-apiserver
     restart: unless-stopped
     depends_on:
       airflow-init:
         condition: service_completed_successfully
-    command: webserver
+    # SimpleAuthManager (padrão do Airflow 3): usuário admin com a senha de dev do .env
+    # (AIRFLOW_ADMIN_PASSWORD, padrão "admin"), gravada no arquivo de senhas antes de subir.
+    command:
+      - bash
+      - -c
+      - |
+        printf '{"admin": "%s"}' "$${AIRFLOW_ADMIN_PASSWORD}" > /opt/airflow/simple_auth_manager_passwords.json
+        exec airflow api-server
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-airflow:5432/airflow
       AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY:?rode make env}
-      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY:?rode make env}
+      AIRFLOW__API__SECRET_KEY: ${AIRFLOW__API__SECRET_KEY:?rode make env}
+      # Assina os tokens da execution API: api-server, scheduler e dag-processor precisam do mesmo valor
+      AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET:?rode make env}
+      # As tasks (LocalExecutor, dentro do scheduler) falam com o banco só pela execution API
+      AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
-      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: admin:admin
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: /opt/airflow/simple_auth_manager_passwords.json
+      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-admin}
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
@@ -362,7 +376,7 @@ services:
     networks:
       - data-master-network
     healthcheck:
-      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -382,7 +396,11 @@ services:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-airflow:5432/airflow
       AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY:?rode make env}
-      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY:?rode make env}
+      AIRFLOW__API__SECRET_KEY: ${AIRFLOW__API__SECRET_KEY:?rode make env}
+      # Assina os tokens da execution API: api-server, scheduler e dag-processor precisam do mesmo valor
+      AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET:?rode make env}
+      # As tasks (LocalExecutor, dentro do scheduler) falam com o banco só pela execution API
+      AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: minioadmin
@@ -403,6 +421,50 @@ services:
       - data-master-network
     healthcheck:
       test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname \"$$(hostname)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ── Airflow DAG processor (parsing das DAGs, separado do scheduler no 3.x) ────
+  airflow-dag-processor:
+    image: data-master-airflow:latest
+    pull_policy: never
+    container_name: airflow-dag-processor
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    command: dag-processor
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-airflow:5432/airflow
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY:?rode make env}
+      AIRFLOW__API__SECRET_KEY: ${AIRFLOW__API__SECRET_KEY:?rode make env}
+      # Assina os tokens da execution API: api-server, scheduler e dag-processor precisam do mesmo valor
+      AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET:?rode make env}
+      # As tasks (LocalExecutor, dentro do scheduler) falam com o banco só pela execution API
+      AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      POSTGRES_HOST: postgres
+      POSTGRES_USER: datamaster
+      POSTGRES_PASSWORD: datamaster123
+      POSTGRES_DB: fraud_analytics
+      # Conexão usada pelo SparkSubmitOperator (dag_batch_transformation.py)
+      AIRFLOW_CONN_SPARK_DEFAULT: '{"conn_type":"spark","host":"spark://spark-master","port":7077,"extra":{"deploy-mode":"client"}}'
+      TZ: America/Sao_Paulo
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./src:/opt/airflow/src
+      - ./scripts:/opt/airflow/scripts
+      - ./data:/opt/airflow/data
+    networks:
+      - data-master-network
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type DagProcessorJob --hostname \"$$(hostname)\""]
       interval: 30s
       timeout: 10s
       retries: 5

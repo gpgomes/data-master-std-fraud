@@ -18,21 +18,27 @@ from src.observability.store import MetricsStore
 FAILED_STATES = frozenset({"failed", "upstream_failed"})
 
 
-def pipeline_run_row(dag_run: Any, own_task_id: str, now: datetime | None = None) -> dict:
-    """Linha de `pipeline_runs` a partir de um `DagRun` do Airflow. Função pura (sem banco)."""
+def pipeline_run_row(
+    dag_id: str,
+    run_id: str,
+    start_date: datetime | None,
+    task_states: dict[str, Any],
+    own_task_id: str,
+    now: datetime | None = None,
+) -> dict:
+    """Linha de `pipeline_runs` a partir do estado das tasks da execução. Função pura (sem banco)."""
     end = now or datetime.now(tz=UTC)
     failed = sorted(
-        ti.task_id
-        for ti in dag_run.get_task_instances()
-        if ti.task_id != own_task_id and str(ti.state) in FAILED_STATES
+        task_id
+        for task_id, state in task_states.items()
+        if task_id != own_task_id and str(state) in FAILED_STATES
     )
-    start = dag_run.start_date
-    duration = (end - start).total_seconds() if start is not None else None
+    duration = (end - start_date).total_seconds() if start_date is not None else None
     return {
-        "dag_id": dag_run.dag_id,
-        "run_id": dag_run.run_id,
+        "dag_id": dag_id,
+        "run_id": run_id,
         "state": "failed" if failed else "success",
-        "start_date": start.replace(tzinfo=None) if start is not None else None,
+        "start_date": start_date.replace(tzinfo=None) if start_date is not None else None,
         "end_date": end.replace(tzinfo=None),
         "duration_seconds": duration,
         "failed_tasks": ",".join(failed) or None,
@@ -40,7 +46,20 @@ def pipeline_run_row(dag_run: Any, own_task_id: str, now: datetime | None = None
 
 
 def record_pipeline_run(store: MetricsStore | None = None, **context: Any) -> dict:
-    """Callable da task `record_pipeline_run` das DAGs."""
-    row = pipeline_run_row(context["dag_run"], context["task_instance"].task_id)
+    """Callable da task `record_pipeline_run` das DAGs.
+
+    No Airflow 3 a task não acessa o banco de metadados (o `dag_run.get_task_instances()` do 2.x
+    não existe mais): o estado das outras tasks vem do Task SDK, que pergunta à execution API do
+    api-server (issue #69). A resposta é `{run_id: {task_id: estado}}`.
+    """
+    dag_run, ti = context["dag_run"], context["ti"]
+    states = ti.get_task_states(dag_id=dag_run.dag_id, run_ids=[dag_run.run_id])
+    row = pipeline_run_row(
+        dag_id=dag_run.dag_id,
+        run_id=dag_run.run_id,
+        start_date=dag_run.start_date,
+        task_states=states.get(dag_run.run_id, {}),
+        own_task_id=ti.task_id,
+    )
     (store or MetricsStore()).record_pipeline_run(row)
     return row

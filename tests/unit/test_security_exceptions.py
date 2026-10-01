@@ -43,9 +43,9 @@ class TestVersionedFile:
         """As exceções do pyspark 3.5.1 (#58) saíram com o Spark 3.5.8 (#66)."""
         assert load()["pip_audit"] == []
 
-    def test_image_exceptions_are_only_the_airflow_2_cves(self):
-        """O que sobrou no trivy é do próprio apache-airflow 2.x, corrigido só no 3.x (#69)."""
-        assert {e["package"] for e in load()["trivy"]} == {"apache-airflow"}
+    def test_no_image_exception_is_left(self):
+        """As três do apache-airflow 2.x saíram com o Airflow 3.3 (#69)."""
+        assert load()["trivy"] == []
 
     def test_gitleaks_fingerprints_have_the_git_scan_format(self):
         for entry in load()["gitleaks"]:

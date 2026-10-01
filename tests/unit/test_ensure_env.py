@@ -18,7 +18,8 @@ COMPOSE = ROOT / "docker-compose.yml"
 # Variáveis que o docker-compose.yml exige do .env (`${VAR:?...}`) em vez de fixar um valor.
 COMPOSE_SECRETS = (
     "AIRFLOW__CORE__FERNET_KEY",
-    "AIRFLOW__WEBSERVER__SECRET_KEY",
+    "AIRFLOW__API__SECRET_KEY",
+    "AIRFLOW__API_AUTH__JWT_SECRET",
     "SUPERSET_SECRET_KEY",
 )
 

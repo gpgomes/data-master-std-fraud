@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.common.config import settings
-from src.observability.pipeline import pipeline_run_row
+from src.observability.pipeline import pipeline_run_row, record_pipeline_run
 from src.observability.store import (
     API_COLUMNS,
     SCHEMA_PATH,
@@ -252,13 +252,14 @@ class TestStreamMetricsListener:
 # ── Execuções de DAG ──────────────────────────────────────────────────────────────
 
 
-def _dag_run(states: dict[str, str], start: datetime | None):
-    tis = [SimpleNamespace(task_id=t, state=s) for t, s in states.items()]
-    return SimpleNamespace(
+def _row(states: dict[str, str], start: datetime | None, own: str = "record_pipeline_run", now=None):
+    return pipeline_run_row(
         dag_id="batch_transformation_pipeline",
         run_id="manual__1",
         start_date=start,
-        get_task_instances=lambda: tis,
+        task_states=states,
+        own_task_id=own,
+        now=now,
     )
 
 
@@ -266,26 +267,57 @@ class TestPipelineRunRow:
     START = datetime(2026, 9, 27, 7, 0, tzinfo=UTC)
 
     def test_success_when_no_task_failed(self):
-        run = _dag_run(
-            {"a": "success", "b": "success", "record_pipeline_run": "running"}, self.START
+        row = _row(
+            {"a": "success", "b": "success", "record_pipeline_run": "running"},
+            self.START,
+            now=self.START + timedelta(minutes=12),
         )
-        row = pipeline_run_row(run, "record_pipeline_run", now=self.START + timedelta(minutes=12))
         assert row["state"] == "success"
         assert row["duration_seconds"] == 720
         assert row["failed_tasks"] is None
         assert row["start_date"].tzinfo is None
 
     def test_failed_and_upstream_failed_tasks_mark_the_run_as_failed(self):
-        run = _dag_run(
-            {"a": "success", "validate_gold_data": "failed", "load": "upstream_failed"}, self.START
+        row = _row(
+            {"a": "success", "validate_gold_data": "failed", "load": "upstream_failed"},
+            self.START,
+            now=self.START,
         )
-        row = pipeline_run_row(run, "record_pipeline_run", now=self.START)
         assert row["state"] == "failed"
         assert row["failed_tasks"] == "load,validate_gold_data"
 
     def test_run_without_start_date(self):
-        row = pipeline_run_row(_dag_run({}, None), "x", now=self.START)
+        row = _row({}, None, own="x", now=self.START)
         assert row["duration_seconds"] is None
+
+
+class TestRecordPipelineRun:
+    """O callable da task lê os estados pelo Task SDK do Airflow 3 (#69), não pelo banco."""
+
+    def test_reads_the_states_of_its_own_run_through_the_task_sdk(self):
+        calls = []
+
+        def get_task_states(**kwargs):
+            calls.append(kwargs)
+            return {
+                "manual__1": {"bronze_to_silver": "failed", "record_pipeline_run": "running"},
+                "outro_run": {"bronze_to_silver": "success"},
+            }
+
+        context = {
+            "dag_run": SimpleNamespace(
+                dag_id="batch_transformation_pipeline",
+                run_id="manual__1",
+                start_date=datetime(2026, 9, 27, 7, 0, tzinfo=UTC),
+            ),
+            "ti": SimpleNamespace(task_id="record_pipeline_run", get_task_states=get_task_states),
+        }
+        store = MagicMock()
+        row = record_pipeline_run(store=store, **context)
+
+        assert calls == [{"dag_id": "batch_transformation_pipeline", "run_ids": ["manual__1"]}]
+        assert row["state"] == "failed" and row["failed_tasks"] == "bronze_to_silver"
+        store.record_pipeline_run.assert_called_once_with(row)
 
 
 class TestDagWiring:
