@@ -16,6 +16,7 @@ from loguru import logger
 
 from src.common.config import settings
 from src.common.schemas import MarketTradeEvent
+from src.ingestion.streaming.pacing import Pacer
 from src.ingestion.streaming.producer_config import ProducerConfig
 
 # ── Configuração ───────────────────────────────────────────────────────────────
@@ -153,16 +154,17 @@ def run(stop_event: Event | None = None) -> None:
     producer = KafkaProducer(**config.to_kafka_python_dict())
     simulator = TickSimulator()
     symbols = list(_BASE_PRICES.keys())
-    interval = 1.0 / RATE
+    pacer = Pacer(RATE)  # ritmo pelo relógio, sem somar o tempo do envio (#72)
 
     logger.info(f"Market producer iniciado | tópico={TOPIC} | rate={RATE} tps")
 
     try:
-        while not stop_event.is_set():
+        while pacer.wait(stop_event):
             if not _is_pregao():
                 if _metrics["sent"] % 100 == 0:
                     logger.debug("Fora do horário de pregão, aguardando...")
                 stop_event.wait(timeout=60.0)
+                pacer.reset()  # a pausa é planejada: recomeça o ritmo sem contar como atraso
                 continue
 
             symbol = random.choice(symbols)
@@ -191,8 +193,6 @@ def run(stop_event: Event | None = None) -> None:
             except KafkaError as exc:
                 _metrics["errors"] += 1
                 logger.error(f"Erro ao enviar tick: {exc}")
-
-            stop_event.wait(timeout=interval)
 
     finally:
         producer.flush()

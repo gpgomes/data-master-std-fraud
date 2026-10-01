@@ -154,7 +154,7 @@ Settings are grouped: `KafkaSettings`, `MinIOSettings`, `PostgresSettings`, `Spa
 | `enriched-transactions` | Transactions with the V2 fraud score/signals and the V1 Z-Score shadow (output) |
 | `fraud-alerts` | Fraud alerts from the V2 detector, with `signals` and `detector_version` (output) |
 
-Producers (`src/ingestion/streaming/producer_config.py`) are idempotent (`enable_idempotence=True`, `acks="all"`, 1 request in flight, issue #68): a retry of an already-written batch is dropped by the broker. It only holds within a producer session, so the stream and the Postgres loader still dedup by `transaction_id`.
+Producers (`src/ingestion/streaming/producer_config.py`) are idempotent (`enable_idempotence=True`, `acks="all"`, 1 request in flight, issue #68): a retry of an already-written batch is dropped by the broker. It only holds within a producer session, so the stream and the Postgres loader still dedup by `transaction_id`. They send synchronously (`future.get()` per message) with `linger_ms=0`, paced by `src/ingestion/streaming/pacing.py` (`Pacer`: tick n at start + n/RATE, resyncs after a >1 s stall instead of bursting; issue #72).
 
 ### Local Service URLs
 

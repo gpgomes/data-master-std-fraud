@@ -147,6 +147,12 @@ docker compose exec -T kafka kafka-run-class kafka.tools.GetOffsetShell \
 - **O producer de mercado só publica durante o pregão**: das 13h às 20h UTC (10h às 17h em Brasília), sem checar o dia da semana. Fora desse horário ele fica de pé, sem reiniciar, e `raw-market-data` não cresce (o log diz "Fora do horário de pregão" em nível DEBUG). Isso é o comportamento esperado, não uma falha.
 - **`AssertionError: Libraries for lz4 compression codec not found`** e o container reiniciando em loop: a imagem não tem a lib do codec de compressão do `ProducerConfig` (`lz4`). Era o estado até a issue #48. Se voltar a acontecer, confira se `lz4` está em `docker/producer/requirements-producer.txt` e reconstrua com `--build`; o teste `tests/unit/test_producer_image_requirements.py` existe para impedir que isso chegue ao `main`.
 
+### Ritmo dos producers (issue #72)
+
+Os dois producers usam o `Pacer` (`src/ingestion/streaming/pacing.py`): o tick n sai em `início + n × (1/RATE)` pelo relógio monotônico, e o tempo do envio síncrono não se soma mais ao intervalo. Medido com o producer real: 20,00 TPS para 20 e 50,00 para 50 (antes ~15 para 20). Um atraso maior que 1 s (Kafka fora, producer de mercado parado fora do pregão) realinha o relógio em vez de emitir os ticks perdidos em rajada.
+
+`linger_ms` padrão do `ProducerConfig` é 0 desde a #72: com envio síncrono não há lote a encher, e os 10 ms de antes eram só espera (envio de ~13 ms para ~3 ms por mensagem). Envio assíncrono em lote usa o `HIGH_THROUGHPUT_CONFIG` (`linger_ms=50`).
+
 ### Producer idempotente (issue #68)
 
 O `ProducerConfig` liga `enable_idempotence=True` em todos os perfis: o broker atribui um id ao producer e descarta o retry de um lote que já gravou (o caso do ack que se perde na rede). Para isso o kafka-python exige `acks="all"`, `retries > 0` e `max_in_flight_requests_per_connection=1`; o `ProducerConfig` recusa outra combinação já na criação (`ValueError`), e um teste monta um `KafkaProducer` de verdade com cada perfil.
@@ -561,9 +567,10 @@ make spark-submit-stream-postgres
 .venv/bin/python -m scripts.stream_load_test --latency-from data/load_test/results.json
 ```
 
-- **Uma instância do producer entrega no máximo ~50 TPS** (envio síncrono: cada mensagem espera o ack) e ~65%
-  do pedido até 25 TPS; o harness reporta o produzido medido no Kafka, não o alvo. Com 12 instâncias no host,
-  ~205 TPS é o teto do gerador nesta máquina.
+- **Uma instância do producer entrega o TPS pedido** desde a #72 (20,02 para 20 e 50,05 para 50, uma instância
+  cada). Antes o laço esperava o intervalo inteiro depois de cada envio síncrono e entregava ~65 a 80% do alvo;
+  os números da #56 abaixo foram medidos assim (o harness reporta o produzido medido no Kafka, não o alvo).
+  O teto de uma instância é o envio síncrono: ~3 ms por mensagem com `linger_ms=0`, centenas de TPS.
 - **Meça em regime.** Cada nível dura minutos, mas o estado curto em produção guarda horas. Para medir o custo
   real do estado, pré-carregue-o antes de subir o stream (`scripts/seed_stream_state.py`, docstring com os
   comandos; zere também `silver/transactions_stream/` e `checkpoints/`).
@@ -716,7 +723,7 @@ pyspark 3.5.8 (a mesma versão do cluster) e pydantic 2.12.5 em todos os lugares
 
 ### Proteção da branch `main`
 
-Merge só por PR com os checks obrigatórios verdes: `Lint (ruff + mypy)`, `Unit tests`, `Exceptions (motivo + revisão em dia)`, `Secrets (gitleaks)`, `Dependencies (pip-audit)`, `Image (trivy) — api` e `Image (trivy) — producer`. Configuração atual: `gh api repos/gpgomes/data-master-std-fraud/branches/main/protection`.
+Merge só por PR com os checks obrigatórios verdes: `Lint (ruff + mypy)`, `Unit tests`, `Exceptions (motivo + revisão em dia)`, `Secrets (gitleaks)`, `Dependencies (pip-audit)`, `Image (trivy) — api`, `Image (trivy) — producer`, `Image (trivy) — airflow` e `Image (trivy) — spark` (os dois últimos desde a #66). Vale também para administrador, e a branch do PR precisa estar atualizada com a `main`. Configuração atual: `gh api repos/gpgomes/data-master-std-fraud/branches/main/protection`.
 
 ## Troubleshooting
 

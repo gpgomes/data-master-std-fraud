@@ -32,7 +32,11 @@ class ProducerConfig:
 
     # Throughput — mensagens são agrupadas antes de enviar
     batch_size: int = 16_384   # 16 KB
-    linger_ms: int = 10        # aguarda até 10 ms para encher o batch
+    # Sem espera para encher o lote (#72): os producers enviam de forma síncrona (`future.get()` a
+    # cada mensagem), então nunca há um segundo envio esperando e os 10 ms de antes eram só
+    # latência. Medido: envio de ~13 ms para ~3 ms. Envio assíncrono em lote usa o
+    # HIGH_THROUGHPUT_CONFIG (linger_ms=50).
+    linger_ms: int = 0
     buffer_memory: int = 33_554_432  # 32 MB de buffer total
 
     # Compressão (reduz banda, aumenta CPU)
