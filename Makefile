@@ -2,7 +2,7 @@
         spark-submit-batch spark-submit-stream spark-submit-silver-gold spark-submit-gold-postgres \
         spark-submit-stream-postgres \
         seed-data producer-transactions producer-market api catalog dashboards dashboards-export \
-        fraud-eval fraud-calibrate fraud-online-eval slo-report load-test e2e \
+        fraud-eval fraud-calibrate fraud-online-eval slo-report load-test producer-bench e2e \
         clean clean-data logs ps help
 
 # ── Variáveis ──────────────────────────────────────────────────────────────────
@@ -147,6 +147,9 @@ slo-report: ## Relatório de SLOs da plataforma nas últimas 24 h (stream, pipel
 	$(COMPOSE) exec -T postgres psql -U $(POSTGRES_USER) -d $(POSTGRES_DB) -v ON_ERROR_STOP=1 < src/serving/queries/slo_report.sql
 
 LOAD_LEVELS ?= 25,50,100,200
+producer-bench: ## Custo do producer idempotente (issue #68): ligado × desligado, síncrono × assíncrono, num tópico temporário do Kafka local
+	$(PYTHON) -u -m scripts.producer_idempotence_benchmark
+
 load-test: ## Teste de carga do stream (issue #56): sobe producers no host por nível de TPS e mede via stream_batch_metrics; requer o stream rodando sozinho
 	$(PYTHON) -u -m scripts.stream_load_test --levels $(LOAD_LEVELS) --per-instance-tps 25 --duration-s 240 --warmup-s 60 --output data/load_test/results.json
 

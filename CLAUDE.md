@@ -65,6 +65,7 @@ make api                       # Start FastAPI dev server at :8000; every route 
 make catalog                   # Generate docs/data_catalog.md + docs/images/data_lineage.svg, validate datasets against live infra
 make fraud-eval                # Evaluate the fraud detectors (V1 Z-Score vs V2 multi-signal; Precision/Recall/FPR, local Spark, no Docker) and generate docs/fraud_evaluation.md
 make fraud-calibrate           # Recalibrate the V2 weights/threshold on the validation seed and write src/transformation/fraud/weights.py
+make producer-bench            # Idempotent producer cost (scripts/producer_idempotence_benchmark.py): on vs off, sync vs async, temporary topic on local Kafka (issue #68)
 make load-test                 # Stream load test (scripts/stream_load_test.py): producers per TPS level, measured via stream_batch_metrics; stream must run alone (~30 min)
 make slo-report                # Platform SLOs over the last 24 h (src/serving/queries/slo_report.sql over the observability tables): OK / VIOLATED / NO DATA
 make fraud-online-eval         # Online V1 vs V2 benchmark: SQL (src/serving/queries/fraud_online_benchmark.sql) over stream_scored_transactions; needs the stream run + make spark-submit-stream-postgres
@@ -152,6 +153,8 @@ Settings are grouped: `KafkaSettings`, `MinIOSettings`, `PostgresSettings`, `Spa
 | `raw-market-data` | Market quotes (input) |
 | `enriched-transactions` | Transactions with the V2 fraud score/signals and the V1 Z-Score shadow (output) |
 | `fraud-alerts` | Fraud alerts from the V2 detector, with `signals` and `detector_version` (output) |
+
+Producers (`src/ingestion/streaming/producer_config.py`) are idempotent (`enable_idempotence=True`, `acks="all"`, 1 request in flight, issue #68): a retry of an already-written batch is dropped by the broker. It only holds within a producer session, so the stream and the Postgres loader still dedup by `transaction_id`.
 
 ### Local Service URLs
 
