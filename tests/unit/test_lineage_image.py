@@ -79,7 +79,8 @@ class TestRenderLineageSvg:
         svg = render_lineage_svg(CATALOG)
         used = {u for e in CATALOG for u in e.upstream}
         isolated = [e.key for e in CATALOG if not e.upstream and e.key not in used]
-        assert isolated == ["kafka_raw_market_data"]
+        # a auditoria de acesso (issue #58) não alimenta nenhum dataset: é consultada só em investigação
+        assert isolated == ["serving_api_access_audit", "kafka_raw_market_data"]
         assert svg.count("sem consumidor no catálogo") == len(isolated)
 
 

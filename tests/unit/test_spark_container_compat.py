@@ -32,6 +32,7 @@ CONTAINER_MODULES = [
     "src/observability/__init__.py",
     "src/observability/store.py",
     "src/common/config.py",
+    "src/serving/loaders/gold_to_postgres.py",
     "src/transformation/batch/silver_to_gold.py",
 ]
 HEAVY_PACKAGES = {"numpy", "pandas", "scipy", "sklearn", "matplotlib"}

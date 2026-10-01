@@ -256,3 +256,7 @@ nul
 
 # Material de apoio local
 help/
+
+# Gerados de security/exceptions.toml (scripts/security_exceptions.py, issue #58)
+.gitleaksignore
+.trivyignore

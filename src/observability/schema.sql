@@ -76,6 +76,21 @@ ALTER TABLE stream_batch_metrics ADD COLUMN IF NOT EXISTS parquet_ms BIGINT;
 ALTER TABLE stream_batch_metrics ADD COLUMN IF NOT EXISTS kafka_ms BIGINT;
 ALTER TABLE stream_batch_metrics ADD COLUMN IF NOT EXISTS state_write_ms BIGINT;
 
+-- Log de auditoria de acesso à API (issue #58): quem (id da chave, nunca a chave), o quê (rota e
+-- parâmetros) e o resultado, inclusive os 401. Append-only; os health checks ficam de fora.
+CREATE TABLE IF NOT EXISTS api_access_audit (
+    id           BIGSERIAL PRIMARY KEY,
+    accessed_at  TIMESTAMP DEFAULT (now() AT TIME ZONE 'UTC'),
+    api_key_id   VARCHAR,
+    method       VARCHAR,
+    route        VARCHAR,
+    query        VARCHAR,
+    status_code  INTEGER,
+    client_host  VARCHAR
+);
+
+CREATE INDEX IF NOT EXISTS ix_api_access_audit_at ON api_access_audit (accessed_at);
+
 CREATE INDEX IF NOT EXISTS ix_stream_batch_metrics_ts ON stream_batch_metrics (batch_timestamp);
 CREATE INDEX IF NOT EXISTS ix_quality_gate_runs_run_at ON quality_gate_runs (run_at);
 CREATE INDEX IF NOT EXISTS ix_pipeline_runs_start ON pipeline_runs (start_date);

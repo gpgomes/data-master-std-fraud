@@ -70,6 +70,14 @@ class APISettings(BaseSettings):
     reload: bool = Field(default=True, alias="API_RELOAD")
     workers: int = Field(default=1, alias="API_WORKERS")
     secret_key: str = Field(default="change-me-in-production", alias="API_SECRET_KEY")
+    # Autenticação por API key (issue #58): hashes SHA-256 (hex) das chaves aceitas, separados por
+    # vírgula. A chave em si nunca fica em configuração. Vazio = nenhuma chave aceita (a API recusa
+    # tudo que não é health check): o padrão seguro. Gerar: `python -m src.serving.api.security <chave>`.
+    api_key_hashes: str = Field(default="", alias="API_KEY_HASHES")
+
+    @property
+    def key_hash_list(self) -> list[str]:
+        return [h.strip().lower() for h in self.api_key_hashes.split(",") if h.strip()]
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

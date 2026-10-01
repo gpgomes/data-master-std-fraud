@@ -1,4 +1,4 @@
-.PHONY: up down setup test test-unit test-integration test-cov lint format install \
+.PHONY: env up down setup test test-unit test-integration test-cov lint format install \
         spark-submit-batch spark-submit-stream spark-submit-silver-gold spark-submit-gold-postgres \
         spark-submit-stream-postgres \
         seed-data producer-transactions producer-market api catalog dashboards dashboards-export \
@@ -19,6 +19,9 @@ POSTGRES_USER    ?= datamaster
 POSTGRES_DB      ?= fraud_analytics
 
 # ── Infra ──────────────────────────────────────────────────────────────────────
+env: ## Cria/completa o .env e gera os segredos locais (Airflow, Superset, chave da API); idempotente
+	$(PYTHON) -m scripts.ensure_env
+
 up: ## Subir toda a infraestrutura local
 	$(COMPOSE) up -d
 	@echo "Infraestrutura online. Execute 'make setup' para inicializar."

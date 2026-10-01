@@ -1,0 +1,131 @@
+================================================================================
+CHECKLIST DE TESTES — Segurança: API key, PII, auditoria, segredos e scans no CI (issue #58)
+================================================================================
+
+Decisões (com o usuário):
+  1. API: chave no header `X-API-Key`, com só os hashes SHA-256 em `API_KEY_HASHES`.
+  2. PII: teste do catálogo contra os modelos da API, mascaramento do nome em `dim_customers` no
+     Postgres, e log de auditoria de acesso.
+  3. CI: gitleaks, pip-audit e trivy, e proteção da branch `main`.
+  4. Segredos: fora do repositório, gerados no setup (`make env`).
+  5. Dependências: atualizar tudo, mantendo só as exceções justificadas (pyspark 3.5.1 = cluster).
+  6. Tudo bloqueia, com lista de exceções versionada (motivo + data de revisão).
+  7. Airflow/Spark: fora do gate do trivy (relatório) + issue para atualizar as bases.
+
+Arquivos: src/serving/api/{security,main}.py, src/common/config.py, src/observability/{store.py,
+schema.sql}, src/serving/loaders/gold_to_postgres.py, src/governance/data_catalog/{registry,render}.py,
+scripts/{ensure_env,security_exceptions}.py, security/exceptions.toml, .github/workflows/{security,
+e2e}.yml, docker-compose.yml, docker/{api,producer,airflow}/..., pyproject.toml, .env.example,
+Makefile (env), testes novos (test_api_security, test_pii_enforcement, test_ensure_env,
+test_security_exceptions, test_api_image), docs.
+
+================================================================================
+1. API: AUTENTICAÇÃO E AUDITORIA (uvicorn local contra o Postgres real)
+================================================================================
+
+  API_KEY_HASHES=<hash> uvicorn src.serving.api.main:app --port 8765
+
+  /health/live sem chave ........................ 200
+  /alerts sem chave ............................. 401
+  /alerts com chave errada ...................... 401
+  /alerts com a chave ........................... 200
+  /kpis/fraud-daily com a chave ................. 200 (dados reais)
+  OpenAPI: securitySchemes.APIKeyHeader (apiKey, header X-API-Key)
+
+  api_access_audit (Postgres):
+    api_key_id = d40aa347 (8 primeiros do hash; a chave não aparece), rota template, query
+    `limit=1`, 401 registrados com api_key_id vazio, horário em UTC, health não auditado.
+
+  Observação: /docs e /openapi.json continuam abertos (documentação, sem dado).
+
+================================================================================
+2. DEFEITO ENCONTRADO: CONTAINER DA API QUEBRADO DESDE A #55
+================================================================================
+
+  docker/api/Dockerfile e o serviço `api` do compose copiavam/montavam só src/common e
+  src/serving/api; o main.py importa src.observability desde a #55:
+    ModuleNotFoundError: No module named 'src.observability'
+  Corrigido (COPY + volume) e coberto por tests/unit/test_api_image.py, que segue os imports do
+  main.py (falha com o Dockerfile antigo: "não copia: ['src.observability.store']").
+  O container também não recebia API_KEY_HASHES: passou a receber do .env.
+
+================================================================================
+3. SEGREDOS (`make env`)
+================================================================================
+
+  .env.example copiado sem `make env` → `docker compose config`:
+    required variable AIRFLOW__CORE__FERNET_KEY is missing a value: rode make env   OK
+  make env (1ª vez): gera Fernet, secret keys do Airflow e do Superset, API_DEV_KEY + hash  OK
+  make env (2ª vez): "nada a gerar"; arquivo idêntico                                        OK
+  docker compose config com o .env gerado: válido                                            OK
+  .env com permissão 600; placeholders antigos `your-...` são substituídos                    OK
+
+  gitleaks no histórico inteiro: 3 achados, a Fernet key antiga (commit e5c32be) → exceção
+  versionada (rotacionada; repositório público, reescrever o histórico não desfaz a exposição).
+  gitleaks na árvore de trabalho: só falsos positivos em .venv/.mypy_cache (fora do checkout do CI).
+
+================================================================================
+4. DEPENDÊNCIAS E IMAGENS
+================================================================================
+
+  pip-audit antes: pyspark, requests, pyarrow, python-dotenv, click, starlette (fastapi), black,
+  pytest. Depois (venv limpo com o pyproject novo): só pyspark 3.5.1 (2 CVEs que exigem
+  spark.network.crypto.enabled e o History Server, que não usamos) → exceções.
+    requests 2.33.0 · pyarrow 23.0.1 · fastapi 0.135.1 (starlette 1.7.0; a última que aceita o
+    pydantic 2.7.1) · python-dotenv 1.2.2 · click 8.3.3 · pytest 9.0.3 · pytest-cov 7.1.0 ·
+    pytest-asyncio 1.4.0 · black 26.3.1 · kafka-python 2.3.2 (host e imagem; saiu o
+    kafka-python-ng)
+
+  trivy (HIGH/CRITICAL, com correção), imagens reconstruídas:
+    producer: 0 (antes: kafka-python 2.0.2, jaraco.context e wheel vendorizados no setuptools)
+    api: 0 (antes: starlette x3, jaraco.context, wheel)
+    airflow (fora do gate): ~360; spark (fora do gate): ~240 → issue #66 (atualização das bases)
+  Smoke: `import kafka` na imagem do producer = 2.3.2; `import src.serving.api.main` na da API OK.
+
+  1ª execução no GitHub (PR #67): o pip-audit falhou em setuptools 79.0.1 (PYSEC-2026-3447,
+  corrigido no 83.0.0). Não é dependência do projeto: vem com o Python do runner, e o pip-audit
+  audita o ambiente inteiro (o venv local não tinha setuptools). Correção no workflow: atualizar
+  pip/setuptools antes de instalar. Reproduzido local com setuptools 79.0.1 e verificado limpo
+  depois do upgrade (setuptools 84.0.0).
+
+  Unitários com as versões novas: 971 passed, cobertura 89,22%; make lint limpo.
+  Black 26 x 24: os mesmos 39 arquivos fora do padrão nas duas versões (black não é gate).
+
+================================================================================
+5. E2E COM AS VERSÕES NOVAS (make e2e)
+================================================================================
+
+  1ª execução: 15 passed, 1 failed — TestInvalidDataBlocksPromotion:
+    ArrowTypeError: Unable to merge: Field year has incompatible types: int32 vs dictionary
+  Causa: o teste gravava o arquivo inválido com as colunas da partição (year/month/day) dentro;
+  com o pyarrow 23 elas são int32 no arquivo e dicionário na partição do caminho, e o merge
+  falha antes do gate. Artefato do teste (arquivo gravado pelo Spark não tem essas colunas).
+  2ª execução: 15 passed, 1 failed, agora em `month`. A 1ª correção descartava só colunas do
+  tipo categoria, e o tipo depende de qual arquivo vem primeiro. Correção final: descartar pelo
+  nome as colunas de partição do próprio caminho do arquivo. Reproduzido isolado: o gate falha
+  com QualityGateFailed (2/26 expectativas) e volta a passar sem o arquivo.
+  3ª execução: 16 passed em 4 min 28 s (batch, stream e os seis cenários de falha).
+
+================================================================================
+6. PII
+================================================================================
+
+  test_pii_enforcement: toda coluna PII declarada aponta para dataset classificado PII; nenhum
+  campo dos modelos de resposta da API é PII; os SELECT do repositório não trazem PII; toda rota
+  de dados tem response_model.
+  Mascaramento: "João da Silva" → "J*** d*** S***"; "  Ana   Maria " → "A*** M***";
+  1985-03-20 → "1985"; só dim_customers é mascarada.
+  Catálogo: seção "Colunas PII" em docs/data_catalog.md; api_access_audit classificada PII.
+
+================================================================================
+7. PENDENTE / FORA DO ESCOPO
+================================================================================
+
+  - Proteção da branch main (decidido: os 7 checks, PR obrigatório, branch atualizada, vale para
+    admin): aplicar via `gh api` depois que os checks rodarem verdes no PR da #58.
+  - Ambiente local que já existia: rodar `make env` e recriar airflow-* e superset; depois
+    `make dashboards` para recadastrar a conexão do Superset (senha cifrada com a chave nova).
+    Não validado aqui para não mexer no .env do desenvolvedor.
+  - Producer idempotente: o kafka-python 2.3.2 suporta `enable_idempotence`; ligar fica para
+    issue própria (muda a semântica de entrega).
+  - Credenciais de dev fixas (minioadmin, datamaster123, admin): mantidas, documentadas.

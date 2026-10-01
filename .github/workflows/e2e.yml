@@ -32,10 +32,11 @@ jobs:
         run: pip install -e ".[dev]"
 
       - name: Configure environment
+        # `make env` gera os segredos que o docker-compose.yml exige (issue #58).
         # `data/` é montado no container do Spark: se o Docker o criar ao subir a stack, a pasta fica
         # do root e o pytest (usuário do runner) não consegue gravar data/e2e.
         run: |
-          cp .env.example .env
+          make env PYTHON=python
           mkdir -p data/e2e
 
       - name: Start minimal stack

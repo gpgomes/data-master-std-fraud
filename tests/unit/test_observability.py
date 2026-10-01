@@ -329,7 +329,7 @@ class TestApiMiddleware:
         assert (row["method"], row["route"], row["status_code"]) == ("GET", "/health/live", 200)
         assert row["duration_ms"] >= 0
 
-    def test_path_parameters_are_not_stored(self, recorded):
+    def test_path_parameters_are_not_stored(self, recorded, api_key):
         from fastapi.testclient import TestClient
 
         from src.serving.api.db import get_db
@@ -341,7 +341,7 @@ class TestApiMiddleware:
             )
         )
         try:
-            TestClient(app).get("/transactions/tx-secreta-123")
+            TestClient(app, headers={"X-API-Key": api_key}).get("/transactions/tx-secreta-123")
         finally:
             app.dependency_overrides.clear()
         assert recorded[0]["route"] == "/transactions/{transaction_id}"

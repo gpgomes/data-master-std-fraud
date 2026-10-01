@@ -72,9 +72,10 @@ LAZY_IMPORTS_NEVER_RUN_BY_PRODUCERS = {
     ),
 }
 
-# Pacotes que a imagem e o host resolvem com nomes diferentes de propósito. A imagem fixa o
-# `kafka-python==2.0.2`; o `pyproject.toml` usa o fork `kafka-python-ng` (o mesmo módulo `kafka`).
-KNOWN_NAME_DIVERGENCES = {"kafka-python"}
+# Pacotes que a imagem e o host resolvem com nomes diferentes de propósito. Vazio desde a issue #58:
+# o host usava o fork `kafka-python-ng` (congelado no código do 2.0.2) e a imagem o `kafka-python`;
+# os dois passaram a fixar o `kafka-python` corrigido (CVE-2026-10142/10143).
+KNOWN_NAME_DIVERGENCES: set[str] = set()
 
 
 def _image_requirements() -> dict[str, Requirement]:
@@ -278,6 +279,13 @@ class TestVersionsAgreeWithPyproject:
             assert host[name].specifier.contains(pinned, prereleases=True), (
                 f"{name}: a imagem fixa {pinned}, mas o pyproject.toml declara {host[name].specifier}"
             )
+
+    def test_kafka_client_is_the_same_package_on_both_sides(self):
+        """O teste de versões acima só compara pacotes com o mesmo nome: um fork no host de novo
+        esconderia uma versão vulnerável na imagem (issue #58)."""
+        assert "kafka-python" in _pyproject_requirements()
+        assert "kafka-python" in _image_requirements()
+        assert "kafka-python-ng" not in _pyproject_requirements()
 
     def test_lz4_is_declared_on_both_sides(self):
         assert "lz4" in _pyproject_requirements()

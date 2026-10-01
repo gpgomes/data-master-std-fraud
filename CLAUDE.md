@@ -11,7 +11,7 @@ Financial Fraud Detection Platform — a Data Master case study. End-to-end data
 ### Development Setup
 ```bash
 pip install -e ".[dev]"      # Install all dependencies including dev tools
-cp .env.example .env          # Configure environment variables
+make env                      # Create .env from .env.example and generate local secrets (Fernet, secret keys, API dev key); idempotent
 ```
 
 ### Testing
@@ -38,6 +38,8 @@ make format    # black + ruff --fix
 
 A second workflow, `.github/workflows/e2e.yml` (manual `workflow_dispatch` + nightly, issue #57), starts a minimal stack (zookeeper, kafka, minio, postgres, spark-master) and runs `make e2e`: `tests/e2e/` runs the real batch and stream in an isolated namespace (`e2e-*` buckets/topics, `fraud_e2e` database; see `E2E_ENV` in `tests/e2e/harness.py`), checks data invariants and six failure scenarios. The suite skips itself unless `E2E=1` and that namespace are set, so `make test` never triggers it. Locally it stops/starts the dev `kafka` and `postgres` containers.
 
+A third workflow, `.github/workflows/security.yml` (push/PR + weekly, issue #58), blocks on gitleaks (full history), pip-audit and trivy (HIGH/CRITICAL, fixable, on the `api` and `producer` images); Airflow/Spark images are scanned as a non-blocking report. Exceptions live only in `security/exceptions.toml` (reason + `review_by`, max 1 year; the `exceptions` job fails when one expires); `scripts/security_exceptions.py` generates `.gitleaksignore`/`.trivyignore`/`--ignore-vuln` from it. pyspark stays at 3.5.1 (cluster version) as a documented exception.
+
 Integration tests (`tests/integration/`) are intentionally **not** run in CI — they need the full Docker Compose stack (Kafka, Zookeeper, Airflow, Superset, Postgres, MinIO, Spark cluster), which is too slow/heavy for a per-PR gate. Run them locally via `make up && make setup && make test-integration`.
 
 ### Infrastructure (Docker)
@@ -59,7 +61,7 @@ make spark-submit-gold-postgres # Load Gold (MinIO) into the Postgres serving la
 make spark-submit-stream-postgres # Load streaming output (V2 verdict + V1 shadow + label, and alerts with their signals) into Postgres (stop the stream first); ensure_schema adds the columns to already-provisioned databases
 make producer-transactions     # Start Kafka transaction producer (host); in a container: docker compose --profile producers up -d producer-transactions
 make producer-market           # Start Kafka market data producer (host); only publishes 13h-20h UTC (B3 trading hours)
-make api                       # Start FastAPI dev server at :8000
+make api                       # Start FastAPI dev server at :8000; every route except /health/* needs header X-API-Key (API_DEV_KEY in .env; only SHA-256 hashes in API_KEY_HASHES)
 make catalog                   # Generate docs/data_catalog.md + docs/images/data_lineage.svg, validate datasets against live infra
 make fraud-eval                # Evaluate the fraud detectors (V1 Z-Score vs V2 multi-signal; Precision/Recall/FPR, local Spark, no Docker) and generate docs/fraud_evaluation.md
 make fraud-calibrate           # Recalibrate the V2 weights/threshold on the validation seed and write src/transformation/fraud/weights.py
@@ -110,6 +112,9 @@ The fraud labels (`is_fraud`, `fraud_type`) travel in the Kafka payload but are 
 | Kafka producers | `src/ingestion/streaming/` |
 | Batch data collectors | `src/ingestion/batch/` |
 | FastAPI app | `src/serving/api/main.py` |
+| API key auth + access audit (`api_access_audit`) | `src/serving/api/security.py` |
+| PII columns per dataset (`PII_COLUMNS`), enforced against API models by `tests/unit/test_pii_enforcement.py` | `src/governance/data_catalog/registry.py` |
+| Local secrets generation (`make env`) / security scan exceptions | `scripts/ensure_env.py` / `security/exceptions.toml` |
 | Gold→Postgres loader | `src/serving/loaders/` |
 | Superset dashboard provisioning (fraud KPIs + Platform Health) | `src/serving/dashboards/` |
 | Platform metrics (MetricsStore, schema, DAG run recording); stream listener in `src/transformation/streaming/metrics_listener.py` | `src/observability/` |
@@ -156,10 +161,10 @@ Settings are grouped: `KafkaSettings`, `MinIOSettings`, `PostgresSettings`, `Spa
 | MinIO Console | http://localhost:9001 | minioadmin / minioadmin |
 | Airflow | http://localhost:8082 | admin / admin |
 | Superset | http://localhost:8088 | admin / admin |
-| FastAPI docs | http://localhost:8000/docs | — |
+| FastAPI docs | http://localhost:8000/docs | header `X-API-Key` (`API_DEV_KEY` in `.env`) |
 | Spark UI | http://localhost:8081 | — |
 
-> **Local dev only:** these credentials (and the fixed keys in `docker-compose.yml`, e.g. Airflow's Fernet key) must never be used in production/AWS — generate your own.
+> **Local dev only:** these credentials must never be used in production/AWS. Encryption keys (Airflow Fernet/secret key, Superset secret key) and the API key are not in the repo: `make env` generates them per machine and `docker-compose.yml` refuses to start without them (issue #58).
 
 Data catalog is not a web service — it's a generated, versioned document (`docs/data_catalog.md`, via `make catalog`); see issue #14 / `docs/architecture.md`'s "Decisões Arquiteturais" table for why OpenMetadata was descoped from local V1.
 
@@ -173,7 +178,7 @@ The project is being built in phases (see `CaseFinancialDataLakeHouse.md` — th
 - **Phase 3 — Data governance:** ✅ Done, with two scope changes from the original plan: Great Expectations quality gates (issue #13); a lightweight, code-based data catalog (issue #14) instead of OpenMetadata — see `docs/architecture.md`'s "Decisões Arquiteturais" table; Delta Lake was evaluated and explicitly **not** adopted (issue #9) — the platform uses Parquet only, no time-travel/versioning layer exists
 - **Phase 4 — Serving layer:** ✅ Done — PostgreSQL loader (issue #10), FastAPI (issue #15), Superset dashboards (issue #16, Grafana descoped — see `docs/architecture.md`)
 - **Phase 5 — AWS migration via Terraform:** ⬜ Not started (issue #17, open)
-- **Phase 6 — CI/CD, QuickSight, documentation:** 🚧 Partial — the lint + unit-test slice of CI/CD (`.github/workflows/ci.yml`) is done; deploy automation and QuickSight are not started; this documentation pass is issue #18
+- **Phase 6 — CI/CD, QuickSight, documentation:** 🚧 Partial — the lint + unit-test slice of CI/CD (`.github/workflows/ci.yml`), the E2E workflow (#57) and the blocking security scans (`security.yml`, #58) are done; deploy automation and QuickSight are not started; this documentation pass is issue #18
 
 ## Code Style
 
