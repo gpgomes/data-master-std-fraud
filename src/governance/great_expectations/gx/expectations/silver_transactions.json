@@ -155,8 +155,8 @@
       "expectation_type": "expect_column_max_to_be_between",
       "kwargs": {
         "column": "processing_timestamp",
-        "max_value": "2026-10-03T17:01:16.996398",
-        "min_value": "2026-07-04T17:01:16.996398"
+        "max_value": "2026-09-24T21:02:01.570098",
+        "min_value": "2026-06-25T21:02:01.570098"
       },
       "meta": {}
     }
