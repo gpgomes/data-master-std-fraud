@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, field_validator
 
 # `enum.StrEnum` só existe a partir do Python 3.11. Os DDLs Spark deste módulo
 # (TRANSACTION_SPARK_SCHEMA etc.) são importados por jobs rodando dentro do
-# container Spark, cuja imagem base (apache/spark:3.5.8) traz Python 3.10 —
+# container Spark, cuja imagem base (apache/spark:4.2.0) traz Python 3.10 —
 # shim necessário para o módulo continuar importável lá.
 if sys.version_info >= (3, 11):
     from enum import StrEnum

@@ -35,8 +35,9 @@ _SERVING = "/opt/airflow/src/serving/loaders"
 
 # O driver roda em modo client dentro do próprio container do Airflow (pyspark
 # instalado via pip, sem os jars extras da imagem customizada do Spark), então
-# precisa baixar hadoop-aws/aws-java-sdk-bundle via Ivy para o s3a:// funcionar.
-_S3A_PACKAGES = "org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.797"
+# precisa baixar hadoop-aws e o AWS SDK v2 (bundle) via Ivy para o s3a:// funcionar. Versões do
+# Hadoop 3.5.0 do Spark 4.2 (issue #69), as mesmas da imagem docker/spark.
+_S3A_PACKAGES = "org.apache.hadoop:hadoop-aws:3.5.0,software.amazon.awssdk:bundle:2.35.4"
 
 # gold_to_postgres.py também precisa do driver JDBC do Postgres (baixado via
 # Ivy pelo mesmo motivo acima — a imagem custom do Spark já tem esse jar

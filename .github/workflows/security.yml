@@ -6,8 +6,9 @@ name: Security
 #   - pip-audit: CVEs nas dependências do pyproject.toml
 #   - trivy: CVEs HIGH/CRITICAL com correção nas quatro imagens (API, producers, Airflow, Spark)
 # Nas imagens do Airflow e do Spark o gate não olha os .jar (`--skip-files '**/*.jar'`): são as libs
-# Java da distribuição do Spark 3.5.8 / Hadoop 3.3.4 e do AWS SDK v1, que só a subida para o Spark 4
-# corrige (issue #69). Eles continuam no relatório não bloqueante (job base-images-report).
+# Java da distribuição do Spark 4.2.0 / Hadoop 3.5.0 e do AWS SDK v2: nem o Spark mais novo vem sem
+# elas (issue #69), e a correção depende de novas versões da distribuição. Eles continuam no
+# relatório não bloqueante (job base-images-report).
 # Semanal além de push/PR: CVE novo aparece sem mudança de código.
 
 on:
