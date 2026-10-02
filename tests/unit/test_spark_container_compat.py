@@ -3,7 +3,7 @@
 O job de streaming e o `silver_to_gold` executam **dentro** desse container, e o CI (Python 3.11) não
 tem como pegar sintaxe mais nova que a do container nem um `import numpy` no topo de um módulo. Isso
 já quebrou o Fraud Engine da #45 ao chegar no streaming (#46), quando o container era Python 3.8.
-Com a base `apache/spark:3.5.8` (issue #66) o piso subiu para 3.10: `dict[str, float]`, `X | Y` e
+Com a base `apache/spark:3.5.8` (issue #66), e depois a 4.2.0 (#69), o piso é 3.10: `dict[str, float]`, `X | Y` e
 `zip(strict=)` passaram a valer lá dentro, e os testes que barravam isso saíram.
 """
 
@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 # Versão do Python da imagem base do Spark. Ao trocar a base, confira com
 # `docker run --rm --entrypoint python3 <imagem> --version` e atualize as duas constantes.
-SPARK_BASE_IMAGE = "apache/spark:3.5.8"
+SPARK_BASE_IMAGE = "apache/spark:4.2.0"
 CONTAINER_PYTHON = (3, 10)
 
 # Módulos importados pelos jobs que rodam no container do Spark (Python 3.10, sem numpy/pandas).
@@ -96,7 +96,7 @@ def test_the_constants_match_the_spark_dockerfile() -> None:
     # O harness, o Makefile e as DAGs chamam `spark-submit` pelo nome: a imagem base não o põe no
     # PATH, e o que existia vinha do pyspark instalado pelo delta-spark, removido na #66.
     assert 'ENV PATH="/opt/spark/bin:${PATH}"' in dockerfile
-    # HOME do usuário spark é /nonexistent na base 3.5.8: o Ivy do `--packages` precisa de um HOME real.
+    # HOME do usuário spark é /nonexistent nas bases 3.5.8 e 4.x: o Ivy do `--packages` precisa de um HOME real.
     assert "ENV HOME=/home/spark" in dockerfile
 
 

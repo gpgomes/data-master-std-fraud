@@ -39,14 +39,15 @@ ENV PYTHONPATH="/opt/airflow"
 
 # `apache-airflow==` na mesma instalação: sem ele o pip pode trocar dependências do próprio Airflow
 # (issue #66). O s3fs acompanha a versão do fsspec da base (os dois são lançados juntos).
-# Provider do Spark 5.6.0: a última linha que aceita o pyspark 3.5.x do cluster; a 6.x exige o
-# pyspark-client 4 e vem junto com a subida do Spark (#69, segunda parte).
+# Provider do Spark 5.6.0: aceita o pyspark completo (>= 3.5.2), que traz o spark-submit usado pelo
+# SparkSubmitOperator. A 6.x troca a dependência pelo pyspark-client (só Spark Connect, sem
+# spark-submit) e conflitaria com o pyspark completo no mesmo ambiente (#69).
 # Extra `postgres`: o Airflow 3 também abre o banco de metadados em modo assíncrono (asyncpg), que a
 # imagem slim não traz.
 RUN pip install --no-cache-dir \
     "apache-airflow[postgres]==3.3.2" \
     apache-airflow-providers-apache-spark==5.6.0 \
-    pyspark==3.5.8 \
+    pyspark==4.2.0 \
     psycopg2-binary==2.9.10 \
     pydantic-settings==2.2.1 \
     python-dotenv==1.2.2 \

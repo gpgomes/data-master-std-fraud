@@ -3,7 +3,7 @@
 [![CI](https://github.com/gpgomes/data-master-std-fraud/actions/workflows/ci.yml/badge.svg)](https://github.com/gpgomes/data-master-std-fraud/actions/workflows/ci.yml)
 [![Security](https://github.com/gpgomes/data-master-std-fraud/actions/workflows/security.yml/badge.svg)](https://github.com/gpgomes/data-master-std-fraud/actions/workflows/security.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![PySpark](https://img.shields.io/badge/pyspark-3.5-orange.svg)](https://spark.apache.org/)
+[![PySpark](https://img.shields.io/badge/pyspark-4.2-orange.svg)](https://spark.apache.org/)
 [![Apache Kafka](https://img.shields.io/badge/kafka-3.6-black.svg)](https://kafka.apache.org/)
 [![Apache Airflow](https://img.shields.io/badge/airflow-3.3-green.svg)](https://airflow.apache.org/)
 [![Docker](https://img.shields.io/badge/docker-compose-blue.svg)](https://docs.docker.com/compose/)

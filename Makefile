@@ -94,13 +94,13 @@ seed-data: ## Gerar dados sintéticos de transações e mercado
 spark-submit-batch: ## Submeter job PySpark batch (Bronze → Silver) — Gold é um job separado, ver spark-submit-silver-gold
 	$(COMPOSE) exec spark-master spark-submit \
 		--master $(SPARK_MASTER) \
-		--packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.8 \
+		--packages org.apache.spark:spark-sql-kafka-0-10_2.13:4.2.0 \
 		$(BATCH_JOB)
 
 spark-submit-stream: ## Submeter job PySpark streaming (Kafka → Silver + detecção de fraude)
 	$(COMPOSE) exec spark-master spark-submit \
 		--master $(SPARK_MASTER) \
-		--packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.8 \
+		--packages org.apache.spark:spark-sql-kafka-0-10_2.13:4.2.0 \
 		$(STREAM_JOB)
 
 spark-submit-silver-gold: ## Submeter job Silver → Gold

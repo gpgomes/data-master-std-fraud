@@ -75,3 +75,68 @@ test_ensure_env,test_security_exceptions}.py, docs.
     hadoop-aws 3.5 + AWS SDK v2, ANSI ligado por padrão).
   - Ambiente local: rodar `make env` (gera os dois segredos novos) e recriar os serviços do Airflow;
     remover o container antigo `airflow-webserver`.
+
+================================================================================
+PARTE 2 — SPARK 4.2 (PR separado)
+================================================================================
+
+Decisões (com o usuário): Spark 4.2.0 (o 4.x com menos .jar vulneráveis na base); ANSI mantido
+ligado (padrão do Spark 4), corrigindo o que quebrasse.
+
+Arquivos: pyproject.toml (pyspark 4.2.0), docker/spark/Dockerfile, docker/airflow/Dockerfile
+(pyspark 4.2.0), Makefile e tests/e2e/harness.py (conector _2.13:4.2.0), dags/dag_batch_
+transformation.py (pacotes S3A), tests/unit/test_spark_container_compat.py, src/common/schemas.py,
+.github/workflows/security.yml (comentário), docs.
+
+1. Achados da troca
+  a) Hadoop 3.5 (base do Spark 4.2) usa o AWS SDK v2: sai o aws-java-sdk-bundle 1.12.797, entra o
+     software.amazon.awssdk:bundle 2.35.4 (versão do hadoop-project 3.5.0), com ~690 MB.
+  b) O hadoop-aws 3.5.0 também exige analyticsaccelerator-s3 1.3.1 (dependência de compile). Sem
+     ele: java.lang.NoClassDefFoundError: software/amazon/s3/analyticsaccelerator/request/
+     ObjectClient na primeira leitura de s3a:// (o E2E caiu inteiro no batch). A DAG resolve via
+     Ivy (transitivo); a imagem do Spark baixa à mão, então entrou numa camada própria.
+  c) Build do Spark: o download do bundle caía no meio ("SSL_read: unexpected eof") e o curl
+     ficava parado por horas antes do retry (um build passou de 2 h); o pip também teve um "hashes
+     do not match" (download truncado). Do host a Maven entregava 48 MB/s; a rede da VM do Docker
+     estava instável. Correção: curl -C - (retoma) + --speed-limit/--speed-time (aborta conexão
+     parada) + --retry 10. Com isso o build passou.
+  d) Provider do Spark no Airflow: a 6.x troca o pyspark completo pelo pyspark-client (sem
+     spark-submit); fica a 5.6.0, que aceita pyspark >= 3.5.2.
+  e) A UI do master do Spark 4 mudou o HTML ("Alive Workers" não aparece mais); o estado sai em
+     http://localhost:8081/json/ (aliveworkers).
+
+2. ANSI
+  Revisão dos pontos sensíveis: divisões protegidas (preços > 0 filtrados antes; Z-Score dentro de
+  F.when(desvio > 0); σ do perfil com piso validado pelo GX; fraud_rate sobre grupo não vazio);
+  casts do Bronze recebem só dado que passou pelo gate do Bronze. Nenhuma quebra:
+  unitários 956 passed com pyspark 4.2 (ANSI ligado nas sessões locais também), E2E 16/16 e a DAG
+  com os 500 mil eventos de dev.
+
+3. Imagens (trivy HIGH/CRITICAL com correção)
+                         Spark 3.5.8   Spark 4.2.0
+  data-master-spark          84            71 (todos .jar; 33 CVEs distintos; 16 no bundle do SDK v2)
+  data-master-airflow        72            55 (todos .jar do pyspark; 27 CVEs distintos)
+  Gate (--skip-files '**/*.jar'): exit 0 nas duas, sem exceção.
+  Tamanho da imagem do Spark: 3,16 → 3,79 GB (bundle do SDK v2).
+
+4. Validação
+  Spark 4.2.0 no cluster (Java 21), 2 workers vivos, spark-submit da distribuição.
+  make e2e: 16 passed (4 min 59 s) — batch, stream com o conector _2.13 e os seis cenários.
+  DAG batch_transformation_pipeline (airflow dags test, driver Java 17 no Airflow, executores
+  Java 21 no cluster, jars via Ivy): todas as 8 tasks com sucesso; 500.000 linhas em
+  fact_transactions; pipeline_runs gravado.
+    Tempos (todas com sucesso):
+      1ª: 1.409 s (baixa o bundle de ~690 MB via Ivy no container do Airflow)
+      2ª: 721 s (em paralelo com os unitários; número contaminado)
+      3ª: 1.077 s (sozinha) — silver_to_gold 579 s e load_gold_postgres 305 s, contra 109 s e 40 s
+          no Spark 3.5. Investigado: o stream de leitura do S3A no Hadoop 3.5 passou a ser o
+          "analytics" por padrão, mas o A/B de silver_to_gold no cluster deu 95 s (classic) × 106 s
+          (analytics), e o comando idêntico ao da DAG a partir do container do Airflow, 107 s
+          (analytics) × 138 s (classic). A busca de jars pelos executores levou 7 a 38 s. Ou seja,
+          nada disso explicava; a janela coincidiu com a instabilidade de rede da VM do Docker
+          (a mesma dos downloads quebrados no build).
+      4ª: 351 s (sozinha, rede estável): bronze_to_silver 85, validate_silver 22, silver_to_gold
+          123, validate_gold 26, load_gold_postgres 41, load_stream_postgres 54 s. Contra 306 s no
+          Spark 3.5 pelo scheduler (68/16/109/23/40/47 s); ~15% acima, parte disso do
+          `airflow dags test` (tudo em sequência no mesmo processo).
+    Mantido o stream padrão do Hadoop 3.5 (analytics): não houve ganho medido com o classic.

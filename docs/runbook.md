@@ -694,7 +694,7 @@ SELECT accessed_at, client_host, route, query FROM api_access_audit WHERE status
 
 As exceções ficam em `security/exceptions.toml`, a fonte única (o script gera `.gitleaksignore`, `.trivyignore` e os `--ignore-vuln`). Hoje: a Fernet key antiga no histórico do git (rotacionada; o repositório é público, reescrever o histórico não desfaz a exposição) As duas do pyspark 3.5.1 saíram com o Spark 3.5.8 (#66) e as três do `apache-airflow` 2.11.2 com o Airflow 3.3 (#69).
 
-**Airflow e Spark (issue #66):** as bases foram para `apache/spark:3.5.8` (Python 3.10, Ubuntu 22.04) e `apache/airflow:slim-2.11.2-python3.11`, depois `slim-3.3.2` na #69 (variante slim: só o core, porque as DAGs só usam `BashOperator`, `PythonOperator` e o `SparkSubmitOperator`; a imagem completa trazia ~80 providers). O build roda `apt-get upgrade` (o `msodbcsql18`, driver do SQL Server que não usamos, fica preso porque atualizá-lo exige aceitar a EULA da Microsoft) e fixa versões corrigidas dos pacotes Python que a base traz. Resultado (HIGH/CRITICAL com correção): Airflow ~360 → 75, Spark ~240 → 84, com **zero** no SO e nos pacotes Python fora o próprio Airflow. O que sobra são as libs Java da distribuição do Spark 3.5.8 / Hadoop 3.3.4 e do AWS SDK v1 (já na última versão, 1.12.797), que só o Spark 4 corrige: por isso o gate dessas duas imagens usa `--skip-files '**/*.jar'`, e os `.jar` continuam visíveis no relatório não bloqueante. A migração para Spark 4 e Airflow 3 é a issue #69.
+**Airflow e Spark (issue #66):** as bases foram para `apache/spark:3.5.8` (Python 3.10, Ubuntu 22.04) e `apache/airflow:slim-2.11.2-python3.11`, depois `slim-3.3.2` na #69 (variante slim: só o core, porque as DAGs só usam `BashOperator`, `PythonOperator` e o `SparkSubmitOperator`; a imagem completa trazia ~80 providers). O build roda `apt-get upgrade` (o `msodbcsql18`, driver do SQL Server que não usamos, fica preso porque atualizá-lo exige aceitar a EULA da Microsoft) e fixa versões corrigidas dos pacotes Python que a base traz. Resultado (HIGH/CRITICAL com correção): Airflow ~360 → 75, Spark ~240 → 84, com **zero** no SO e nos pacotes Python fora o próprio Airflow. O que sobra são as libs Java da distribuição do Spark e do AWS SDK. Com o Spark 4.2 (#69) caíram para 71 (Spark) e 55 (Airflow), mas nem o Spark mais novo vem sem elas: por isso o gate dessas duas imagens usa `--skip-files '**/*.jar'`, e os `.jar` continuam visíveis no relatório não bloqueante. A migração para Spark 4 e Airflow 3 é a issue #69.
 
 Reproduzir localmente:
 
@@ -713,7 +713,7 @@ docker compose build api producer-transactions && python -m scripts.security_exc
 
 ### Dependências (atualizadas na #58 e na #66)
 
-pyspark 3.5.8 (a mesma versão do cluster) e pydantic 2.12.5 em todos os lugares desde a #66, com o container do Spark em Python 3.10 (antes 3.8, que prendia o pydantic em 2.7.1); psycopg2-binary 2.9.10; driver JDBC do Postgres 42.7.13 e `aws-java-sdk-bundle` 1.12.797 na imagem do Spark e nas DAGs. Da #58: requests 2.33.0, pyarrow 23.0.1, fastapi 0.135.1 (starlette 1.x), python-dotenv 1.2.2, click 8.3.3, pytest 9, black 26; `kafka-python` 2.3.2 no host e na imagem dos producers (antes: `kafka-python-ng` no host e `kafka-python` 2.0.2 na imagem). As imagens da API e dos producers removem `setuptools`/`wheel` depois do `pip install` (cópias vendorizadas com CVE, sem uso em runtime).
+pyspark 4.2.0 (a mesma versão do cluster, desde a #69; era 3.5.8 na #66) e pydantic 2.12.5 em todos os lugares, com o container do Spark em Python 3.10 (antes 3.8, que prendia o pydantic em 2.7.1); psycopg2-binary 2.9.10; driver JDBC do Postgres 42.7.13 na imagem do Spark e nas DAGs; S3A com `hadoop-aws` 3.5.0 + AWS SDK v2 `bundle` 2.35.4 + `analyticsaccelerator-s3` 1.3.1 (desde a #69; antes `aws-java-sdk-bundle` 1.12.797). Da #58: requests 2.33.0, pyarrow 23.0.1, fastapi 0.135.1 (starlette 1.x), python-dotenv 1.2.2, click 8.3.3, pytest 9, black 26; `kafka-python` 2.3.2 no host e na imagem dos producers (antes: `kafka-python-ng` no host e `kafka-python` 2.0.2 na imagem). As imagens da API e dos producers removem `setuptools`/`wheel` depois do `pip install` (cópias vendorizadas com CVE, sem uso em runtime).
 
 ### Spark 3.5.8: o que mudou na imagem (issue #66)
 
@@ -721,6 +721,16 @@ pyspark 3.5.8 (a mesma versão do cluster) e pydantic 2.12.5 em todos os lugares
 - **HOME do usuário `spark`:** na 3.5.8 é `/nonexistent` (na 3.5.1 era `/home/spark`). O Ivy do `--packages` (conector do Kafka) gravaria em `/nonexistent/.ivy2` e o job morria na partida. O Dockerfile corrige o HOME.
 - Os dois são vigiados por `tests/unit/test_spark_container_compat.py`, junto da versão do Python do container (`CONTAINER_PYTHON`).
 - **Airflow 2.9.1 → 2.11.2:** o `airflow-init` aplica a migração do banco de metadados (`airflow db migrate`) ao subir; nenhum passo manual.
+
+### Spark 4.2 (issue #69, parte 2)
+
+Cluster `apache/spark:4.2.0` (Scala 2.13, Java 21, Python 3.10, Hadoop 3.5.0) e `pyspark==4.2.0` no host e na imagem do Airflow (o driver do `SparkSubmitOperator` roda lá, em Java 17, suportado pelo Spark 4).
+
+- **Conector do Kafka:** `org.apache.spark:spark-sql-kafka-0-10_2.13:4.2.0` (Scala 2.13; o `_2.12` não existe no Spark 4). Está no `Makefile`, no harness do E2E e é baixado via Ivy no `--packages`.
+- **S3A (MinIO):** `hadoop-aws` 3.5.0, que usa o **AWS SDK v2** (`software.amazon.awssdk:bundle:2.35.4`, ~690 MB) e exige também `analyticsaccelerator-s3` 1.3.1 (sem ele, a primeira leitura de `s3a://` morre com `NoClassDefFoundError: software/amazon/s3/analyticsaccelerator/...`). A imagem do Spark traz os três em `/opt/spark/jars`; a DAG os baixa via Ivy no container do Airflow (a primeira execução depois de recriar o container leva o tempo de baixar o bundle).
+- **Download do bundle no build:** `curl -C -` (retoma) com `--speed-limit/--speed-time` (aborta conexão parada). Sem isso, uma queda no meio deixava o build travado por horas.
+- **Modo ANSI ligado (padrão do Spark 4):** cast inválido, overflow e divisão por zero viram erro em vez de NULL. Revisado: as divisões estão protegidas (preços > 0 filtrados antes; Z-Score só com desvio > 0 dentro de `F.when`; σ do perfil com piso validado pelo GX) e os casts do Bronze só recebem dado que passou pelo gate do Bronze. Unitários, E2E e a DAG com os 500 mil eventos de dev rodaram sem nenhum erro de ANSI. Se um dado novo quebrar com `CAST_INVALID_INPUT` ou `DIVIDE_BY_ZERO`, a correção é no dado ou um `try_*` explícito no ponto, não desligar o ANSI.
+- **Provider do Spark no Airflow:** continua o 5.6.0 (ver Airflow 3 abaixo).
 
 ### Airflow 3 (issue #69)
 
@@ -735,7 +745,7 @@ pyspark 3.5.8 (a mesma versão do cluster) e pydantic 2.12.5 em todos os lugares
 
 - **As tasks não acessam mais o banco de metadados.** Falam com o api-server pela execution API (`AIRFLOW__CORE__EXECUTION_API_SERVER_URL`), com tokens assinados por `AIRFLOW__API_AUTH__JWT_SECRET`, que tem de ser o mesmo nos três serviços (o compose o lê do `.env`). Por isso o `record_pipeline_run` (#55) passou a ler o estado das outras tasks pelo Task SDK (`ti.get_task_states`) em vez de `dag_run.get_task_instances()`.
 - **Login:** SimpleAuthManager (padrão do Airflow 3), usuário `admin`, senha `AIRFLOW_ADMIN_PASSWORD` do `.env` (padrão `admin`). O api-server grava o arquivo de senhas ao subir. Pela API: `curl -X POST localhost:8082/auth/token -H 'Content-Type: application/json' -d '{"username":"admin","password":"admin"}'` e o `access_token` no header `Authorization: Bearer`.
-- **DAGs:** imports do 3.x (`airflow.sdk.DAG`, operadores em `airflow.providers.standard`). O provider do Spark é o 5.6.0, a última linha que aceita o pyspark 3.5.x; a 6.x exige o pyspark-client 4 e entra com a subida do Spark.
+- **DAGs:** imports do 3.x (`airflow.sdk.DAG`, operadores em `airflow.providers.standard`). O provider do Spark é o 5.6.0: aceita o pyspark completo (>= 3.5.2, hoje 4.2.0), que traz o `spark-submit` do `SparkSubmitOperator`. A 6.x troca a dependência pelo `pyspark-client` (só Spark Connect, sem `spark-submit`) e conflitaria com o pyspark completo no mesmo ambiente.
 - **Imagem:** extra `postgres` (o Airflow 3 também abre o banco em modo assíncrono, `asyncpg`); o pip do ambiente do usuário é removido no build (vendoriza msgpack/setuptools com CVE e não é usado em runtime).
 - **Agendamento:** com `catchup=False`, despausar uma DAG agendada cria a execução do último horário que passou (no 3.x o padrão é `CronTriggerTimetable`). Com `max_active_runs=1` ela só entra na fila.
 
