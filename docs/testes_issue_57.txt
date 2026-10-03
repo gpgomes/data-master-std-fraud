@@ -73,3 +73,20 @@ Run workflow (ou `gh workflow run e2e.yml`).
 Ressalvas: localmente os cenários param e religam os containers `kafka` e `postgres` de
 desenvolvimento; as métricas do stream dos micro-batches com o Postgres fora são perdidas (por
 desenho: métrica nunca derruba o pipeline).
+
+================================================================================
+CORREÇÃO POSTERIOR (03/10, depois da migração para o Spark 4.2 da #69)
+================================================================================
+
+  O E2E noturno do GitHub (run 37117614713) falhou só em
+  test_restart_mid_batch_loses_and_duplicates_nothing: report.json com caught_mid_batch=true e
+  replay_logged=false. Todas as invariantes de dados passaram (1.200 eventos, nenhuma perda, só a
+  duplicata reenviada de propósito).
+  Causa: corrida no próprio teste. _kill_mid_batch via um batch com o Parquet gravado e sem o
+  marcador history e mandava o kill -9 (docker exec pkill, ~1 s); se o batch terminasse nesse
+  intervalo, não havia o que repetir e o log "ignorada no replay" não aparecia. Com micro-batches
+  mais rápidos (Spark 4) a corrida ficou mais provável. O replay em si funciona no Spark 4.2: a
+  execução local da #69 registrou caught_mid_batch=true e replay_logged=true.
+  Correção: depois do kill, com o processo morto, o teste confere de novo; só conta como "meio do
+  batch" se algum batch visto parcial continua sem history. Aí o log de replay continua obrigatório.
+  Validação local: 16 passed, caught_mid_batch=true, replay_logged=true.
