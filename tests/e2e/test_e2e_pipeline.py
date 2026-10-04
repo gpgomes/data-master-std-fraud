@@ -136,13 +136,20 @@ def _batches_with(stage: str) -> set[int]:
 
 def _kill_mid_batch(timeout: float = 90) -> bool:
     """Mata o stream quando algum micro-batch gravou o Parquet mas ainda não o estado (o fim do
-    `foreachBatch`). Devolve se pegou o meio do batch; se não pegar no tempo, mata mesmo assim."""
+    `foreachBatch`). Devolve se pegou o meio do batch; se não pegar no tempo, mata mesmo assim.
+
+    Entre ver o batch parcial e o `kill -9` chegar (um `docker exec pkill`, ~1 s) o batch pode
+    terminar. Por isso a resposta é conferida de novo com o processo já morto: só conta como "meio
+    do batch" se algum batch visto parcial continua sem o marcador `history` (o caso em que o
+    replay tem de pular as etapas feitas). Sem isso o teste falhava no CI quando o batch ganhava a
+    corrida (Spark 4, micro-batches mais rápidos).
+    """
     deadline = time.time() + timeout
     while time.time() < deadline:
         partial = _batches_with("parquet") - _batches_with("history")
         if partial:
             h.kill_stream()
-            return True
+            return bool(partial - _batches_with("history"))
         time.sleep(0.2)
     h.kill_stream()
     return False
