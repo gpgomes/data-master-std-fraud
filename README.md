@@ -11,6 +11,8 @@
 
 Plataforma de dados end-to-end para ingestão, transformação, governança e visualização de dados financeiros com foco em **detecção de fraudes em transações**. Arquitetura Medallion (Bronze → Silver → Gold) com processamento batch e streaming simultâneos.
 
+> **Escopo desta entrega:** a plataforma completa rodando localmente com Docker Compose. Tudo o que está descrito neste README existe e roda com `make env && make up && make setup`. A migração para a AWS (S3, MSK, EMR, MWAA, Glue/Athena, Terraform) é um passo futuro, planejado em [`docs/roadmap.md`](docs/roadmap.md) e fora do escopo da avaliação.
+
 ---
 
 ## Visão Geral
@@ -20,7 +22,7 @@ Plataforma de dados end-to-end para ingestão, transformação, governança e vi
 ### Arquitetura
 
 <p align="center">
-  <img src="docs/images/architecture.svg" alt="Diagrama de arquitetura V1 (local) do Data Master: fontes de dados → Kafka/Airflow → MinIO Bronze/Silver/Gold → PySpark batch e Spark Structured Streaming em paralelo → Great Expectations e catálogo de dados → PostgreSQL, FastAPI e Superset" width="900">
+  <img src="docs/images/architecture.svg" alt="Diagrama de arquitetura do Data Master: fontes de dados → Kafka/Airflow → MinIO Bronze/Silver/Gold → PySpark batch e Spark Structured Streaming em paralelo → Great Expectations e catálogo de dados → PostgreSQL, FastAPI e Superset" width="900">
 </p>
 
 Reflete o estado real implementado (não o plano original) — ver a tabela "Decisões Arquiteturais" em [`docs/architecture.md`](docs/architecture.md) para o porquê de cada desvio (ex.: Delta Lake avaliado e descartado na issue #9, OpenMetadata descoped para catálogo leve na issue #14, Grafana descoped na issue #16).
@@ -29,7 +31,7 @@ Reflete o estado real implementado (não o plano original) — ver a tabela "Dec
 
 ## Stack Tecnológico
 
-### V1 — Desenvolvimento Local
+### Plataforma (local, Docker Compose)
 
 | Camada | Tecnologia | Função |
 |--------|-----------|--------|
@@ -42,14 +44,15 @@ Reflete o estado real implementado (não o plano original) — ver a tabela "Dec
 | Serving Layer | PostgreSQL | Consulta analítica das camadas Gold (issue #10) e da saída do streaming, `fraud_score` e alertas (issue #38) |
 | Qualidade de Dados | Great Expectations | Validações e expectativas nos dados |
 | Catálogo/Linhagem | Catálogo de dados leve (`docs/data_catalog.md`) | Registro versionado + linhagem, validado contra a infra real (issue #14) |
-| Visualização | Apache Superset | Dashboards analíticos (Grafana descoped da V1 local — issue #16) |
+| Visualização | Apache Superset | Dashboards analíticos (Grafana descoped — issue #16) |
 | Containerização | Docker + Docker Compose | Toda a infra local containerizada |
 | Linguagem | Python 3.11+ | Toda a lógica de negócio |
 
-### V2 — Cloud AWS
+### Evolução futura (AWS)
 
-| Camada | Tecnologia |
-|--------|-----------|
+Fora do escopo desta entrega. O mapa de cada componente para o serviço AWS correspondente, o que muda no código, a ordem de migração e o custo estão em [`docs/roadmap.md`](docs/roadmap.md).
+
+--------|-----------|
 | Streaming | Amazon MSK (Managed Kafka) |
 | Batch | AWS Lambda + EventBridge |
 | Orquestração | Amazon MWAA (Managed Airflow) |
@@ -93,9 +96,8 @@ data-master-std-fraud/
 │       └── schemas.py              # Schemas Pydantic / PySpark
 │
 ├── dags/                           # Airflow DAGs
-├── dashboards/                     # Dashboard Superset versionado (issue #16) — grafana/ não usado na V1
+├── dashboards/                     # Dashboard Superset versionado (issue #16) — grafana/ não usado
 ├── docker/                         # Dockerfiles customizados
-├── terraform/                      # IaC para AWS (V2)
 ├── tests/
 │   ├── unit/                       # Testes unitários
 │   ├── integration/                # Testes de integração
@@ -329,12 +331,11 @@ e abrir, veja [`docs/runbook.md`](docs/runbook.md#gerar-e-abrir-os-data-docs).
 ### Catálogo de Dados — issue #14
 
 O case original previa OpenMetadata (server + MySQL/Postgres próprio +
-Elasticsearch + ingestion-Airflow) para catálogo e linhagem. Descoped da V1
-local: esse stack soma mais 3-4 serviços pesados aos 19 que já rodam no
+Elasticsearch + ingestion-Airflow) para catálogo e linhagem. Descoped: esse stack soma mais 3-4 serviços pesados aos 19 que já rodam no
 `docker-compose.yml` (Kafka, Zookeeper, Spark x3, Airflow x3, Superset,
 Postgres x2, MinIO x2, producers, API), competindo pela memória do
 Docker (~8GB na época desta decisão; a recomendação atual é 12GB, ver Pré-requisitos). Um catálogo real (OpenMetadata ou um equivalente
-gerenciado, ex. AWS Glue Data Catalog) fica para V2/cloud.
+gerenciado, ex. AWS Glue Data Catalog) fica para a evolução futura na AWS ([`docs/roadmap.md`](docs/roadmap.md)).
 
 No lugar, `src/governance/data_catalog/` mantém um registro declarativo dos
 datasets, validado contra a infra real (MinIO/Postgres/Kafka) e renderizado
@@ -355,7 +356,7 @@ A imagem é gerada do próprio registro (`make catalog`, Python puro, sem Graphv
 
 ## Dashboards (Superset) — issue #16
 
-**Só Superset na V1** (Grafana descoped): o Superset já roda no `docker-compose.yml`, conectado ao mesmo PostgreSQL da serving layer (issue #10), e cobre 100% dos KPIs pedidos sem precisar de outro container ou datasource — não há nenhum store de séries temporais (Prometheus etc.) que justifique Grafana para métricas real-time. `dashboards/grafana/` permanece como scaffold não usado.
+**Só Superset** (Grafana descoped): o Superset já roda no `docker-compose.yml`, conectado ao mesmo PostgreSQL da serving layer (issue #10), e cobre 100% dos KPIs pedidos sem precisar de outro container ou datasource — não há nenhum store de séries temporais (Prometheus etc.) que justifique Grafana para métricas real-time. `dashboards/grafana/` permanece como scaffold não usado.
 
 `src/serving/dashboards/` provisiona, de forma idempotente (via API REST do Superset), a conexão com o Postgres, os datasets (`fact_transactions`, `agg_daily_fraud_metrics`) e o dashboard **"Fraude e Transações - Visão Geral"**:
 
@@ -371,7 +372,7 @@ make dashboards-export   # snapshot versionado em dashboards/superset/dashboard_
 
 **Streaming na serving layer (issues #38 e #47)**: o `fraud_score` do batch (`fact_transactions`) segue `NULL` por definição (só o streaming o calcula), mas a saída do detector é carregada no Postgres em `stream_scored_transactions` (o veredito do Fraud Engine: `fraud_score`, `is_fraud_predicted`, `fraud_signals`, `fraud_type_predicted`; o Z-Score antigo em paralelo; o rótulo do gerador em `is_fraud`/`fraud_type`; e a latência evento→processamento) e `fraud_alerts` (os mesmos alertas do tópico Kafka, com os sinais que os dispararam), com `make spark-submit-stream-postgres` (também é a última task da DAG `batch_transformation_pipeline`). `GET /alerts` devolve esses alertas reais, com `fraud_signals`, e o dashboard ganhou latência média, alertas do detector, distribuição de `fraud_score` e alertas por hora.
 
-### Limitações conhecidas da V1
+### Limitações conhecidas
 
 | Limitação | Causa | Referência |
 |-----------|-------|------------|
@@ -381,7 +382,7 @@ make dashboards-export   # snapshot versionado em dashboards/superset/dashboard_
 | Batch e streaming não rodam juntos no cluster Spark padrão | O streaming ocupa os 4 cores e 4 GB dos workers | [`docs/runbook.md`](docs/runbook.md#troubleshooting) |
 | As métricas de fraude vêm de dado sintético (Recall de 94% offline e 91% online) | O gerador injeta as assinaturas que os sinais procuram; sem o sinal `NEW_DESTINATION` o Recall cai para 88% e engenharia social de 68% para 38%. Com dado real o Recall seria menor | [`docs/fraud_evaluation.md`](docs/fraud_evaluation.md#limitações-e-circularidade) |
 | Engenharia social *stealth* não é detectada (Recall 0%); ~1/3 dos alertas ficam sem tipo inferido | Só o destinatário novo separa essa fraude de um pagamento legítimo grande | [`docs/fraud_evaluation.md`](docs/fraud_evaluation.md) |
-| Sem AWS/Terraform, QuickSight e deploy automatizado | Fora do escopo da V1 local | [#17](https://github.com/gpgomes/data-master-std-fraud/issues/17) |
+| Sem AWS/Terraform, QuickSight e deploy automatizado | Fora do escopo desta entrega: migração planejada em [`docs/roadmap.md`](docs/roadmap.md) | [#17](https://github.com/gpgomes/data-master-std-fraud/issues/17) |
 
 ---
 
