@@ -62,9 +62,14 @@ RUN pip install --no-cache-dir \
     boto3 \
     setuptools==84.0.0 \
     wheel==0.48.0 \
-    urllib3==2.8.0
+    urllib3==2.8.0 \
+    certifi==2026.10.19 \
+    uv==0.13.4
 
 # O pip do ambiente do usuário airflow (26.2.1) vendoriza msgpack e setuptools com CVE (o trivy lê o
 # pip/_vendor/vendor.txt), e a versão mais nova do pip ainda traz os mesmos. O Airflow não usa pip em
 # runtime; o pip do sistema (/usr/python) continua disponível para manutenção.
-RUN python -m pip uninstall -y pip
+# A base também instala o `prek` (hooks de pre-commit para quem desenvolve o próprio Airflow) num
+# ambiente do uv com uma cópia própria do uv; não é usado aqui e trazia CVE (GHSA-hq85-5cpj-mr62).
+RUN rm -rf /home/airflow/.local/share/uv/tools/prek /home/airflow/.local/bin/prek \
+    && python -m pip uninstall -y pip

@@ -7,8 +7,8 @@ USER root
 RUN apt-get update && apt-get upgrade -y --no-install-recommends && rm -rf /var/lib/apt/lists/*
 
 RUN pip3 install --no-cache-dir \
-    boto3==1.34.74 \
-    s3fs==2024.3.1 \
+    boto3==1.43.106 \
+    s3fs==2026.9.0 \
     pydantic==2.12.5 \
     pydantic-settings==2.2.1 \
     python-dotenv==1.2.2 \
