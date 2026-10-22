@@ -992,7 +992,7 @@ declarativo em Python (`src/governance/data_catalog/`), validado contra a
 infra real (MinIO/Postgres/Kafka — não um documento estático) e renderizado
 em `docs/data_catalog.md` (tabelas por camada + diagrama de linhagem
 Mermaid). Nenhum container novo. Um catálogo gerenciado real (OpenMetadata
-ou AWS Glue Data Catalog, já previsto na V2) fica para a fase cloud.
+ou AWS Glue Data Catalog) fica para a evolução futura na AWS (`docs/roadmap.md`).
 
 **Arquivos criados**: `src/governance/data_catalog/{registry,validator,
 render}.py` (17 `CatalogEntry`: Bronze/Silver/Gold no MinIO, 4 tabelas

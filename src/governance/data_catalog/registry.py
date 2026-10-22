@@ -7,7 +7,7 @@ mais 3-4 serviços pesados aos 19 que já rodam em `docker-compose.yml`
 producers, API), que já disputam os ~8GB alocados ao Docker neste ambiente.
 Decisão documentada em `docs/architecture.md`/`README.md` — OpenMetadata
 real (ou um catálogo gerenciado equivalente, ex. AWS Glue Data Catalog)
-fica para V2/cloud.
+fica para a evolução futura na AWS (docs/roadmap.md).
 
 Cada `CatalogEntry` é validada contra a infra real por `validator.py` (não
 é só um documento estático) e renderizada em `docs/data_catalog.md` por

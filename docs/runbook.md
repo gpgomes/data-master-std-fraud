@@ -417,7 +417,7 @@ Exceção: assets com `optional=True` no registro (`bronze_market_data` e
 do Yahoo Finance) não derrubam o `--strict`. Se estiverem sem dados, o catálogo os marca
 com ⚠️ "sem dados (opcional)", o log registra um warning e o comando sai com código 0.
 `silver_transactions_stream` (a saída do streaming) também é opcional: só existe depois que o job de
-streaming rodou. Um resultado normal nesta V1 local é, portanto: 20 datasets, 0 referências inválidas,
+streaming rodou. Um resultado normal no ambiente local é, portanto: 20 datasets, 0 referências inválidas,
 17 com ✅ (16 se o streaming nunca rodou), 2 de mercado com ⚠️ (3 sem streaming) e o dashboard
 "não validado" (não há checagem de infra para dashboards).
 
@@ -652,7 +652,7 @@ Nenhum segredo real fica versionado. `make env` (`scripts/ensure_env.py`) cria o
 
 **Ambiente que já existia antes da #58:** rode `make env` e recrie `airflow-*` e `superset` (`docker compose up -d airflow-init airflow-apiserver airflow-scheduler airflow-dag-processor superset`). A conexão do Airflow com o Spark vem de `AIRFLOW_CONN_SPARK_DEFAULT` (variável de ambiente, não cifrada no banco), então a Fernet nova não quebra nada. No Superset a senha da conexão com o Postgres foi cifrada com a chave antiga: rode `make dashboards` de novo, que recadastra a conexão.
 
-Continuam como valores fixos de dev, documentados e só válidos na máquina local: `minioadmin`, `datamaster123`, `admin/admin` (não são detectados como segredo e são as credenciais de serviços que não saem do `localhost`). Fora do ambiente local, tudo isso vem de um cofre (V2).
+Continuam como valores fixos de dev, documentados e só válidos na máquina local: `minioadmin`, `datamaster123`, `admin/admin` (não são detectados como segredo e são as credenciais de serviços que não saem do `localhost`). Fora do ambiente local, tudo isso viria de um cofre (AWS Secrets Manager na evolução futura, ver `docs/roadmap.md`).
 
 ### Autenticação da API
 
