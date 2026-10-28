@@ -18,7 +18,7 @@ RUN apt-mark hold msodbcsql18 \
     openjdk-17-jre-headless \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf "$(dirname "$(dirname "$(readlink -f "$(which java)")")")" /usr/lib/jvm/default-java \
-    && /usr/local/bin/python -m pip install --no-cache-dir --upgrade setuptools==84.0.0 wheel==0.48.0
+    && /usr/local/bin/python -m pip install --no-cache-dir --upgrade setuptools==84.2.1 wheel==0.48.0
 
 # JAVA_HOME resolvido dinamicamente acima (funciona em amd64 e arm64) — o
 # SparkSubmitOperator precisa de um JRE local, já que roda spark-submit em
@@ -60,7 +60,7 @@ RUN pip install --no-cache-dir \
     pandas==2.2.1 \
     numpy==1.26.4 \
     boto3 \
-    setuptools==84.0.0 \
+    setuptools==84.2.1 \
     wheel==0.48.0 \
     urllib3==2.8.0 \
     certifi==2026.10.19 \
