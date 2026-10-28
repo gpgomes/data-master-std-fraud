@@ -64,7 +64,8 @@ RUN pip install --no-cache-dir \
     wheel==0.48.0 \
     urllib3==2.8.0 \
     certifi==2026.10.19 \
-    uv==0.13.4
+    uv==0.13.4 \
+    dnspython==2.9.0
 
 # O pip do ambiente do usuário airflow (26.2.1) vendoriza msgpack e setuptools com CVE (o trivy lê o
 # pip/_vendor/vendor.txt), e a versão mais nova do pip ainda traz os mesmos. O Airflow não usa pip em
