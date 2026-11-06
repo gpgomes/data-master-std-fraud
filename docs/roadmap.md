@@ -58,6 +58,7 @@ passou por `terraform validate`, `tflint` e `checkov` localmente, mas nunca foi 
 | Ponto | Hoje | Na AWS |
 |---|---|---|
 | Acesso ao storage | Endpoint do MinIO, chave estática, path-style, sem TLS | Sem endpoint, credencial por role (instance profile/IRSA), TLS; avaliar `s3://` (EMRFS) e um committer otimizado, porque o overwrite dinâmico de partição no S3 é lento e não atômico |
+| Formato de tabela | Parquet puro, idempotência por overwrite dinâmico de partição (Delta descartado na issue #9) | Avaliar Iceberg (integração nativa com Glue Data Catalog e Athena) ou Delta: commits atômicos no S3, `MERGE` no lugar da reescrita de partição, time travel para desfazer cargas e compactação dos arquivos pequenos do streaming |
 | Kafka | Sem autenticação, `replication_factor=1` | TLS + IAM (`aws-msk-iam-auth` no Spark e nos producers), fator de replicação 2 ou mais |
 | DAGs | `SparkSubmitOperator` no cluster local | Operadores do EMR Serverless, com variante por ambiente para manter o local funcionando |
 | Tópicos e buckets | Criados pelo `make setup` | Declarados no Terraform |
