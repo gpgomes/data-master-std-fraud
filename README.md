@@ -52,7 +52,8 @@ Reflete o estado real implementado (não o plano original) — ver a tabela "Dec
 
 Fora do escopo desta entrega. O mapa de cada componente para o serviço AWS correspondente, o que muda no código, a ordem de migração e o custo estão em [`docs/roadmap.md`](docs/roadmap.md).
 
---------|-----------|
+| Camada | Tecnologia |
+|--------|-----------|
 | Streaming | Amazon MSK (Managed Kafka) |
 | Batch | AWS Lambda + EventBridge |
 | Orquestração | Amazon MWAA (Managed Airflow) |
