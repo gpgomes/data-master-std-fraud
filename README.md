@@ -50,20 +50,7 @@ Reflete o estado real implementado (não o plano original) — ver a tabela "Dec
 
 ### Evolução futura (AWS)
 
-Fora do escopo desta entrega. O mapa de cada componente para o serviço AWS correspondente, o que muda no código, a ordem de migração e o custo estão em [`docs/roadmap.md`](docs/roadmap.md).
-
-| Camada | Tecnologia |
-|--------|-----------|
-| Streaming | Amazon MSK (Managed Kafka) |
-| Batch | AWS Lambda + EventBridge |
-| Orquestração | Amazon MWAA (Managed Airflow) |
-| Processamento | AWS EMR (Spark) |
-| Armazenamento | Amazon S3 |
-| Serving | Amazon Athena + Redshift Serverless |
-| Catálogo | AWS Glue Data Catalog |
-| Visualização | Amazon QuickSight |
-| IaC | Terraform |
-| CI/CD | GitHub Actions |
+**Fora do escopo desta entrega: nada foi provisionado numa conta AWS.** O que se avalia é a plataforma local acima. A migração está planejada em [`docs/roadmap.md`](docs/roadmap.md), que traz o mapa de cada componente local para o serviço AWS correspondente, o que muda no código, a ordem de migração e o custo estimado.
 
 ---
 
