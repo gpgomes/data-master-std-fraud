@@ -252,7 +252,9 @@ class TestStreamMetricsListener:
 # ── Execuções de DAG ──────────────────────────────────────────────────────────────
 
 
-def _row(states: dict[str, str], start: datetime | None, own: str = "record_pipeline_run", now=None):
+def _row(
+    states: dict[str, str], start: datetime | None, own: str = "record_pipeline_run", now=None
+):
     return pipeline_run_row(
         dag_id="batch_transformation_pipeline",
         run_id="manual__1",
@@ -414,6 +416,16 @@ class TestPlatformDashboard:
         from src.serving.dashboards.platform_charts import PLATFORM_CHARTS
 
         assert all(c.optional for c in PLATFORM_CHARTS)
+
+    def test_every_platform_chart_uses_the_slo_report_24h_window(self):
+        """O painel e o `make slo-report` olham a mesma janela; sem ela o painel somaria o histórico."""
+        from src.serving.dashboards.platform_charts import PLATFORM_CHARTS, TIME_COLUMNS
+
+        for chart in PLATFORM_CHARTS:
+            window = f"{TIME_COLUMNS[chart.dataset_table]} >= (now() AT TIME ZONE 'UTC') - interval '24 hours'"
+            form_where = [f["sqlExpression"] for f in chart.form_data_extra["adhoc_filters"]]
+            assert any(window in w for w in form_where), chart.slice_name
+            assert window in chart.query_extra["extras"]["where"], chart.slice_name
 
     def test_row_sizes_cover_every_chart(self):
         from src.serving.dashboards.platform_charts import PLATFORM_CHARTS, PLATFORM_ROW_SIZES
