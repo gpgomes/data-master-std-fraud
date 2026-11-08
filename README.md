@@ -361,7 +361,7 @@ A imagem é gerada do próprio registro (`make catalog`, Python puro, sem Graphv
 
 `src/serving/dashboards/` provisiona, de forma idempotente (via API REST do Superset), a conexão com o Postgres, os datasets (`fact_transactions`, `agg_daily_fraud_metrics`) e o dashboard **"Fraude e Transações - Visão Geral"**:
 
-- KPIs: Volume de Transações, Valor Total (R$), Taxa de Fraude (%), Alertas de Fraude
+- KPIs: Volume de Transações, Valor Total (R$), Taxa de Fraude (%), Fraudes Confirmadas (rótulo `is_fraud`)
 - Séries temporais: Volume diário por tipo de transação, Taxa de fraude diária (%)
 - Distribuição de fraude por `fraud_type`
 - Filtros nativos de período (`date_key`) e tipo de transação (`transaction_type`)

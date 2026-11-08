@@ -69,12 +69,12 @@ CHARTS: tuple[ChartDef, ...] = (
         description="fraud_count / total_transactions * 100, ponderado pelo periodo.",
     ),
     ChartDef(
-        slice_name="KPI - Alertas de Fraude",
+        slice_name="KPI - Fraudes Confirmadas",
         viz_type="big_number_total",
         dataset_table="fact_transactions",
         form_data_extra={"metric": "count", "adhoc_filters": [{"clause": "WHERE", "expressionType": "SQL", "sqlExpression": "is_fraud = true"}]},
         query_extra={"metrics": ["count"], "extras": {"where": "is_fraud = true"}},
-        description="COUNT(*) WHERE is_fraud = true — transacoes com fraude confirmada (fact_transactions).",
+        description="COUNT(*) WHERE is_fraud = true — transacoes com fraude confirmada pelo rotulo (fact_transactions); nao sao alertas de detector (ver KPI - Alertas do Detector).",
     ),
     ChartDef(
         slice_name="Volume Diario por Tipo de Transacao",

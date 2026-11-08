@@ -486,7 +486,7 @@ Abra `http://localhost:8088/superset/dashboard/fraude-transacoes-visao-geral/`
 "Período" e o filtro "Tipo de Transação" aparecem no topo e, ao aplicados,
 os KPIs/gráficos atualizam; os números batem com uma query direta no
 Postgres (ex.: `SELECT COUNT(*) FROM fact_transactions WHERE is_fraud =
-true` deve bater com o KPI "Alertas de Fraude").
+true` deve bater com o KPI "Fraudes Confirmadas").
 
 ### Adicionar/alterar um chart
 

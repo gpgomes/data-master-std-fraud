@@ -129,7 +129,8 @@ PLATFORM_CHARTS: tuple[ChartDef, ...] = (
         "stream_batch_metrics",
         "batch_timestamp",
         [_sql("MAX(kafka_lag)", "Lag (eventos)"), _sql("MAX(state_rows)", "Estado curto (linhas)")],
-        "Lag do consumidor e tamanho do estado curto de 6 h lido a cada micro-batch.",
+        "Lag do consumidor e tamanho do estado curto (1 h completa + últimos 5 eventos por cliente"
+        " até 6 h, #56) lido a cada micro-batch.",
     ),
     _timeseries(
         "Stream - Tempo por Etapa do Micro-batch",
