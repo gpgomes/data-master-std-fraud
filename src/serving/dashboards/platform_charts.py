@@ -6,7 +6,9 @@ por micro-batch, do StreamingQueryListener), `pipeline_runs` (uma por execução
 são `optional=True`: as tabelas só têm dado depois que o stream, as DAGs ou a API rodaram.
 
 As metas de SLO não ficam aqui, e sim em `src/serving/queries/slo_report.sql` (`make slo-report`):
-o dashboard mostra a série, o relatório diz se cumpre.
+o dashboard mostra a série, o relatório diz se cumpre. Os dois olham a mesma janela, as últimas 24 h
+(UTC): sem ela, o painel somaria o histórico inteiro (testes de carga antigos inclusive) e
+contradiria o relatório.
 """
 
 from __future__ import annotations
@@ -20,19 +22,34 @@ PLATFORM_DATASETS = ("stream_batch_metrics", "pipeline_runs", "quality_gate_runs
 # gates com falha; 2 KPIs e a série da API
 PLATFORM_ROW_SIZES = (3, 4, 2, 3)
 
+# Coluna de tempo de cada tabela e a janela do `slo_report.sql`.
+TIME_COLUMNS = {
+    "stream_batch_metrics": "batch_timestamp",
+    "pipeline_runs": "start_date",
+    "quality_gate_runs": "run_at",
+    "api_requests": "requested_at",
+}
+
+
+def last_24h(table: str) -> str:
+    return f"{TIME_COLUMNS[table]} >= (now() AT TIME ZONE 'UTC') - interval '24 hours'"
+
+
+def _where(table: str, extra: str | None = None) -> tuple[list[dict], dict]:
+    """(adhoc_filters do chart, extras da query) com a janela de 24 h e um filtro opcional."""
+    where = last_24h(table) if not extra else f"{last_24h(table)} AND {extra}"
+    adhoc = [{"clause": "WHERE", "expressionType": "SQL", "sqlExpression": where}]
+    return adhoc, {"where": where}
+
 
 def _sql(expression: str, label: str) -> dict:
     return {"expressionType": "SQL", "sqlExpression": expression, "label": label}
 
 
 def _kpi(slice_name: str, table: str, metric: dict, description: str, where: str | None = None):
-    form: dict = {"metric": metric}
-    query: dict = {"metrics": [metric]}
-    if where:
-        form["adhoc_filters"] = [
-            {"clause": "WHERE", "expressionType": "SQL", "sqlExpression": where}
-        ]
-        query["extras"] = {"where": where}
+    adhoc, extras = _where(table, where)
+    form: dict = {"metric": metric, "adhoc_filters": adhoc}
+    query: dict = {"metrics": [metric], "extras": extras}
     return ChartDef(
         slice_name=slice_name,
         viz_type="big_number_total",
@@ -48,6 +65,7 @@ def _timeseries(
     slice_name: str, table: str, time_col: str, metrics: list, description: str, groupby=None
 ):
     groupby = groupby or []
+    adhoc, extras = _where(table)
     return ChartDef(
         slice_name=slice_name,
         viz_type="echarts_timeseries_line",
@@ -57,6 +75,7 @@ def _timeseries(
             "groupby": groupby,
             "granularity_sqla": time_col,
             "time_grain_sqla": "PT1M",
+            "adhoc_filters": adhoc,
         },
         query_extra={
             "metrics": metrics,
@@ -64,7 +83,7 @@ def _timeseries(
             "is_timeseries": True,
             "granularity": time_col,
             "time_grain_sqla": "PT1M",
-            "extras": {"time_grain_sqla": "PT1M"},
+            "extras": {"time_grain_sqla": "PT1M", **extras},
         },
         description=description,
         optional=True,
@@ -129,7 +148,8 @@ PLATFORM_CHARTS: tuple[ChartDef, ...] = (
         "stream_batch_metrics",
         "batch_timestamp",
         [_sql("MAX(kafka_lag)", "Lag (eventos)"), _sql("MAX(state_rows)", "Estado curto (linhas)")],
-        "Lag do consumidor e tamanho do estado curto de 6 h lido a cada micro-batch.",
+        "Lag do consumidor e tamanho do estado curto (1 h completa + últimos 5 eventos por cliente"
+        " até 6 h, #56) lido a cada micro-batch.",
     ),
     _timeseries(
         "Stream - Tempo por Etapa do Micro-batch",
@@ -150,6 +170,7 @@ PLATFORM_CHARTS: tuple[ChartDef, ...] = (
         dataset_table="pipeline_runs",
         form_data_extra={
             "query_mode": "aggregate",
+            "adhoc_filters": _where("pipeline_runs")[0],
             "groupby": ["dag_id", "state"],
             "metrics": [
                 "count",
@@ -158,6 +179,7 @@ PLATFORM_CHARTS: tuple[ChartDef, ...] = (
             ],
         },
         query_extra={
+            "extras": _where("pipeline_runs")[1],
             "columns": ["dag_id", "state"],
             "metrics": [
                 "count",

@@ -50,19 +50,7 @@ Reflete o estado real implementado (não o plano original) — ver a tabela "Dec
 
 ### Evolução futura (AWS)
 
-Fora do escopo desta entrega. O mapa de cada componente para o serviço AWS correspondente, o que muda no código, a ordem de migração e o custo estão em [`docs/roadmap.md`](docs/roadmap.md).
-
---------|-----------|
-| Streaming | Amazon MSK (Managed Kafka) |
-| Batch | AWS Lambda + EventBridge |
-| Orquestração | Amazon MWAA (Managed Airflow) |
-| Processamento | AWS EMR (Spark) |
-| Armazenamento | Amazon S3 |
-| Serving | Amazon Athena + Redshift Serverless |
-| Catálogo | AWS Glue Data Catalog |
-| Visualização | Amazon QuickSight |
-| IaC | Terraform |
-| CI/CD | GitHub Actions |
+**Fora do escopo desta entrega: nada foi provisionado numa conta AWS.** O que se avalia é a plataforma local acima. A migração está planejada em [`docs/roadmap.md`](docs/roadmap.md), que traz o mapa de cada componente local para o serviço AWS correspondente, o que muda no código, a ordem de migração e o custo estimado.
 
 ---
 
@@ -360,7 +348,7 @@ A imagem é gerada do próprio registro (`make catalog`, Python puro, sem Graphv
 
 `src/serving/dashboards/` provisiona, de forma idempotente (via API REST do Superset), a conexão com o Postgres, os datasets (`fact_transactions`, `agg_daily_fraud_metrics`) e o dashboard **"Fraude e Transações - Visão Geral"**:
 
-- KPIs: Volume de Transações, Valor Total (R$), Taxa de Fraude (%), Alertas de Fraude
+- KPIs: Volume de Transações, Valor Total (R$), Taxa de Fraude (%), Fraudes Confirmadas (rótulo `is_fraud`)
 - Séries temporais: Volume diário por tipo de transação, Taxa de fraude diária (%)
 - Distribuição de fraude por `fraud_type`
 - Filtros nativos de período (`date_key`) e tipo de transação (`transaction_type`)
