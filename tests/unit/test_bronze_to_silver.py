@@ -581,3 +581,67 @@ class TestConstants:
 
     def test_default_fx_eur_positive(self):
         assert _DEFAULT_FX_RATES["EUR"] > 0
+
+
+# ── Leitura do Bronze: poda de partições e cache (revisão para a banca) ───────
+
+
+def _write_bronze(spark, base: str, partitions: dict[tuple[int, int, int], list[dict]]) -> str:
+    """Grava um Bronze de transações particionado por year=/month=/day= (a data do arquivo)."""
+    from pyspark.sql import functions as F
+
+    path = os.path.join(base, "transactions")
+    for (y, m, d), rows in partitions.items():
+        (
+            _make_tx(spark, rows)
+            .withColumn("year", F.lit(y))
+            .withColumn("month", F.lit(m))
+            .withColumn("day", F.lit(d))
+            .write.mode("append")
+            .partitionBy("year", "month", "day")
+            .parquet(path)
+        )
+    return path
+
+
+class TestBronzeTransactionsPruning:
+    PARTITIONS = {
+        (2024, 1, 10): [{"transaction_id": "far-before", "timestamp": datetime(2024, 1, 10, 12, 0)}],
+        (2024, 1, 15): [{"transaction_id": "in-range", "timestamp": datetime(2024, 1, 15, 12, 0)}],
+        # Arquivo do dia 16 com transação do dia 15 (perto da meia-noite): a margem a mantém.
+        (2024, 1, 16): [
+            {"transaction_id": "late-file", "timestamp": datetime(2024, 1, 15, 23, 30)},
+            {"transaction_id": "next-day", "timestamp": datetime(2024, 1, 16, 9, 0)},
+        ],
+        (2024, 2, 20): [{"transaction_id": "far-after", "timestamp": datetime(2024, 2, 20, 12, 0)}],
+    }
+
+    def _bronze(self, spark, tmp_path):
+        rows = {k: [_sample_transaction(**r) for r in v] for k, v in self.PARTITIONS.items()}
+        return _write_bronze(spark, str(tmp_path / "bronze"), rows)
+
+    def test_reads_only_partitions_in_range_plus_margin(self, spark: SparkSession, tmp_path):
+        path = self._bronze(spark, tmp_path)
+        t = BronzeToSilverTransformer(spark=spark, start_date="2024-01-15", end_date="2024-01-15")
+        df = t._read_bronze_transactions(path)
+        plan = df._jdf.queryExecution().executedPlan().toString()
+        # O filtro vira PartitionFilters no scan: as partições fora do intervalo nem são abertas.
+        assert "PartitionFilters: [" in plan and "make_date" in plan
+        assert {r.transaction_id for r in df.collect()} == {"in-range", "late-file", "next-day"}
+
+    def test_without_dates_reads_everything(self, spark: SparkSession, tmp_path):
+        path = self._bronze(spark, tmp_path)
+        t = BronzeToSilverTransformer(spark=spark)
+        assert t._read_bronze_transactions(path).count() == 5
+
+    def test_transform_keeps_late_file_and_filters_exactly(self, spark: SparkSession, tmp_path):
+        self._bronze(spark, tmp_path)
+        t = BronzeToSilverTransformer(spark=spark, start_date="2024-01-15", end_date="2024-01-15")
+        t._bronze = str(tmp_path / "bronze")
+        t._silver = str(tmp_path / "silver")
+        metrics = t.transform_transactions()
+        ids = {r.transaction_id for r in spark.read.parquet(f"{t._silver}/transactions/").collect()}
+        assert ids == {"in-range", "late-file"}
+        assert metrics["rows_written"] == 2
+        # Lidos só os dias 15 e 16 (a margem do dia 14 não tem arquivo): 3 linhas, não as 5 do Bronze.
+        assert metrics["rows_read"] == 3
