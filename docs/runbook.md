@@ -53,6 +53,26 @@ Apagar `local/checkpoints/` também apaga os marcadores de progresso (`stream_pr
 
 O **estado curto** do detector (`silver/_stream_state/recent_events/`, ver abaixo) não faz parte do checkpoint e sobrevive a esse reset. Para recomeçar do zero, apague-o também: `docker compose exec minio mc rm --recursive --force local/silver/_stream_state/`.
 
+### Memória do streaming
+
+**Sintoma:** com a stack inteira no ar (Airflow, Superset, Kafka UI, API), o stream morre depois de 15 a 30 min com `Lost executor ... Command exited with code 137` e o `make spark-submit-stream` sai com `Error 137`. O 137 é o kernel da VM do Docker matando o maior processo por falta de memória (os containers não têm limite próprio). Para confirmar:
+
+```bash
+docker run --rm --privileged --pid=host alpine dmesg | grep -E "Out of memory|Killed process"
+```
+
+**Causa e configuração (medido em 08/11/2026):**
+
+- **Spark:** com os 2g de padrão do `config.py`, o driver e os dois executores do stream ocupavam ~6,6 GB, e a JVM vai ocupando o heap até o teto, por isso a queda demorava ~20 min. O stream processa ~100 eventos por micro-batch, e 1g basta: o `make spark-submit-stream` usa `STREAM_DRIVER_MEMORY=1g` e `STREAM_EXECUTOR_MEMORY=1g` (sobrescrevíveis, ex.: `make spark-submit-stream STREAM_EXECUTOR_MEMORY=2g`). Em 40 min com a stack inteira, a memória dos workers ficou estável (~1,6–1,9 GB por container, contando o processo do worker) e o micro-batch p95 em ~5 s. O batch continua com 2g.
+
+- **MinIO:** ela dimensiona o pool de buffers pela memória que enxerga e o usa em rodízio, então com o stream gravando a cada 10 s o pool inteiro vai ficando residente. Sem limite, ela enxerga a VM inteira e chega a ~2,4 GB (foi morta pelo kernel com esse tamanho). O compose define `mem_limit: 2g` (sobrescrevível por `MINIO_MEM_LIMIT` no `.env`): o pool passa a ~1,75 GB e a MinIO estabiliza em ~1,8–1,9 GB. `GOMEMLIMIT` e `MINIO_API_REQUESTS_MAX` não mudam o pool; com menos de ~2 GB de limite ela estoura o próprio teto e reinicia, o que derruba o stream.
+
+**Validação (08–09/11/2026):** stream por 47 min com a stack inteira no ar e o producer a 10 TPS: nenhuma falha, MinIO sem reiniciar (~1,8 GB no fim), workers ~1,7–1,9 GB, micro-batch p95 de 4–6 s, latência p95 de ~11,5 s. Sobra pouco na VM (~0,5–0,8 GB livres): evite rodar outro job Spark junto.
+
+**Recriar a MinIO:** ao ser recriado (`docker compose up -d minio` depois de mudar o compose), o container da Bitnami fica "healthy" ainda durante a configuração inicial e reinicia uma vez logo depois (`/.mc/config.json: permission denied`). Espere aparecer `MinIO setup finished` no log antes de subir o stream.
+
+**Mac suspenso:** se o Mac dorme, a VM do Docker congela e, ao acordar, o stream mostra micro-batches de muitos minutos e timeouts do Kafka (`TimeoutException`). Não é bug do stream. Para rodar o stream por muito tempo (demo, teste de carga), deixe o Mac na tomada, com a tampa aberta, e rode `caffeinate -dims` num terminal.
+
 ### Semântica de entrega do streaming (issue #36)
 
 Reiniciar ou derrubar o `spark-submit-stream` no meio de um micro-batch faz o Spark reexecutar aquele mesmo `batch_id`. O `_process_batch` trata isso por etapa:

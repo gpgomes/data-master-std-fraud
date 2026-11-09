@@ -10,6 +10,13 @@ COMPOSE          := docker compose
 SPARK_MASTER     := spark://localhost:7077
 BATCH_JOB        := src/transformation/batch/bronze_to_silver.py
 STREAM_JOB       := src/transformation/streaming/stream_processor.py
+# Memória do job de streaming (driver e cada executor). O stream processa pouco por micro-batch e,
+# com os 2g de padrão do config.py, o driver e os dois executores somavam ~6,6 GB: com a stack inteira
+# no ar, a VM do Docker (12 GB) ficava sem memória em ~20 min. Com 1g, medido por 40 min, a memória
+# fica estável e o micro-batch p95 em ~5 s. O executor vai por variável de ambiente porque o
+# `spark_session` o fixa a partir do `config.py`; o driver precisa ir no spark-submit (modo client).
+STREAM_DRIVER_MEMORY   ?= 1g
+STREAM_EXECUTOR_MEMORY ?= 1g
 # Usa o interpretador do .venv se existir (criado via `python3.11 -m venv .venv`),
 # senão cai para python3 do PATH. Sobrescrevível: `make test PYTHON=python3.11`.
 PYTHON           ?= $(shell [ -x .venv/bin/python ] && echo .venv/bin/python || echo python3)
@@ -98,8 +105,9 @@ spark-submit-batch: ## Submeter job PySpark batch (Bronze → Silver) — Gold �
 		$(BATCH_JOB)
 
 spark-submit-stream: ## Submeter job PySpark streaming (Kafka → Silver + detecção de fraude)
-	$(COMPOSE) exec spark-master spark-submit \
+	$(COMPOSE) exec -e SPARK_EXECUTOR_MEMORY=$(STREAM_EXECUTOR_MEMORY) spark-master spark-submit \
 		--master $(SPARK_MASTER) \
+		--driver-memory $(STREAM_DRIVER_MEMORY) \
 		--packages org.apache.spark:spark-sql-kafka-0-10_2.13:4.2.0 \
 		$(STREAM_JOB)
 
