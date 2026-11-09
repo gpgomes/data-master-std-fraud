@@ -19,8 +19,9 @@ os dois detectores no mesmo tráfego.
 do scoring e os devolve por `transaction_id` no fim. Nenhum detector recebe uma coluna de rótulo.
 
 **Estado curto** (`_load_history`/`_persist_history`): os últimos `STATE_HORIZON_SECONDS` (6 h) de
-eventos, com as colunas que os sinais de janela precisam. Vai para um caminho novo
-(`_stream_state/recent_events/`) porque o Parquet antigo, de 3 colunas, é incompatível.
+eventos, com as colunas que os sinais de janela precisam, em `_stream_state/`. Alterna entre dois
+slots (`recent_events/` e `recent_events_b/`) com um marcador `CURRENT_A`/`CURRENT_B`: nunca é
+regravado no caminho de onde foi lido (#87).
 
 **Python 3.10:** este módulo e os do Fraud Engine rodam no container do Spark (Python 3.10, sem
 numpy); `tests/unit/test_spark_container_compat.py` vigia isso.
@@ -258,13 +259,43 @@ class StreamProcessor:
 
     # ── Estado curto entre micro-batches (eventos das últimas 6 h) ──────────────
 
+    # O estado alterna entre dois slots (issue #87): `recent_events/` (A, o caminho de sempre) e
+    # `recent_events_b/` (B). Um arquivo vazio CURRENT_A ou CURRENT_B, ao lado deles, diz qual vale.
+    # Gravar = escrever no slot que NÃO está sendo lido e só então trocar o marcador. Antes o estado
+    # era regravado com overwrite no mesmo caminho de onde foi lido: se o cache se perdesse (executor
+    # morto), o Spark relia um caminho já apagado e o estado sumia em silêncio. Pontos de queda:
+    # durante a gravação ou antes do marcador, o slot atual segue intacto e o replay regrava o outro;
+    # entre criar o marcador novo e apagar o antigo, vale o mais recente; sem marcador (estado de
+    # antes da #87, ou o do seed_stream_state.py), vale o slot A.
+
+    def _state_slots(self) -> dict[str, str]:
+        base = self._history_path.rstrip("/")
+        return {"A": f"{base}/", "B": f"{base}_b/"}
+
+    def _state_marker(self, slot: str) -> str:
+        root = self._history_path.rstrip("/").rsplit("/", 1)[0]
+        return f"{root}/CURRENT_{slot}"
+
+    def _current_state_slot(self) -> str:
+        """Slot do estado em vigor: o do marcador mais recente; sem marcador, o A."""
+        found = []
+        for slot in ("A", "B"):
+            path, fs = self._hadoop_path(self._state_marker(slot))
+            if fs.exists(path):
+                found.append((fs.getFileStatus(path).getModificationTime(), slot))
+        return max(found)[1] if found else "A"
+
+    def _current_state_path(self) -> str:
+        return self._state_slots()[self._current_state_slot()]
+
     def _load_history(self) -> DataFrame:
-        """Carrega o estado curto persistido pelo micro-batch anterior. Ausência do path
-        (primeira execução, ou pós replay do zero) é normal — retorna estado vazio."""
+        """Carrega o estado curto persistido pelo micro-batch anterior (do slot em vigor). Ausência
+        do path (primeira execução, ou pós replay do zero) é normal — retorna estado vazio."""
+        path = self._current_state_path()
         try:
-            return self.spark.read.parquet(self._history_path)
+            return self.spark.read.parquet(path)
         except AnalysisException:
-            logger.info("Nenhum estado anterior encontrado — estado vazio", path=self._history_path)
+            logger.info("Nenhum estado anterior encontrado — estado vazio", path=path)
             return self._empty_history_df()
 
     def _empty_df(self, schema: StructType) -> DataFrame:
@@ -299,7 +330,13 @@ class StreamProcessor:
         estado. Função pura: o resultado é o que `_persist_history` grava para o próximo
         micro-batch. Um evento que chegue com mais de 1 h de atraso é pontuado com esse contexto
         compactado (ver "Eventos atrasados" no runbook)."""
-        combined = history.select(*EVENT_COLUMNS).unionByName(current_batch.select(*EVENT_COLUMNS))
+        # Sem duplicata por transaction_id: um replay depois da troca de slot traz no estado eventos
+        # do próprio micro-batch, e o at-least-once do Kafka pode repetir um evento entre batches.
+        combined = (
+            history.select(*EVENT_COLUMNS)
+            .unionByName(current_batch.select(*EVENT_COLUMNS))
+            .dropDuplicates(["transaction_id"])
+        )
         max_row = combined.agg(F.max("timestamp")).first()
         max_ts = max_row[0] if max_row is not None else None
         if max_ts is None:
@@ -317,8 +354,15 @@ class StreamProcessor:
         )
 
     def _persist_history(self, current_batch: DataFrame, history: DataFrame) -> None:
+        """Grava o novo estado no slot que não está em vigor e então troca o marcador (#87)."""
+        current = self._current_state_slot()
+        target = "B" if current == "A" else "A"
         pruned = self._compute_pruned_history(current_batch, history)
-        pruned.write.format("parquet").mode("overwrite").save(self._history_path)
+        pruned.write.format("parquet").mode("overwrite").save(self._state_slots()[target])
+        new_marker, fs = self._hadoop_path(self._state_marker(target))
+        fs.create(new_marker, True).close()
+        old_marker, _ = self._hadoop_path(self._state_marker(current))
+        fs.delete(old_marker, False)
 
     # ── Enriquecimento e Z-Score ─────────────────────────────────────────────────
 

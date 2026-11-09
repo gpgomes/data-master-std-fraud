@@ -84,7 +84,7 @@ O que é "normal" para um cliente (valor típico, devices, redes, destinatários
 | Camada | O que calcula | Onde vive | Custo |
 |--------|---------------|-----------|-------|
 | Batch (longa) | Perfil de comportamento por cliente | `gold/customer_behavior_profile/`, recalculado por `silver_to_gold.py` (~30 s para 500 mil transações) | Varre o histórico, roda uma vez por execução |
-| Stream (curta) | Velocidade, viagem impossível e concentração de destinatários | Estado curto em `silver/_stream_state/recent_events/`: a última 1 h completa + os últimos 5 eventos de cada cliente até 6 h (compactação da issue #56) | Lê o perfil por broadcast e o estado curto a cada micro-batch |
+| Stream (curta) | Velocidade, viagem impossível e concentração de destinatários | Estado curto em `silver/_stream_state/` (dois slots com marcador, issue #87): a última 1 h completa + os últimos 5 eventos de cada cliente até 6 h (compactação da issue #56) | Lê o perfil por broadcast e o estado curto a cada micro-batch |
 
 O custo clássico da Lambda, a lógica duplicada entre batch e stream, é o núcleo puro `src/transformation/fraud/` (`DataFrame → DataFrame`, sem UDF Python) chamado pelos dois caminhos, mais um **teste de paridade**: o dataset inteiro de uma vez dá o mesmo score, sinais e tipo que o mesmo dataset em micro-batches com o estado persistido entre eles.
 

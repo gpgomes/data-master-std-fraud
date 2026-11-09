@@ -121,7 +121,9 @@ Silver mudar; o stream só o lê na partida, então reinicie o job depois.
 precisam dos eventos anteriores, que o micro-batch sozinho não tem. Entre micro-batches o job grava, só com
 as colunas que o detector enxerga (nunca o rótulo), **toda a última hora** de eventos e, de 1 h até 6 h,
 **só os últimos 5 eventos de cada cliente** (a viagem impossível é o único sinal que olha além de 1 h, e só para
-eles; compactação da issue #56), em `silver/_stream_state/recent_events/`. Reiniciar o job continua desse estado.
+eles; compactação da issue #56), em `silver/_stream_state/`. Reiniciar o job continua desse estado.
+
+**Dois slots (issue #87).** O estado alterna entre `recent_events/` (slot A) e `recent_events_b/` (slot B); um arquivo vazio `CURRENT_A` ou `CURRENT_B` em `silver/_stream_state/` diz qual vale. Cada micro-batch grava o novo estado no slot que **não** está sendo lido e só então troca o marcador. Antes ele era regravado com overwrite no mesmo caminho de onde foi lido: se um executor perdesse o cache no meio, o Spark relia um caminho já apagado e o estado sumia em silêncio. Sem marcador (estado antigo, ou o semeado pelo `scripts/seed_stream_state.py`, que apaga os marcadores), vale o slot A. Para olhar o estado em vigor: `docker compose exec minio mc ls local/silver/_stream_state/`.
 
 **Eventos atrasados (#59).** Não há watermark: nenhum evento é descartado por chegar tarde. Um evento atrasado é pontuado contra os eventos que o antecedem **em tempo de evento** que estiverem no estado (e, por isso, a viagem impossível ainda é detectada), e sai do estado se for mais velho que 6 h em relação ao evento mais recente já visto. Com a compactação (#56), um evento com mais de 1 h de atraso só tem, do seu passado, os últimos 5 eventos de cada cliente que sobraram no estado; um evento com mais de 6 h de atraso é pontuado com pouco contexto de janela curta. O caminho antigo
 (`silver/_stream_state/customer_amount_history/`, 3 colunas) ficou órfão e pode ser apagado.

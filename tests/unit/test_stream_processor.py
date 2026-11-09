@@ -950,7 +950,7 @@ class TestIdempotentMicroBatch:
             p._process_batch(self._new_batch(spark), 5)
             p._process_batch(self._new_batch(spark), 5)
 
-        assert spark.read.parquet(p._history_path).count() == 4
+        assert spark.read.parquet(p._current_state_path()).count() == 4
 
     def test_the_state_written_by_a_batch_feeds_the_next_one_even_after_a_restart(
         self, spark, tmp_path
@@ -972,7 +972,7 @@ class TestIdempotentMicroBatch:
         assert "GEO_VELOCITY" in alerted["fraud_signals"]
         assert alerted["is_fraud_predicted"] is True
         assert kafka.call_count == 2
-        assert spark.read.parquet(restarted._history_path).count() == 2
+        assert spark.read.parquet(restarted._current_state_path()).count() == 2
 
     def test_duplicate_events_in_a_micro_batch_are_scored_and_stored_once(self, spark, tmp_path):
         """O at-least-once do Kafka pode repetir um evento; os joins de volta precisam ser 1:1."""
@@ -983,7 +983,7 @@ class TestIdempotentMicroBatch:
             p._process_batch(_make_tx(spark, [*self._BATCH, self._BATCH[-1]]), 0)
 
         assert self._silver_stream(spark, p).count() == 4
-        assert spark.read.parquet(p._history_path).count() == 4
+        assert spark.read.parquet(p._current_state_path()).count() == 4
         assert kafka.call_count == 2
 
     def test_state_is_persisted_without_the_label(self, spark, tmp_path):
@@ -993,7 +993,7 @@ class TestIdempotentMicroBatch:
         with patch.object(p, "_write_to_kafka"):
             p._process_batch(self._new_batch(spark), 0)
 
-        state = spark.read.parquet(p._history_path)
+        state = spark.read.parquet(p._current_state_path())
         assert not set(LABEL_COLUMNS) & set(state.columns)
         assert set(state.columns) == set(EVENT_COLUMNS)
 
@@ -1171,7 +1171,7 @@ class TestLateEvents:
 
         scored = TestIdempotentMicroBatch._silver_stream(spark, p)
         assert scored.filter("transaction_id = 't2'").count() == 1  # pontuado, não descartado
-        state_ids = {r["transaction_id"] for r in spark.read.parquet(p._history_path).collect()}
+        state_ids = {r["transaction_id"] for r in spark.read.parquet(p._current_state_path()).collect()}
         assert state_ids == {"t1"}  # mas não fica no estado
 
 
@@ -1293,7 +1293,7 @@ class TestBatchStreamParity:
         assert "GEO_VELOCITY" not in reference["tg-jump"]["fraud_signals"]
         assert any("RECIPIENT_CONCENTRATION" in r["fraud_signals"] for r in reference.values())
         # e a compactação de fato podou: sobra menos estado do que eventos processados
-        state = spark.read.parquet(p._history_path)
+        state = spark.read.parquet(p._current_state_path())
         assert state.count() < len(rows)
         old_c2 = state.filter("customer_id = 'c2' AND timestamp < '2026-03-02 10:58:00'").count()
         assert old_c2 <= sp.GEO_LOOKBACK_EVENTS
@@ -1356,3 +1356,64 @@ class TestLoadStaticInputs:
         ):
             p.run()
         assert calls == ["static", "stream"]
+
+
+# ── TestStateSlots (issue #87) ────────────────────────────────────────────────────
+
+
+class TestStateSlots:
+    """O estado curto alterna entre dois slots: nunca é regravado no caminho de onde foi lido."""
+
+    @staticmethod
+    def _processor(spark: SparkSession, root) -> StreamProcessor:
+        p = _engine_processor(spark, "c1")
+        p._history_path = f"{root.as_uri()}/silver/_stream_state/recent_events/"
+        return p
+
+    @staticmethod
+    def _ids(spark: SparkSession, path: str) -> set[str]:
+        return {r["transaction_id"] for r in spark.read.parquet(path).collect()}
+
+    def test_without_marker_reads_slot_a(self, spark, tmp_path):
+        p = self._processor(spark, tmp_path)
+        assert p._current_state_slot() == "A"
+        assert p._current_state_path() == p._history_path
+
+    def test_each_persist_writes_the_other_slot_and_flips_the_marker(self, spark, tmp_path):
+        p = self._processor(spark, tmp_path)
+        p._persist_history(_make_tx(spark, [_legit(1)]), p._load_history())
+        assert p._current_state_slot() == "B"
+        assert self._ids(spark, p._state_slots()["B"]) == {"t1"}
+        p._persist_history(_make_tx(spark, [_legit(2, ts="2026-03-02T12:01:00")]), p._load_history())
+        assert p._current_state_slot() == "A"
+        assert self._ids(spark, p._current_state_path()) == {"t1", "t2"}
+
+    def test_losing_the_cache_before_writing_loses_nothing(self, spark, tmp_path):
+        """O cenário da #87: antes, o overwrite apagava o caminho que a linhagem precisava reler."""
+        p = self._processor(spark, tmp_path)
+        p._persist_history(_make_tx(spark, [_legit(1)]), p._load_history())
+        history = p._load_history().cache()
+        history.count()
+        history.unpersist()  # o executor perdeu o cache: o Spark terá de reler o slot atual
+        p._persist_history(_make_tx(spark, [_legit(2, ts="2026-03-02T12:01:00")]), history)
+        assert self._ids(spark, p._current_state_path()) == {"t1", "t2"}
+
+    def test_crash_between_markers_keeps_the_newest_slot(self, spark, tmp_path):
+        import time
+
+        p = self._processor(spark, tmp_path)
+        p._persist_history(_make_tx(spark, [_legit(1)]), p._load_history())  # vale o B
+        time.sleep(1.1)  # a hora de modificação do marcador tem resolução de segundos em alguns FS
+        # Queda depois de criar o marcador novo (A) e antes de apagar o antigo (B).
+        path, fs = p._hadoop_path(p._state_marker("A"))
+        fs.create(path, True).close()
+        assert p._current_state_slot() == "A"
+
+    def test_replay_after_the_slot_flip_does_not_duplicate_events(self, spark, tmp_path):
+        p = self._processor(spark, tmp_path)
+        batch = [_legit(1), _legit(2, ts="2026-03-02T12:01:00")]
+        p._persist_history(_make_tx(spark, batch), p._load_history())
+        # Replay do mesmo micro-batch: o estado em vigor já tem estes eventos.
+        p._persist_history(_make_tx(spark, batch), p._load_history())
+        state = spark.read.parquet(p._current_state_path())
+        assert state.count() == state.select("transaction_id").distinct().count() == 2

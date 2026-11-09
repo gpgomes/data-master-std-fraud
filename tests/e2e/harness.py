@@ -181,11 +181,13 @@ def reset_buckets() -> None:
         bucket = E2E_ENV[key]
         assert bucket.startswith("e2e-"), bucket
         if bucket in existing:
+            # Um a um, não delete_objects: o boto3 >= 1.36 manda checksum CRC em vez do Content-MD5
+            # que a MinIO de 2024 exige no delete em lote (MissingContentMD5). No CI a MinIO sobe
+            # vazia e o delete nem acontecia; localmente, com sobras de execuções anteriores, falhava.
             paginator = s3.get_paginator("list_objects_v2")
             for page in paginator.paginate(Bucket=bucket):
-                objects = [{"Key": o["Key"]} for o in page.get("Contents", [])]
-                if objects:
-                    s3.delete_objects(Bucket=bucket, Delete={"Objects": objects})
+                for obj in page.get("Contents", []):
+                    s3.delete_object(Bucket=bucket, Key=obj["Key"])
         else:
             s3.create_bucket(Bucket=bucket)
 

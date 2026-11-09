@@ -78,6 +78,14 @@ def seed(rows: int) -> None:
     )
     path = f"s3a://{settings.minio.bucket_silver}/_stream_state/recent_events/"
     state.write.mode("overwrite").parquet(path)
+    # O estado alterna entre dois slots e um marcador CURRENT_A/CURRENT_B diz qual vale (#87). Sem
+    # marcador vale o slot A, que é este: apaga os dois para o stream ler o estado recém-semeado.
+    jvm, conf = spark._jvm, spark._jsc.hadoopConfiguration()
+    for slot in ("A", "B"):
+        marker = jvm.org.apache.hadoop.fs.Path(
+            f"s3a://{settings.minio.bucket_silver}/_stream_state/CURRENT_{slot}"
+        )
+        marker.getFileSystem(conf).delete(marker, False)
     written = spark.read.parquet(path)
     r = written.agg(
         F.count("*"), F.countDistinct("customer_id"), F.min("timestamp"), F.max("timestamp")
