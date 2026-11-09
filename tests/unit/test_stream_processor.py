@@ -1356,3 +1356,32 @@ class TestLoadStaticInputs:
         ):
             p.run()
         assert calls == ["static", "stream"]
+
+
+class TestKafkaSourceOptions:
+    """`failOnDataLoss` (issue da revisão para a banca): perder eventos sem aviso não é aceitável."""
+
+    @staticmethod
+    def _options(monkeypatch, fail_on_data_loss: bool | None) -> dict[str, str]:
+        from unittest.mock import MagicMock
+
+        from src.common.config import settings
+
+        if fail_on_data_loss is not None:
+            monkeypatch.setattr(settings.kafka, "fail_on_data_loss", fail_on_data_loss)
+        reader = MagicMock()
+        reader.format.return_value = reader
+        reader.option.return_value = reader
+        fake_spark = MagicMock()
+        fake_spark.readStream = reader
+        proc = StreamProcessor.__new__(StreamProcessor)
+        proc.spark = fake_spark
+        monkeypatch.setattr(StreamProcessor, "_parse_raw_kafka_batch", lambda self, raw: raw)
+        proc.read_transactions_stream()
+        return {c.args[0]: c.args[1] for c in reader.option.call_args_list}
+
+    def test_fails_on_data_loss_by_default(self, monkeypatch):
+        assert self._options(monkeypatch, None)["failOnDataLoss"] == "true"
+
+    def test_can_be_relaxed_by_setting(self, monkeypatch):
+        assert self._options(monkeypatch, False)["failOnDataLoss"] == "false"

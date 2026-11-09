@@ -19,6 +19,9 @@ class KafkaSettings(BaseSettings):
     auto_offset_reset: str = Field(default="earliest", alias="KAFKA_AUTO_OFFSET_RESET")
     replication_factor: int = Field(default=1, alias="KAFKA_REPLICATION_FACTOR")
     num_partitions: int = Field(default=3, alias="KAFKA_NUM_PARTITIONS")
+    # Se os offsets do checkpoint já não existem no tópico (retenção, tópico recriado), o stream falha
+    # em vez de pular para o primeiro offset disponível e perder eventos sem aviso.
+    fail_on_data_loss: bool = Field(default=True, alias="KAFKA_FAIL_ON_DATA_LOSS")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

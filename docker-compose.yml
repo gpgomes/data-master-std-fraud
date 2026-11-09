@@ -25,7 +25,7 @@ services:
       ZOOKEEPER_TICK_TIME: 2000
       TZ: America/Sao_Paulo
     ports:
-      - "2181:2181"
+      - "127.0.0.1:2181:2181"
     volumes:
       - zookeeper-data:/var/lib/zookeeper/data
       - zookeeper-log:/var/lib/zookeeper/log
@@ -61,8 +61,8 @@ services:
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       TZ: America/Sao_Paulo
     ports:
-      - "9092:9092"
-      - "29092:29092"
+      - "127.0.0.1:9092:9092"
+      - "127.0.0.1:29092:29092"
     volumes:
       - kafka-data:/var/lib/kafka/data
     networks:
@@ -113,7 +113,7 @@ services:
       KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
       TZ: America/Sao_Paulo
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     networks:
       - data-master-network
 
@@ -141,8 +141,8 @@ services:
       MINIO_CONSOLE_PORT_NUMBER: "9001"
       TZ: America/Sao_Paulo
     ports:
-      - "${MINIO_EXTERNAL_PORT:-9000}:9000"
-      - "9001:9001"
+      - "127.0.0.1:${MINIO_EXTERNAL_PORT:-9000}:9000"
+      - "127.0.0.1:9001:9001"
     volumes:
       - minio-data:/data
     networks:
@@ -194,8 +194,8 @@ services:
       MINIO_SECRET_KEY: minioadmin
       TZ: America/Sao_Paulo
     ports:
-      - "7077:7077"
-      - "8081:8080"
+      - "127.0.0.1:7077:7077"
+      - "127.0.0.1:8081:8080"
     volumes:
       - ./src:/opt/spark/work-dir/src
       - ./data:/opt/spark/work-dir/data
@@ -285,7 +285,7 @@ services:
       POSTGRES_DB: fraud_analytics
       TZ: America/Sao_Paulo
     ports:
-      - "${POSTGRES_EXTERNAL_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_EXTERNAL_PORT:-5432}:5432"
     volumes:
       - postgres-serving-data:/var/lib/postgresql/data
     networks:
@@ -372,7 +372,7 @@ services:
       AIRFLOW_CONN_SPARK_DEFAULT: '{"conn_type":"spark","host":"spark://spark-master","port":7077,"extra":{"deploy-mode":"client"}}'
       TZ: America/Sao_Paulo
     ports:
-      - "8082:8080"
+      - "127.0.0.1:8082:8080"
     volumes:
       - ./dags:/opt/airflow/dags
       - ./src:/opt/airflow/src
@@ -494,7 +494,7 @@ services:
       SUPERSET_LOAD_EXAMPLES: "no"
       TZ: America/Sao_Paulo
     ports:
-      - "8088:8088"
+      - "127.0.0.1:8088:8088"
     volumes:
       - superset-data:/app/superset_home
     networks:
@@ -591,7 +591,7 @@ services:
       # hashes SHA-256 das chaves aceitas (issue #58); vazio = a API nega tudo
       API_KEY_HASHES: ${API_KEY_HASHES:-}
     ports:
-      - "${API_EXTERNAL_PORT:-8000}:8000"
+      - "127.0.0.1:${API_EXTERNAL_PORT:-8000}:8000"
     volumes:
       - ./src/common:/app/src/common
       - ./src/serving/api:/app/src/serving/api
