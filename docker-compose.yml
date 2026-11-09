@@ -25,7 +25,11 @@ services:
       ZOOKEEPER_TICK_TIME: 2000
       TZ: America/Sao_Paulo
     ports:
+      # Portas publicadas só no loopback (127.0.0.1 e ::1): outra máquina da rede não alcança. O ::1
+      # é necessário porque no macOS "localhost" resolve primeiro para IPv6, e o kafka-python não
+      # tenta o IPv4 quando o IPv6 é recusado.
       - "127.0.0.1:2181:2181"
+      - "[::1]:2181:2181"
     volumes:
       - zookeeper-data:/var/lib/zookeeper/data
       - zookeeper-log:/var/lib/zookeeper/log
@@ -62,7 +66,9 @@ services:
       TZ: America/Sao_Paulo
     ports:
       - "127.0.0.1:9092:9092"
+      - "[::1]:9092:9092"
       - "127.0.0.1:29092:29092"
+      - "[::1]:29092:29092"
     volumes:
       - kafka-data:/var/lib/kafka/data
     networks:
@@ -114,6 +120,7 @@ services:
       TZ: America/Sao_Paulo
     ports:
       - "127.0.0.1:8080:8080"
+      - "[::1]:8080:8080"
     networks:
       - data-master-network
 
@@ -142,7 +149,9 @@ services:
       TZ: America/Sao_Paulo
     ports:
       - "127.0.0.1:${MINIO_EXTERNAL_PORT:-9000}:9000"
+      - "[::1]:${MINIO_EXTERNAL_PORT:-9000}:9000"
       - "127.0.0.1:9001:9001"
+      - "[::1]:9001:9001"
     volumes:
       - minio-data:/data
     networks:
@@ -195,7 +204,9 @@ services:
       TZ: America/Sao_Paulo
     ports:
       - "127.0.0.1:7077:7077"
+      - "[::1]:7077:7077"
       - "127.0.0.1:8081:8080"
+      - "[::1]:8081:8080"
     volumes:
       - ./src:/opt/spark/work-dir/src
       - ./data:/opt/spark/work-dir/data
@@ -286,6 +297,7 @@ services:
       TZ: America/Sao_Paulo
     ports:
       - "127.0.0.1:${POSTGRES_EXTERNAL_PORT:-5432}:5432"
+      - "[::1]:${POSTGRES_EXTERNAL_PORT:-5432}:5432"
     volumes:
       - postgres-serving-data:/var/lib/postgresql/data
     networks:
@@ -373,6 +385,7 @@ services:
       TZ: America/Sao_Paulo
     ports:
       - "127.0.0.1:8082:8080"
+      - "[::1]:8082:8080"
     volumes:
       - ./dags:/opt/airflow/dags
       - ./src:/opt/airflow/src
@@ -495,6 +508,7 @@ services:
       TZ: America/Sao_Paulo
     ports:
       - "127.0.0.1:8088:8088"
+      - "[::1]:8088:8088"
     volumes:
       - superset-data:/app/superset_home
     networks:
@@ -592,6 +606,7 @@ services:
       API_KEY_HASHES: ${API_KEY_HASHES:-}
     ports:
       - "127.0.0.1:${API_EXTERNAL_PORT:-8000}:8000"
+      - "[::1]:${API_EXTERNAL_PORT:-8000}:8000"
     volumes:
       - ./src/common:/app/src/common
       - ./src/serving/api:/app/src/serving/api
