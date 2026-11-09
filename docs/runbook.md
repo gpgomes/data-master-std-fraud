@@ -49,6 +49,8 @@ docker compose exec minio mc rm --recursive --force local/checkpoints/
 make spark-submit-stream
 ```
 
+**Recriar o tópico exige apagar o checkpoint junto.** O stream lê o Kafka com `failOnDataLoss=true` (`KAFKA_FAIL_ON_DATA_LOSS`, padrão `true`): se os offsets do checkpoint não existem mais no tópico (retenção, tópico recriado), ele falha em vez de pular eventos sem aviso. Para relaxar só em desenvolvimento: `docker compose exec -e KAFKA_FAIL_ON_DATA_LOSS=false spark-master spark-submit ...`.
+
 Apagar `local/checkpoints/` também apaga os marcadores de progresso (`stream_processor_progress/`), que precisam ser resetados junto com os `batch_id`. A saída em `silver/transactions_stream/` fica separada por `query_id` (o id do checkpoint), então o novo stream não sobrescreve a saída de execuções anteriores.
 
 O **estado curto** do detector (`silver/_stream_state/recent_events/`, ver abaixo) não faz parte do checkpoint e sobrevive a esse reset. Para recomeçar do zero, apague-o também: `docker compose exec minio mc rm --recursive --force local/silver/_stream_state/`.
@@ -674,7 +676,7 @@ Nenhum segredo real fica versionado. `make env` (`scripts/ensure_env.py`) cria o
 
 **Ambiente que já existia antes da #58:** rode `make env` e recrie `airflow-*` e `superset` (`docker compose up -d airflow-init airflow-apiserver airflow-scheduler airflow-dag-processor superset`). A conexão do Airflow com o Spark vem de `AIRFLOW_CONN_SPARK_DEFAULT` (variável de ambiente, não cifrada no banco), então a Fernet nova não quebra nada. No Superset a senha da conexão com o Postgres foi cifrada com a chave antiga: rode `make dashboards` de novo, que recadastra a conexão.
 
-Continuam como valores fixos de dev, documentados e só válidos na máquina local: `minioadmin`, `datamaster123`, `admin/admin` (não são detectados como segredo e são as credenciais de serviços que não saem do `localhost`). Fora do ambiente local, tudo isso viria de um cofre (AWS Secrets Manager na evolução futura, ver `docs/roadmap.md`).
+Continuam como valores fixos de dev, documentados e só válidos na máquina local: `minioadmin`, `datamaster123`, `admin/admin` (não são detectados como segredo e são as credenciais de serviços que não saem do `localhost`: o compose publica todas as portas só no loopback, `127.0.0.1` e `::1`, então outra máquina da rede não as alcança; o `::1` existe porque no macOS `localhost` resolve primeiro para IPv6 e o `kafka-python` não tenta o IPv4 se o IPv6 for recusado). Fora do ambiente local, tudo isso viria de um cofre (AWS Secrets Manager na evolução futura, ver `docs/roadmap.md`).
 
 ### Autenticação da API
 

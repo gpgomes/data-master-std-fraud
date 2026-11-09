@@ -241,13 +241,17 @@ class StreamProcessor:
         salvo, independente desta opção. Para reprocessar do início, apague o
         checkpoint (`s3a://checkpoints/stream_processor/`) e rode com
         `--starting-offsets earliest`.
+
+        `failOnDataLoss` vem de `KAFKA_FAIL_ON_DATA_LOSS` (padrão `true`): se os offsets do checkpoint já
+        não existem no tópico (retenção, tópico recriado), o stream falha em vez de pular eventos sem
+        aviso. Num reset intencional, apague o checkpoint junto (ver runbook).
         """
         raw = (
             self.spark.readStream.format("kafka")
             .option("kafka.bootstrap.servers", settings.kafka.internal_servers)
             .option("subscribe", settings.kafka.topic_transactions)
             .option("startingOffsets", starting_offsets)
-            .option("failOnDataLoss", "false")
+            .option("failOnDataLoss", str(settings.kafka.fail_on_data_loss).lower())
             .load()
         )
         # Sem watermark: ele só age sobre operadores com estado do Spark (agregação por
