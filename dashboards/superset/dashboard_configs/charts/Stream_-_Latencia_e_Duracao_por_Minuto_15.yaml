@@ -1,0 +1,27 @@
+slice_name: Stream - Latencia e Duracao por Minuto
+description: null
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_line
+params:
+  datasource: 5__table
+  viz_type: echarts_timeseries_line
+  metrics:
+  - expressionType: SQL
+    sqlExpression: AVG(latency_p95_s)
+    label: Latencia p95 (s)
+  - expressionType: SQL
+    sqlExpression: AVG(batch_duration_ms) / 1000.0
+    label: Duracao do micro-batch (s)
+  groupby: []
+  granularity_sqla: batch_timestamp
+  time_grain_sqla: PT1M
+  adhoc_filters:
+  - clause: WHERE
+    expressionType: SQL
+    sqlExpression: batch_timestamp >= (now() AT TIME ZONE 'UTC') - interval '24 hours'
+query_context: null
+cache_timeout: null
+uuid: 5d0716f0-43f2-4670-9195-2664b0c4f9eb
+version: 1.0.0
+dataset_uuid: da35a365-f1ab-4550-b15c-ee7210853276

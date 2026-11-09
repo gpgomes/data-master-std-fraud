@@ -1,0 +1,29 @@
+slice_name: Pipeline - Execucoes por DAG
+description: null
+certified_by: null
+certification_details: null
+viz_type: table
+params:
+  datasource: 6__table
+  viz_type: table
+  query_mode: aggregate
+  adhoc_filters:
+  - clause: WHERE
+    expressionType: SQL
+    sqlExpression: start_date >= (now() AT TIME ZONE 'UTC') - interval '24 hours'
+  groupby:
+  - dag_id
+  - state
+  metrics:
+  - count
+  - expressionType: SQL
+    sqlExpression: AVG(duration_seconds)
+    label: Duracao media (s)
+  - expressionType: SQL
+    sqlExpression: MAX(start_date)
+    label: Ultima execucao
+query_context: null
+cache_timeout: null
+uuid: 88bfe5ad-c508-451a-8ae2-f787d1b48fa4
+version: 1.0.0
+dataset_uuid: bb20cfc6-9a51-47f1-b039-75ee92d2eadd

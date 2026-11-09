@@ -1,0 +1,21 @@
+slice_name: Stream - Latencia p95 (s)
+description: null
+certified_by: null
+certification_details: null
+viz_type: big_number_total
+params:
+  datasource: 5__table
+  viz_type: big_number_total
+  metric:
+    expressionType: SQL
+    sqlExpression: percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_p95_s)
+    label: Latencia p95 (s)
+  adhoc_filters:
+  - clause: WHERE
+    expressionType: SQL
+    sqlExpression: batch_timestamp >= (now() AT TIME ZONE 'UTC') - interval '24 hours'
+query_context: null
+cache_timeout: null
+uuid: 65115361-1c91-4cf7-a27d-1853b0d74002
+version: 1.0.0
+dataset_uuid: da35a365-f1ab-4550-b15c-ee7210853276

@@ -1,0 +1,21 @@
+slice_name: API - Latencia p95 (ms)
+description: null
+certified_by: null
+certification_details: null
+viz_type: big_number_total
+params:
+  datasource: 8__table
+  viz_type: big_number_total
+  metric:
+    expressionType: SQL
+    sqlExpression: percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms)
+    label: API p95 (ms)
+  adhoc_filters:
+  - clause: WHERE
+    expressionType: SQL
+    sqlExpression: requested_at >= (now() AT TIME ZONE 'UTC') - interval '24 hours'
+query_context: null
+cache_timeout: null
+uuid: b1705634-95ae-444e-a860-73383729f117
+version: 1.0.0
+dataset_uuid: 03e1721c-3410-441d-b74a-3b4eb3ad6666

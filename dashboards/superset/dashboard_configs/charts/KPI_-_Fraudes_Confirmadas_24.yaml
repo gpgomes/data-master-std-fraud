@@ -1,4 +1,4 @@
-slice_name: KPI - Alertas de Fraude
+slice_name: KPI - Fraudes Confirmadas
 description: null
 certified_by: null
 certification_details: null
@@ -13,6 +13,6 @@ params:
     sqlExpression: is_fraud = true
 query_context: null
 cache_timeout: null
-uuid: 7681e8e0-8d06-46b6-a213-3c988dd313e5
+uuid: d14d02be-8d09-4dcd-b037-7056d2b7cc8c
 version: 1.0.0
-dataset_uuid: ae452b14-d3f3-4258-aa4b-15d245d5fb5d
+dataset_uuid: cd00fcf9-f223-4b2a-a2f5-3eb95e7222ef

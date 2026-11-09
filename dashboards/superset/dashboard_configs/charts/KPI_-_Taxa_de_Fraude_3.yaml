@@ -13,6 +13,6 @@ params:
     label: Taxa de Fraude (%)
 query_context: null
 cache_timeout: null
-uuid: 26f95117-4534-4b95-ac30-69acf2e72777
+uuid: ad20cf50-a20e-4ff8-8bd4-db2450e5a511
 version: 1.0.0
-dataset_uuid: 6d5001d1-58af-4ca4-af63-ffa1a3f205b5
+dataset_uuid: ba3e704c-65e9-441a-b0f7-730d7f9c4d3e

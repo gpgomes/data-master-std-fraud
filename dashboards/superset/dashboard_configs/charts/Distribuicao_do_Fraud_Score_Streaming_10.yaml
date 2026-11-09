@@ -16,6 +16,6 @@ params:
     sqlExpression: fraud_score IS NOT NULL
 query_context: null
 cache_timeout: null
-uuid: e0c39ecd-5c88-4777-a734-01ad0908ecb2
+uuid: 520e2e6b-c71c-4c5c-9690-6c28247995f5
 version: 1.0.0
-dataset_uuid: 09a1018c-1a21-4cc3-b035-f07068fe6ff4
+dataset_uuid: 2e9684f1-6617-4adb-b9d1-398c9ac01df4

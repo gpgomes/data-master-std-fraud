@@ -1,0 +1,23 @@
+slice_name: API - Requests por Minuto
+description: null
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_line
+params:
+  datasource: 8__table
+  viz_type: echarts_timeseries_line
+  metrics:
+  - count
+  groupby:
+  - route
+  granularity_sqla: requested_at
+  time_grain_sqla: PT1M
+  adhoc_filters:
+  - clause: WHERE
+    expressionType: SQL
+    sqlExpression: requested_at >= (now() AT TIME ZONE 'UTC') - interval '24 hours'
+query_context: null
+cache_timeout: null
+uuid: eda5b761-50a6-4782-a46a-67abc0d90e9d
+version: 1.0.0
+dataset_uuid: 03e1721c-3410-441d-b74a-3b4eb3ad6666

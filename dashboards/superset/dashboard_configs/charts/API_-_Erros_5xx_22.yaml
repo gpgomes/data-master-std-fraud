@@ -1,0 +1,22 @@
+slice_name: API - Erros 5xx (%)
+description: null
+certified_by: null
+certification_details: null
+viz_type: big_number_total
+params:
+  datasource: 8__table
+  viz_type: big_number_total
+  metric:
+    expressionType: SQL
+    sqlExpression: SUM(CASE WHEN status_code >= 500 THEN 1 ELSE 0 END)::float / NULLIF(COUNT(*),
+      0) * 100
+    label: Erros 5xx (%)
+  adhoc_filters:
+  - clause: WHERE
+    expressionType: SQL
+    sqlExpression: requested_at >= (now() AT TIME ZONE 'UTC') - interval '24 hours'
+query_context: null
+cache_timeout: null
+uuid: e9b5b8c9-7b37-43ca-8bc1-115af91ae92c
+version: 1.0.0
+dataset_uuid: 03e1721c-3410-441d-b74a-3b4eb3ad6666
