@@ -11,6 +11,10 @@
 --
 -- Status: OK (dentro da meta), VIOLADO (fora) ou SEM DADOS (nada na janela: o componente não
 -- rodou, o que também é informação).
+--
+-- Batimento do stream (issue #89): se o stream rodou na janela, o último micro-batch precisa ter
+-- menos de 5 min. Pega o stream parado (morto, travado ou o Mac suspenso), o que as outras metas,
+-- calculadas só sobre os micro-batches que existiram, não mostram.
 
 \pset null '-'
 \pset footer off
@@ -22,7 +26,8 @@ stream AS (
     SELECT count(*) AS n,
            percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_p95_s)     AS latency_p95_s,
            max(kafka_lag)                                                  AS max_lag,
-           percentile_cont(0.95) WITHIN GROUP (ORDER BY batch_duration_ms) AS duration_p95_ms
+           percentile_cont(0.95) WITHIN GROUP (ORDER BY batch_duration_ms) AS duration_p95_ms,
+           max(batch_timestamp)                                            AS last_batch
     FROM stream_batch_metrics, w
     WHERE batch_timestamp >= w.since
 ),
@@ -45,6 +50,11 @@ api AS (
     WHERE requested_at >= w.since
 ),
 slo(ordem, slo, meta, medido, amostras, ok) AS (
+    SELECT 0, 'Stream: último micro-batch (batimento)', '< 5 min',
+           round((extract(epoch FROM (now() AT TIME ZONE 'UTC') - last_batch) / 60.0)::numeric, 1)
+               || ' min',
+           n, last_batch >= (now() AT TIME ZONE 'UTC') - interval '5 minutes' FROM stream
+    UNION ALL
     SELECT 1, 'Stream: latência evento -> processamento p95', '< 12 s',
            round(latency_p95_s::numeric, 2) || ' s', n, latency_p95_s < 12 FROM stream
     UNION ALL

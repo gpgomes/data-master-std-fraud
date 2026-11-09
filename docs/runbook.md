@@ -546,6 +546,7 @@ make slo-report     # SLOs das últimas 24 h: OK / VIOLADO / SEM DADOS
 
 | SLO | Meta | Fonte |
 |---|---|---|
+| Stream: último micro-batch (batimento, issue #89) | < 5 min | `max(stream_batch_metrics.batch_timestamp)` |
 | Stream: latência evento → processamento p95 | < 12 s (o trigger é 10 s) | `stream_batch_metrics.latency_p95_s` |
 | Stream: lag máximo do Kafka | < 10.000 eventos | `stream_batch_metrics.kafka_lag` |
 | Stream: duração do micro-batch p95 | < 10 s (acima disso o stream acumula atraso) | `stream_batch_metrics.batch_duration_ms` |
@@ -557,6 +558,7 @@ make slo-report     # SLOs das últimas 24 h: OK / VIOLADO / SEM DADOS
 **Como ler:**
 
 - **SEM DADOS** não é OK: o componente não rodou na janela (stream parado, DAG pausada, API sem tráfego).
+- **Batimento VIOLADO** = o stream rodou nas últimas 24 h, mas parou (morto, travado ou o Mac suspenso): as outras metas do stream só olham os micro-batches que existiram e não mostram isso. O painel Platform Health mostra o mesmo número ("Stream - Minutos desde o Ultimo Micro-batch"). Isto **detecta**; **avisar** alguém (e-mail, Slack) ainda exige ligar o Alerts & Reports do Superset, com worker e agendador (issue #89).
 - **Os primeiros micro-batches depois de subir o stream** processam o que se acumulou no Kafka enquanto ele
   estava parado, e sua latência (e duração) é alta por construção. Com poucos micro-batches na janela, eles
   dominam o p95. Para separar partida de regime:

@@ -18,9 +18,9 @@ from src.serving.dashboards.charts import ChartDef
 PLATFORM_DASHBOARD_TITLE = "Platform Health"
 PLATFORM_DASHBOARD_SLUG = "platform-health"
 PLATFORM_DATASETS = ("stream_batch_metrics", "pipeline_runs", "quality_gate_runs", "api_requests")
-# 3 KPIs do stream; 4 séries do stream (a 4ª é o tempo por etapa, issue #56); execuções das DAGs +
-# gates com falha; 2 KPIs e a série da API
-PLATFORM_ROW_SIZES = (3, 4, 2, 3)
+# 4 KPIs do stream (o 1º é o batimento, issue #89); 4 séries do stream (a 4ª é o tempo por etapa,
+# issue #56); execuções das DAGs + gates com falha; 2 KPIs e a série da API
+PLATFORM_ROW_SIZES = (4, 4, 2, 3)
 
 # Coluna de tempo de cada tabela e a janela do `slo_report.sql`.
 TIME_COLUMNS = {
@@ -104,7 +104,18 @@ API_5XX_PCT = _sql(
     "Erros 5xx (%)",
 )
 
+STREAM_MINUTES_SINCE_LAST_BATCH = _sql(
+    "EXTRACT(EPOCH FROM ((now() AT TIME ZONE 'UTC') - MAX(batch_timestamp))) / 60.0",
+    "Minutos desde o último micro-batch",
+)
+
 PLATFORM_CHARTS: tuple[ChartDef, ...] = (
+    _kpi(
+        "Stream - Minutos desde o Ultimo Micro-batch",
+        "stream_batch_metrics",
+        STREAM_MINUTES_SINCE_LAST_BATCH,
+        "Batimento do stream (issue #89): acima de 5 min, o stream parou. Vazio = não rodou em 24 h.",
+    ),
     _kpi(
         "Stream - Latencia p95 (s)",
         "stream_batch_metrics",

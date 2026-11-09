@@ -496,6 +496,20 @@ class TestSloReport:
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
         assert "slo-report:" in makefile and "src/serving/queries/slo_report.sql" in makefile
 
+    def test_has_the_stream_heartbeat(self):
+        """Issue #89: stream parado = último micro-batch há mais de 5 min, mostrado primeiro."""
+        code = self._statements()
+        assert "max(batch_timestamp)" in code and "AS last_batch" in code
+        assert "SELECT 0, 'Stream: último micro-batch (batimento)', '< 5 min'" in code
+        assert "last_batch >= (now() AT TIME ZONE 'UTC') - interval '5 minutes'" in code
+
+    def test_platform_health_has_the_heartbeat_kpi(self):
+        from src.serving.dashboards.platform_charts import PLATFORM_CHARTS
+
+        first = PLATFORM_CHARTS[0]
+        assert first.slice_name == "Stream - Minutos desde o Ultimo Micro-batch"
+        assert "MAX(batch_timestamp)" in first.form_data_extra["metric"]["sqlExpression"]
+
 
 # ── Stream processor e runner do GX ───────────────────────────────────────────────
 
