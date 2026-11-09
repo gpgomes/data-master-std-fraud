@@ -1,0 +1,22 @@
+slice_name: Pipeline - Quality Gates com Falha
+description: null
+certified_by: null
+certification_details: null
+viz_type: big_number_total
+params:
+  datasource: 7__table
+  viz_type: big_number_total
+  metric:
+    expressionType: SQL
+    sqlExpression: COUNT(*)
+    label: Gates com falha
+  adhoc_filters:
+  - clause: WHERE
+    expressionType: SQL
+    sqlExpression: run_at >= (now() AT TIME ZONE 'UTC') - interval '24 hours' AND
+      success = false AND NOT COALESCE(optional, false)
+query_context: null
+cache_timeout: null
+uuid: 70b799fb-ff63-45e1-bdb2-f88d05d86f15
+version: 1.0.0
+dataset_uuid: 0a6c01d5-119d-4c3c-a2a0-629ad345b157

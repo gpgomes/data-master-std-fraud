@@ -1,0 +1,27 @@
+slice_name: Stream - Throughput por Minuto
+description: null
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_line
+params:
+  datasource: 5__table
+  viz_type: echarts_timeseries_line
+  metrics:
+  - expressionType: SQL
+    sqlExpression: AVG(input_rows_per_second)
+    label: Entrada (linhas/s)
+  - expressionType: SQL
+    sqlExpression: AVG(processed_rows_per_second)
+    label: Processadas (linhas/s)
+  groupby: []
+  granularity_sqla: batch_timestamp
+  time_grain_sqla: PT1M
+  adhoc_filters:
+  - clause: WHERE
+    expressionType: SQL
+    sqlExpression: batch_timestamp >= (now() AT TIME ZONE 'UTC') - interval '24 hours'
+query_context: null
+cache_timeout: null
+uuid: 77311493-23cb-45d7-83ee-27109f35d43d
+version: 1.0.0
+dataset_uuid: da35a365-f1ab-4550-b15c-ee7210853276

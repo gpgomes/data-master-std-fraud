@@ -1,0 +1,27 @@
+slice_name: Stream - Lag e Estado por Minuto
+description: null
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_line
+params:
+  datasource: 5__table
+  viz_type: echarts_timeseries_line
+  metrics:
+  - expressionType: SQL
+    sqlExpression: MAX(kafka_lag)
+    label: Lag (eventos)
+  - expressionType: SQL
+    sqlExpression: MAX(state_rows)
+    label: Estado curto (linhas)
+  groupby: []
+  granularity_sqla: batch_timestamp
+  time_grain_sqla: PT1M
+  adhoc_filters:
+  - clause: WHERE
+    expressionType: SQL
+    sqlExpression: batch_timestamp >= (now() AT TIME ZONE 'UTC') - interval '24 hours'
+query_context: null
+cache_timeout: null
+uuid: 101131ef-d1cc-4048-822f-30037da6372c
+version: 1.0.0
+dataset_uuid: da35a365-f1ab-4550-b15c-ee7210853276

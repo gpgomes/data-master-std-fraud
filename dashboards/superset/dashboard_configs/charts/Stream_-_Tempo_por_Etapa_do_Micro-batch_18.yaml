@@ -1,0 +1,36 @@
+slice_name: Stream - Tempo por Etapa do Micro-batch
+description: null
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_line
+params:
+  datasource: 5__table
+  viz_type: echarts_timeseries_line
+  metrics:
+  - expressionType: SQL
+    sqlExpression: AVG(state_load_ms) / 1000.0
+    label: Carregar estado (s)
+  - expressionType: SQL
+    sqlExpression: AVG(score_ms) / 1000.0
+    label: Pontuar (s)
+  - expressionType: SQL
+    sqlExpression: AVG(parquet_ms) / 1000.0
+    label: Parquet (s)
+  - expressionType: SQL
+    sqlExpression: AVG(kafka_ms) / 1000.0
+    label: Kafka (s)
+  - expressionType: SQL
+    sqlExpression: AVG(state_write_ms) / 1000.0
+    label: Gravar estado (s)
+  groupby: []
+  granularity_sqla: batch_timestamp
+  time_grain_sqla: PT1M
+  adhoc_filters:
+  - clause: WHERE
+    expressionType: SQL
+    sqlExpression: batch_timestamp >= (now() AT TIME ZONE 'UTC') - interval '24 hours'
+query_context: null
+cache_timeout: null
+uuid: a18b3220-3f31-4640-9f06-8eaa3eb50731
+version: 1.0.0
+dataset_uuid: da35a365-f1ab-4550-b15c-ee7210853276

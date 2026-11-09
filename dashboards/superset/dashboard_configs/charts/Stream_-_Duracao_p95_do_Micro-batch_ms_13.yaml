@@ -1,0 +1,21 @@
+slice_name: Stream - Duracao p95 do Micro-batch (ms)
+description: null
+certified_by: null
+certification_details: null
+viz_type: big_number_total
+params:
+  datasource: 5__table
+  viz_type: big_number_total
+  metric:
+    expressionType: SQL
+    sqlExpression: percentile_cont(0.95) WITHIN GROUP (ORDER BY batch_duration_ms)
+    label: Duracao p95 do micro-batch (ms)
+  adhoc_filters:
+  - clause: WHERE
+    expressionType: SQL
+    sqlExpression: batch_timestamp >= (now() AT TIME ZONE 'UTC') - interval '24 hours'
+query_context: null
+cache_timeout: null
+uuid: e8c0767e-ae6f-46c0-8425-fb26e9878484
+version: 1.0.0
+dataset_uuid: da35a365-f1ab-4550-b15c-ee7210853276

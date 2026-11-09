@@ -1,0 +1,21 @@
+slice_name: Stream - Lag Maximo do Kafka
+description: null
+certified_by: null
+certification_details: null
+viz_type: big_number_total
+params:
+  datasource: 5__table
+  viz_type: big_number_total
+  metric:
+    expressionType: SQL
+    sqlExpression: MAX(kafka_lag)
+    label: Lag maximo (eventos)
+  adhoc_filters:
+  - clause: WHERE
+    expressionType: SQL
+    sqlExpression: batch_timestamp >= (now() AT TIME ZONE 'UTC') - interval '24 hours'
+query_context: null
+cache_timeout: null
+uuid: 02c66f90-0ec4-4e27-8e37-16ee5b0b6357
+version: 1.0.0
+dataset_uuid: da35a365-f1ab-4550-b15c-ee7210853276
