@@ -31,7 +31,7 @@ class TestDockerComposePorts:
 
     def test_minio_external_port_default_matches_env_example(self):
         compose = _read("docker-compose.yml")
-        match = re.search(r'"\$\{MINIO_EXTERNAL_PORT:-(\d+)\}:9000"', compose)
+        match = re.search(r'"(?:127\.0\.0\.1:)?\$\{MINIO_EXTERNAL_PORT:-(\d+)\}:9000"', compose)
         assert match, "Porta externa do MinIO deve ser parametrizável via MINIO_EXTERNAL_PORT"
 
         expected_port = re.search(r":(\d+)$", _env_example_value("MINIO_ENDPOINT")).group(1)
@@ -39,13 +39,28 @@ class TestDockerComposePorts:
 
     def test_postgres_external_port_default_matches_env_example(self):
         compose = _read("docker-compose.yml")
-        match = re.search(r'"\$\{POSTGRES_EXTERNAL_PORT:-(\d+)\}:5432"', compose)
+        match = re.search(r'"(?:127\.0\.0\.1:)?\$\{POSTGRES_EXTERNAL_PORT:-(\d+)\}:5432"', compose)
         assert match, (
             "Porta externa do Postgres (serving) deve ser parametrizável via "
             "POSTGRES_EXTERNAL_PORT"
         )
         assert match.group(1) == _env_example_value("POSTGRES_PORT")
         assert match.group(1) == _env_example_value("POSTGRES_EXTERNAL_PORT")
+
+
+    def test_every_published_port_is_loopback_only(self):
+        """Nenhuma porta exposta para a rede: credenciais de dev fixas (MinIO, Postgres) ficam só no
+        host. Cada porta em 127.0.0.1 tem o par em [::1], porque no macOS "localhost" resolve primeiro
+        para IPv6 e o kafka-python não tenta o IPv4 quando o IPv6 é recusado."""
+        compose = _read("docker-compose.yml")
+        mappings = re.findall(r'(?m)^\s+- "([^"]*:\d+)"\s*$', compose)
+        published = [m for m in mappings if re.search(r":\d+$", m) and ":" in m]
+        assert published, "nenhuma porta publicada encontrada no compose"
+        for mapping in published:
+            assert mapping.startswith(("127.0.0.1:", "[::1]:")), f"porta exposta para a rede: {mapping}"
+        v4 = {m.removeprefix("127.0.0.1:") for m in published if m.startswith("127.0.0.1:")}
+        v6 = {m.removeprefix("[::1]:") for m in published if m.startswith("[::1]:")}
+        assert v4 == v6, f"portas sem o par IPv4/IPv6: {sorted(v4 ^ v6)}"
 
 
 class TestConfigMatchesEnvExample:
