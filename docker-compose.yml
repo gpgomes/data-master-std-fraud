@@ -129,6 +129,11 @@ services:
     # A imagem da Bitnami roda como uid 1001, mas o volume `minio-data` de quem já usava o projeto
     # foi criado como root pela imagem antiga: como root, ela lê e grava os dados existentes.
     user: "0"
+    # Teto de memória do container. A MinIO dimensiona o pool de buffers pela RAM que enxerga (~88%
+    # do limite; sem limite, ~2,2 GB, o teto dela numa VM de 12 GB) e, com o stream gravando a cada
+    # 10 s, vai tocando o pool inteiro até ele ficar residente. MINIO_API_REQUESTS_MAX e GOMEMLIMIT
+    # não mudam o pool (medido em 08/11/2026).
+    mem_limit: ${MINIO_MEM_LIMIT:-2g}
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
