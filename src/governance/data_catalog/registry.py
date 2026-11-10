@@ -68,7 +68,7 @@ CATALOG: tuple[CatalogEntry, ...] = (
         owner="Data Engineering",
         classification=("PII", "Confidencial"),
         glossary_terms=(),
-        description="Transações financeiras raw, conforme recebidas do Kafka.",
+        description="Transações financeiras raw, carregadas dos CSVs e só convertidas para Parquet.",
     ),
     CatalogEntry(
         key="bronze_market_data",

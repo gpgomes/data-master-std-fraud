@@ -79,7 +79,7 @@ make dashboards-export         # Snapshot the provisioned dashboard to dashboard
 
 **Batch:**
 ```
-yfinance / CSV → Python Collector → MinIO bronze/ (JSON/CSV)
+yfinance / CSV → Python Collector → MinIO bronze/ (Parquet)
                                          ↓ PySpark (bronze_to_silver.py)
                                     MinIO silver/ (Parquet)
                                          ↓ PySpark (silver_to_gold.py)
