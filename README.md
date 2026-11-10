@@ -280,7 +280,7 @@ Grafana: nenhum container novo. Detalhes e metas: [`docs/runbook.md`](docs/runbo
 
 | Camada | Formato | Particionamento | Conteúdo |
 |--------|---------|----------------|---------|
-| Bronze | JSON / CSV | `year/month/day` | Dados raw sem transformação |
+| Bronze | Parquet | `year/month/day` (transações), `date=` (mercado), `snapshot_date=` (clientes) | Dados raw: o conteúdo do CSV / yfinance sem transformação, só convertido para Parquet |
 | Silver | Parquet | `year/month/day` | Dados limpos, deduplicados, tipados |
 | Gold | Parquet | Por domínio | Agregações, Star Schema, KPIs |
 

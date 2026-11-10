@@ -54,7 +54,7 @@
   <g>
     <rect x="40" y="352" width="360" height="86" rx="10" fill="#fdf2e9" stroke="#b45309" stroke-width="1.5"/>
     <text x="220" y="390" text-anchor="middle" font-size="16" font-weight="700" fill="#92400e">Bronze</text>
-    <text x="220" y="408" text-anchor="middle" font-size="11.5" fill="#9a3412">Raw · JSON / CSV</text>
+    <text x="220" y="408" text-anchor="middle" font-size="11.5" fill="#9a3412">Parquet</text>
 
     <line x1="400" y1="395" x2="418" y2="395" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow)"/>
 

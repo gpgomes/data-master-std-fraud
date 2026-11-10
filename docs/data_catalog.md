@@ -1,6 +1,6 @@
 # Catálogo de Dados
 
-_Gerado em 2026-09-28T22:27:55.026801+00:00 por `python -m scripts.build_data_catalog`._
+_Gerado em 2026-11-10T21:43:38.516219+00:00 por `python -m scripts.build_data_catalog`._
 
 Substitui o OpenMetadata completo na V1 local (decisão documentada em `docs/architecture.md`) — ver definições de campo e o glossário de negócio completo em [`docs/data_dictionary.md`](data_dictionary.md).
 
@@ -8,7 +8,7 @@ Substitui o OpenMetadata completo na V1 local (decisão documentada em `docs/arc
 
 | Dataset | Localização | Owner | Classificação | Glossário | Status |
 |---------|-------------|-------|---------------|-----------|--------|
-| **Bronze — Transações**<br>Transações financeiras raw, conforme recebidas do Kafka. | `s3://bronze/transactions/` | Data Engineering | PII, Confidencial | — | ✅ ok |
+| **Bronze — Transações**<br>Transações financeiras raw, carregadas dos CSVs e só convertidas para Parquet. | `s3://bronze/transactions/` | Data Engineering | PII, Confidencial | — | ✅ ok |
 | **Bronze — Market Data**<br>Cotações OHLCV coletadas via yfinance. | `s3://bronze/market_data/` | Data Engineering | Público | VWAP, Volatilidade | ⚠️ sem dados (opcional): nenhum objeto encontrado em s3://bronze/market_data/ |
 
 ## Silver
