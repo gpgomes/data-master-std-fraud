@@ -66,6 +66,29 @@ def _parse_hive_partitions(file_path: str) -> dict[str, str]:
     return dict(_HIVE_PARTITION_RE.findall(file_path))
 
 
+def _select_data_files(root: str, paths: list[str]) -> list[str]:
+    """Filtra os arquivos de dados do dataset com a mesma regra dos leitores do Spark:
+    só `.parquet`, ignorando qualquer segmento (abaixo da raiz do dataset) que comece
+    com `.` ou `_`.
+
+    Sem isso, um job Spark interrompido no meio de um overwrite dinâmico de partição
+    deixa `.spark-staging-<id>/` com uma cópia parcial dos dados; o Spark nunca a lê,
+    mas o gate a somava aos dados reais e acusava duplicatas falsas (ex.
+    `expect_column_values_to_be_unique(transaction_id)` em `silver/transactions`).
+    Também descarta `_temporary/` e marcadores como `_SUCCESS`.
+    """
+    prefix = root.rstrip("/") + "/"
+    selected = []
+    for f in paths:
+        if not f.endswith(".parquet"):
+            continue
+        relative = f.removeprefix(prefix)
+        if any(part.startswith((".", "_")) for part in relative.split("/")):
+            continue
+        selected.append(f)
+    return selected
+
+
 def load_dataframe(dataset_key: str) -> pd.DataFrame:
     """Lê todos os arquivos Parquet do dataset (todas as partições) em um DataFrame.
 
@@ -98,7 +121,7 @@ def load_dataframe(dataset_key: str) -> pd.DataFrame:
     fs = fsspec.filesystem("s3", **storage_options)
 
     bucket_and_prefix = path.removeprefix("s3://")
-    files = [f for f in fs.find(bucket_and_prefix) if f.endswith(".parquet")]
+    files = _select_data_files(bucket_and_prefix, fs.find(bucket_and_prefix))
     if not files:
         raise FileNotFoundError(f"Nenhum arquivo Parquet encontrado em {path}")
 
