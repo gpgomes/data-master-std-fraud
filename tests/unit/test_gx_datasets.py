@@ -19,6 +19,7 @@ from src.governance.great_expectations.datasets import (
     DATASET_KEYS,
     _parse_hive_partitions,
     _resolve,
+    _select_data_files,
 )
 
 
@@ -61,3 +62,46 @@ class TestResolve:
 
         with pytest.raises(ValueError, match="desconhecido"):
             _resolve("does_not_exist")
+
+
+class TestSelectDataFiles:
+    """Regressão: um `bronze_to_silver` morto no meio (Mac dormiu) deixou
+    `.spark-staging-<id>/` em `silver/transactions`, e o gate leu essa cópia
+    parcial junto com os dados reais, gerando duplicatas falsas de
+    `transaction_id`."""
+
+    ROOT = "fraud-silver/transactions"
+
+    def test_keeps_parquet_in_hive_partitions(self):
+        paths = [f"{self.ROOT}/transaction_date=2026-11-09/part-000.parquet"]
+        assert _select_data_files(self.ROOT, paths) == paths
+
+    def test_ignores_spark_staging_dir(self):
+        real = f"{self.ROOT}/transaction_date=2026-11-09/part-000.parquet"
+        staging = (
+            f"{self.ROOT}/.spark-staging-88da962d/transaction_date=2026-11-09/part-000.parquet"
+        )
+        assert _select_data_files(self.ROOT, [real, staging]) == [real]
+
+    def test_ignores_underscore_dirs_and_markers(self):
+        real = f"{self.ROOT}/part-000.parquet"
+        paths = [
+            real,
+            f"{self.ROOT}/_temporary/0/part-001.parquet",
+            f"{self.ROOT}/_SUCCESS",
+            f"{self.ROOT}/_metadata.parquet",
+        ]
+        assert _select_data_files(self.ROOT, paths) == [real]
+
+    def test_ignores_non_parquet_files(self):
+        paths = [f"{self.ROOT}/part-000.parquet.crc", f"{self.ROOT}/notes.txt"]
+        assert _select_data_files(self.ROOT, paths) == []
+
+    def test_only_segments_below_root_are_checked(self):
+        root = "_bucket/.prefix"
+        path = f"{root}/date=2026-11-09/part-000.parquet"
+        assert _select_data_files(root, [path]) == [path]
+
+    def test_trailing_slash_on_root(self):
+        path = f"{self.ROOT}/part-000.parquet"
+        assert _select_data_files(self.ROOT + "/", [path]) == [path]
